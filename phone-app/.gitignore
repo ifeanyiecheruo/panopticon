@@ -7,9 +7,6 @@
 /captures
 app/build/
 app/release/
-*.apk
-*.ap_
-*.dex
 bin/
 gen/
 out/

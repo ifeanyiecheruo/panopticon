@@ -21,6 +21,11 @@ desktop.ini
 .gradle/
 *.class
 
+# Android build output (any Android project, regardless of module layout)
+*.apk
+*.ap_
+*.dex
+
 # Native build caches (Android NDK / CMake)
 .cxx/
 .externalNativeBuild/
