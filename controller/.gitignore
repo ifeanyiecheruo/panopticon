@@ -1,5 +1,8 @@
+# Project-specific ignores only - OS/editor/generic-node-tooling churn (.DS_Store, node_modules/,
+# .idea/, *.log, etc.) lives in the root .gitignore instead (see its header comment for why, and
+# the one-time `git config core.excludesFile ../.gitignore` this repo needs to see it).
+
 build/bin
-node_modules
 frontend/dist
 frontend/package.json.md5
 
@@ -7,4 +10,3 @@ frontend/package.json.md5
 # Not part of the shipped source — recreated on first run (see internal/appdirs).
 /data/
 /archive/
-

@@ -18,11 +18,18 @@ Reference docs (read-only, live in the parent `panopticon` repo):
 
 ## Running it
 
+Build/install/run/test tasks live in the **root Makefile** (`../Makefile`), alongside the
+phone-app's - run `make help` from the repo root for the full list. From there:
+
 ```
-wails build      # production binary -> build/bin/panopticon-controller.exe
-wails dev        # hot-reload dev mode; also opens http://localhost:34115 for
-                  # calling bound Go methods from an ordinary browser tab
+make build-controller     # wails build -> build/bin/panopticon-controller.exe
+make run-controller       # build + launch (tray icon; keeps running in the background)
+make test-controller      # go test ./...
 ```
+
+For hot-reload dev mode (not wired into the Makefile - it's an interactive foreground process,
+not a one-shot task): `cd controller && wails dev`, which also opens
+`http://localhost:34115` for calling bound Go methods from an ordinary browser tab.
 
 On first launch it creates `data/` (SQLite DB + single-instance lock file) and `archive/`
 (downloaded clips, one subdirectory per paired phone) next to wherever the binary is run
