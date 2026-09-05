@@ -234,3 +234,54 @@ into a `Makefile` recipe.
 **Workaround:** double the backslash in the Makefile source (`.\\gradlew.bat`) so that after the
 recipe shell's escape processing, `cmd.exe` still receives a single `\`.
 **Where:** `Makefile` (root), the `GRADLEW` variable.
+
+### This `make`'s own `$(CURDIR)` resolves through the wrong mount alias for an OneDrive-rooted repo
+**Assumed:** GNU Make's built-in `$(CURDIR)` variable reflects the same working directory a
+recipe's own shell would report via `pwd`.
+**Actually:** for this repo specifically (its real path is under `C:\Users\<user>\OneDrive\...`),
+`$(CURDIR)` resolved to `/home/<user>/OneDrive/...` - a path that doesn't exist at all in this
+`make`'s own recipe shell (`mkdir -p` on it failed trying to create `/home` itself, permission
+denied), even though a bare `pwd` run as a recipe command correctly printed
+`/c/Users/<user>/OneDrive/...`. Root cause not fully diagnosed, but consistent with this
+`make`/MSYS2 build having its own internal mount-alias table it consults for `$(CURDIR)`
+specifically, separate from (and less complete than) whatever its spawned recipe shells actually
+use for real filesystem paths.
+**Workaround:** never use `$(CURDIR)` in this Makefile; use `$(shell pwd)` instead (confirmed
+correct) for anything that needs the repo root as an absolute path (`ROOT` in the Makefile).
+**Where:** `Makefile` (root), the `ROOT` variable.
+
+### This `make`'s `command -v <tool>` can resolve through a *working-but-different* path alias too
+**Assumed:** if `command -v nvm` resolves and the resulting path passes a `[ -f ... ]` existence
+check inside a recipe, that same path string is safe to bake into a generated script for later use
+outside `make`.
+**Actually:** `command -v nvm` inside a recipe returned `/home/<user>/AppData/Roaming/nvm/nvm` -
+unlike the `$(CURDIR)` case above, this path *does* resolve inside this `make`'s own recipe shells
+(nvm-windows' install directory apparently being one of a small set of user-profile paths this
+MSYS2 build's `/home/<user>` mount aliases to), which made it easy to mistake for a genuinely
+portable path. A shim script written with this path baked in worked when run via `make`, then
+failed with "No such file or directory" run directly from an ordinary interactive Git Bash prompt,
+where `/home/<user>/AppData/...` isn't a valid path at all.
+**Workaround:** don't trust `command -v`'s literal output for anything that needs to be portable
+outside this one `make`'s own shells - construct the path independently instead. Here: nvm-windows'
+root is always `%APPDATA%\nvm` by its own fixed convention, so `NVM_ROOT` is built from
+`/c/Users/$(shell whoami)/AppData/Roaming/nvm` rather than `dirname` of `command -v nvm`'s output;
+`command -v nvm` is still used, but only as an existence check (installed vs. not), never as a path
+source.
+**Where:** `Makefile` (root), the `NVM_ROOT` variable.
+
+### Gradle's unit-test task needs `local.properties`' `sdk.dir` even when `assembleDebug` doesn't
+**Assumed:** since `ANDROID_HOME` being stripped from this `make`'s recipes never broke
+`assembleDebug` in practice, Gradle must be resolving the SDK location some other reliable way
+that `test` would share.
+**Actually:** `assembleDebug` kept succeeding only because its relevant tasks were already
+`UP-TO-DATE` from a previous (IDE- or manually-configured) run and never actually needed to
+re-resolve the SDK location; `./gradlew test`, run fresh after the monorepo restructuring
+recreated `phone-app/` from git history (which never tracked the gitignored `local.properties`),
+failed immediately with "SDK location not found" - the one thing that reliably tells Gradle where
+the SDK is regardless of environment variables is `local.properties`' `sdk.dir` line (normally
+auto-written by Android Studio, silently relied upon rather than actually understood).
+**Workaround:** a `phone-app-local-properties` Make target unconditionally (re)writes
+`phone-app/local.properties` from the same `ANDROID_SDK_ROOT_WIN`/`_POSIX` this Makefile already
+resolves for `install-tools-android-sdk`, and both `build-phone` and `test-phone` depend on it -
+cheap enough (one line) to just always rewrite rather than track staleness.
+**Where:** `Makefile` (root), the `phone-app-local-properties` target.

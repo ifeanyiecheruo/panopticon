@@ -33,3 +33,7 @@ node_modules/
 
 # Claude Code session-local state (not project source)
 .claude/*.lock
+
+# Privately-installed dev tools (see `make install-tools` / the ROOT/LOCAL_BIN comment in
+# Makefile) - machine/checkout-specific, never source.
+/.local/
