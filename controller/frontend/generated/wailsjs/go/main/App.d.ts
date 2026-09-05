@@ -10,6 +10,8 @@ export function DeleteClipPermanently(arg1:string,arg2:string):Promise<void>;
 
 export function EmptyTrash():Promise<number>;
 
+export function ForceUnpairPhone(arg1:string):Promise<main.UnpairResult>;
+
 export function GetCalibrationProgress(arg1:string,arg2:string):Promise<main.CalibrationProgressResult>;
 
 export function GetPhoneDetail(arg1:string):Promise<main.PhoneDetailView>;
@@ -33,3 +35,5 @@ export function ShowWindow():Promise<void>;
 export function StartCalibration(arg1:string):Promise<main.CalibrationStartResult>;
 
 export function TrashClip(arg1:string,arg2:string):Promise<void>;
+
+export function UnpairPhone(arg1:string,arg2:boolean):Promise<main.UnpairResult>;

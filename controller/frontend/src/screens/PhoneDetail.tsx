@@ -4,6 +4,8 @@ import {
   StartCalibration,
   GetCalibrationProgress,
   CancelCalibration,
+  UnpairPhone,
+  ForceUnpairPhone,
   type PhoneDetailView,
   type CalibrationProgress,
 } from '../api';
@@ -25,6 +27,11 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
   const [progress, setProgress] = useState<CalibrationProgress | null>(null);
   const [calibMsg, setCalibMsg] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Unpair state.
+  const [unpairMode, setUnpairMode] = useState<null | 'confirm-unsynced' | 'confirm-force'>(null);
+  const [unpairMsg, setUnpairMsg] = useState<string | null>(null);
+  const [unpairBusy, setUnpairBusy] = useState(false);
 
   const loadDetail = useCallback(async () => {
     try {
@@ -95,6 +102,38 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
       await CancelCalibration(phoneId, id);
     } catch (err) {
       setCalibMsg(String(err));
+    }
+  };
+
+  const doUnpair = async (confirmed: boolean) => {
+    setUnpairBusy(true);
+    setUnpairMsg(null);
+    try {
+      const r = await UnpairPhone(phoneId, confirmed);
+      if (r.ok) {
+        onBack();
+        return;
+      }
+      if (r.outcome === 'needs_confirmation') {
+        setUnpairMode('confirm-unsynced');
+        setUnpairMsg(r.message ?? null);
+        return;
+      }
+      // unreachable / revoke_failed / other — stays paired; point at Force.
+      setUnpairMode(null);
+      setUnpairMsg(r.message || 'Could not unpair.');
+    } finally {
+      setUnpairBusy(false);
+    }
+  };
+
+  const doForceUnpair = async () => {
+    setUnpairBusy(true);
+    try {
+      await ForceUnpairPhone(phoneId);
+      onBack();
+    } finally {
+      setUnpairBusy(false);
     }
   };
 
@@ -258,6 +297,59 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
         <button className="btn" onClick={onViewGallery}>
           <GalleryIcon /> View in Gallery
         </button>
+      </div>
+
+      <div className="section-title">Unpair</div>
+      <div className="card" style={{ padding: '14px' }}>
+        {unpairMode === null && (
+          <>
+            <div className="calib-sub" style={{ marginBottom: '10px' }}>
+              Unpairing revokes this controller's token on the phone. Clips already synced stay in
+              the Gallery as historical footage.
+            </div>
+            <div className="confirm-actions">
+              <button className="btn" onClick={() => doUnpair(false)} disabled={unpairBusy}>
+                Unpair
+              </button>
+              <button className="btn danger" onClick={() => setUnpairMode('confirm-force')} disabled={unpairBusy}>
+                Force unpair
+              </button>
+            </div>
+            {unpairMsg && <div className="calib-sub" style={{ marginTop: '10px' }}>{unpairMsg}</div>}
+          </>
+        )}
+
+        {unpairMode === 'confirm-unsynced' && (
+          <div className="confirm-box">
+            <p>{unpairMsg}</p>
+            <div className="confirm-actions">
+              <button className="btn danger" onClick={() => doUnpair(true)} disabled={unpairBusy}>
+                Unpair anyway
+              </button>
+              <button className="btn" onClick={() => { setUnpairMode(null); setUnpairMsg(null); }} disabled={unpairBusy}>
+                Keep paired
+              </button>
+            </div>
+          </div>
+        )}
+
+        {unpairMode === 'confirm-force' && (
+          <div className="confirm-box">
+            <p>
+              Force unpair removes <b>{p.name}</b> locally even if it can't be reached. If the phone
+              is offline it may keep a live token until you clear this controller from the phone's
+              own screen. The unsynced-clips check is skipped.
+            </p>
+            <div className="confirm-actions">
+              <button className="btn danger" onClick={doForceUnpair} disabled={unpairBusy}>
+                Force unpair
+              </button>
+              <button className="btn" onClick={() => setUnpairMode(null)} disabled={unpairBusy}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

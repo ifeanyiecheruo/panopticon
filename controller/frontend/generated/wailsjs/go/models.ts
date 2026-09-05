@@ -247,6 +247,25 @@ export namespace main {
 		    return a;
 		}
 	}
+	
+	export class UnpairResult {
+	    ok: boolean;
+	    outcome: string;
+	    unsyncedCount: number;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UnpairResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.outcome = source["outcome"];
+	        this.unsyncedCount = source["unsyncedCount"];
+	        this.message = source["message"];
+	    }
+	}
 
 }
 

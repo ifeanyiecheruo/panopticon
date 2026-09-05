@@ -126,11 +126,18 @@ candidates for "the next slice":
 - ~~**Motion-gated recording.**~~ **Implemented** (phone-app only) — see "Slices added since the
   initial handoff" above. Remaining: on-device threshold tuning, pre-roll, a real
   background-subtraction model.
+
+- **Unpair / force-unpair (controller only).** `internal/unpair` + `App.UnpairPhone` /
+  `App.ForceUnpairPhone` + a Phone-detail "Unpair" section. Safe unpair does the
+  unsynced-clips warning and refuses to drop local state unless the phone is reachable and the
+  token actually revoked; force unpair drops it regardless. Integration-tested. No phone-app
+  change (`DELETE /api/pair` already existed).
 - **Multi-camera.** `/api/cameras*` doesn't exist; nothing controller-side switches cameras.
 
-Single-side deferred items (unpair/force-unpair, bulk arm/stand-down, eviction-probe/tombstone
+Remaining single-side deferred items (bulk arm/stand-down, eviction-probe/tombstone
 cleanup, QR pairing, the Controllers/Configuration screens, etc.) are listed in each project's
-own README and don't need cross-project design work — just implementation.
+own README and don't need cross-project design work — just implementation. (Unpair/force-unpair
+is done — see above.)
 
 ## Explicit decisions made this session (worth not re-litigating)
 

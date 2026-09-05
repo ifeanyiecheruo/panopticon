@@ -8,7 +8,8 @@ This is a **vertical slice**, not the full app — see "What's deferred" below. 
 end to end: project scaffold, tray presence, embedded SQLite state, the Add-phone pairing
 flow, a Fleet screen, a background sync loop, a Gallery/Trash, the manufacturer+model
 calibration store (opportunistic ingest on pair / Phone-detail open, plus a Phone-detail
-re-run). It does not implement live camera preview or the eviction-probe loop.
+re-run), and unpair / force-unpair. It does not implement live camera preview or the
+eviction-probe loop.
 
 Reference docs (read-only, live in the parent `panopticon` repo):
 - `../docs/implementation/phone-http-api.md` — the phone-side HTTP contract this controller
@@ -88,6 +89,12 @@ rows, and the Gallery/Trash screens reading them back correctly.
   `IngestOpportunistic` (pull `GET /api/calibration/result`, store only if we don't already
   hold something fresher), `StoreResult` (unconditional overwrite, for a manual re-run).
   `internal/phoneapi/calibration.go` is the matching HTTP client surface.
+- `internal/unpair` — `DELETE /api/pair` wiring. `Unpair` (safe path): checks
+  `GET /api/clips` for clips the phone still has that we never archived and returns
+  `needs_confirmation` if any; requires the phone reachable and the revoke to succeed (or a 401
+  — already forgotten) before dropping the local row. `Force`: best-effort revoke, drops the
+  row regardless. Either way already-archived clips are kept (`store.DeletePhone` removes only
+  the pairing row); `syncer.reconcile` stops the phone's goroutine on its next tick.
 - `internal/syncer` — per-phone background poll loop (`syncPollInterval` in `main.go`, 30s by
   default). Downloads new clips + thumbnails, advances the sync cursor only after each clip
   is durably written and indexed (crash-safe/idempotent), treats a 404 on download as a
@@ -139,9 +146,6 @@ oversights:
   buffer evicted them, then dropping the DB row) is not implemented. `DeleteClipPermanently`
   and `EmptyTrash` purge the on-disk file immediately and mark the row `purged`, but purged
   tombstones accumulate forever rather than eventually being dropped.
-- **Unpair / force-unpair.** No UI or bound method for either yet — `DELETE /api/pair` is
-  implemented phone-side conceptually (see `phoneapi.Client.Unpair`) but nothing in `app.go`
-  calls it, and there's no unsynced-clips warning check.
 - **Bulk arm / bulk stand-down** (Fleet's fleet-wide record/standby actions) — not
   implemented; this slice's Fleet screen is read-only (status display + drill-down).
   Likewise no per-phone rename action.

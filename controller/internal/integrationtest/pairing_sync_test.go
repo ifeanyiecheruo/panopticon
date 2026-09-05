@@ -79,6 +79,20 @@ func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePho
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/pair", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			// Self-unpair: revoke the calling token. 401 if it's already gone.
+			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			fp.mu.Lock()
+			_, ok := fp.tokens[token]
+			delete(fp.tokens, token)
+			fp.mu.Unlock()
+			if !ok {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			writeJSON(w, map[string]bool{"unpaired": true})
+			return
+		}
 		if r.URL.Query().Get("invite") != fp.invite {
 			w.WriteHeader(http.StatusNotFound)
 			return

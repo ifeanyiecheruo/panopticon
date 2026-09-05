@@ -14,6 +14,7 @@ import (
 	"panopticon-controller/internal/pairing"
 	"panopticon-controller/internal/phoneapi"
 	"panopticon-controller/internal/syncer"
+	"panopticon-controller/internal/unpair"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -425,6 +426,57 @@ func (a *App) EmptyTrash() (int, error) {
 		}
 	}
 	return len(clips), nil
+}
+
+// ---- Unpair / force-unpair ----
+
+type UnpairResult struct {
+	OK      bool   `json:"ok"`
+	Outcome string `json:"outcome"` // "ok" | "needs_confirmation" | "unreachable" | "revoke_failed" | "other"
+	// UnsyncedCount is meaningful only with outcome "needs_confirmation".
+	UnsyncedCount int    `json:"unsyncedCount"`
+	Message       string `json:"message,omitempty"`
+}
+
+func unpairResult(r unpair.Result) UnpairResult {
+	out := UnpairResult{UnsyncedCount: r.UnsyncedCount, Message: r.Message}
+	switch r.Outcome {
+	case unpair.OutcomeOK:
+		out.OK, out.Outcome = true, "ok"
+	case unpair.OutcomeNeedsConfirmation:
+		out.Outcome = "needs_confirmation"
+	case unpair.OutcomeUnreachable:
+		out.Outcome = "unreachable"
+	case unpair.OutcomeRevokeFailed:
+		out.Outcome = "revoke_failed"
+	default:
+		out.Outcome = "other"
+	}
+	return out
+}
+
+// UnpairPhone is the safe unpair path (HANDOFF-controller-ux.md). With
+// confirmed=false it first checks for clips the phone still has that we never
+// archived and returns outcome "needs_confirmation" (changing nothing) if
+// there are any; call again with confirmed=true to proceed. It removes the
+// local pairing only after the phone's token is actually revoked. Already-
+// archived clips are kept.
+func (a *App) UnpairPhone(phoneID string, confirmed bool) UnpairResult {
+	ctx, cancel := context.WithTimeout(a.ctxOrBackground(), 20*time.Second)
+	defer cancel()
+	res, _ := unpair.Unpair(ctx, a.store, phoneID, confirmed)
+	return unpairResult(res)
+}
+
+// ForceUnpairPhone removes the local pairing regardless of whether the phone
+// can be reached or its token revoked. Best-effort revoke attempt; no
+// unsynced-clips check (the phone may be unreachable). Needs a more
+// deliberate confirmation in the UI than plain Unpair.
+func (a *App) ForceUnpairPhone(phoneID string) UnpairResult {
+	ctx, cancel := context.WithTimeout(a.ctxOrBackground(), 20*time.Second)
+	defer cancel()
+	res, _ := unpair.Force(ctx, a.store, phoneID)
+	return unpairResult(res)
 }
 
 // ---- Window / app lifecycle (tray integration) ----

@@ -19,6 +19,8 @@ export {
   StartCalibration,
   GetCalibrationProgress,
   CancelCalibration,
+  UnpairPhone,
+  ForceUnpairPhone,
 } from '../generated/wailsjs/go/main/App';
 
 import type { main, phoneapi, calibration } from '../generated/wailsjs/go/models';
@@ -34,3 +36,4 @@ export type CalibrationView = calibration.View;
 export type CalibrationStartResult = main.CalibrationStartResult;
 export type CalibrationProgressResult = main.CalibrationProgressResult;
 export type CalibrationProgress = phoneapi.CalibrationProgress;
+export type UnpairResult = main.UnpairResult;
