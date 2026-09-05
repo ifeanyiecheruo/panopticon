@@ -5,6 +5,7 @@
 build/bin
 frontend/dist
 frontend/package.json.md5
+/run-controller.log
 
 # Runtime state: SQLite DB, single-instance lock, downloaded clip archive.
 # Not part of the shipped source — recreated on first run (see internal/appdirs).
