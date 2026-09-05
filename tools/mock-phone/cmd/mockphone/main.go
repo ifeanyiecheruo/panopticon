@@ -1,7 +1,7 @@
-// Command mockphone is a throwaway test helper — NOT part of the shipped
-// controller — implementing just enough of docs/implementation/phone-http-api.md
-// to exercise the controller's Add-phone flow and sync loop end to end
-// without a real Android phone available.
+// Command mockphone is a throwaway dev/test helper — its own top-level tool, not part of the
+// shipped controller — implementing just enough of docs/implementation/phone-http-api.md to
+// exercise the controller's Add-phone flow and sync loop end to end without a real Android phone
+// available.
 //
 // Routes implemented: POST/DELETE /api/pair, GET /api/status, GET /api/device,
 // GET /api/config, GET /api/build-info, GET /api/clips, GET

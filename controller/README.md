@@ -42,11 +42,12 @@ a message and exits immediately rather than running a duplicate instance.
 
 ## Testing without a real phone
 
-`cmd/mockphone` is a throwaway HTTP server (not part of the shipped app) implementing just
-enough of `phone-http-api.md` to exercise pairing + sync:
+[`../tools/mock-phone`](../tools/mock-phone) is a throwaway HTTP server (its own top-level
+module, not part of the shipped app) implementing just enough of `phone-http-api.md` to exercise
+pairing + sync:
 
 ```
-go run ./cmd/mockphone -addr :8091 -invite TESTCODE1234 -clips 3
+go run ../tools/mock-phone/cmd/mockphone -addr :8091 -invite TESTCODE1234 -clips 3
 ```
 
 `internal/integrationtest` has automated tests against an equivalent in-process fake server,

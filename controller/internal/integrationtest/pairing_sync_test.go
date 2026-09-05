@@ -1,10 +1,10 @@
 // Package integrationtest exercises the Add-phone (pairing) flow and the
 // background sync loop end to end against an in-process instance of
-// cmd/mockphone's server (not the shipped mockphone binary — a local
-// http.Server built from the same handlers would require an import cycle
-// with a main package, so this spins up a small equivalent inline). This is
-// how the pairing + sync code was verified without a real Android phone
-// available.
+// tools/mock-phone's server (not the shipped mockphone binary — a local
+// http.Server built from the same handlers would require importing a
+// main package from a separate module, so this spins up a small
+// equivalent inline). This is how the pairing + sync code was verified
+// without a real Android phone available.
 package integrationtest
 
 import (
