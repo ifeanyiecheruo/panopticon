@@ -1,6 +1,12 @@
 package dbstore
 
-import "database/sql"
+import (
+	"context"
+	"database/sql"
+	"errors"
+
+	"panopticon-controller/internal/dbstore/queries"
+)
 
 // ClipState mirrors the three-state lifecycle from HANDOFF-controller-ux.md:
 // active (visible in Gallery) -> trashed (visible in Trash, still on disk) ->
@@ -29,17 +35,38 @@ type Clip struct {
 	Height        int
 }
 
+func clipFromRow(c queries.Clip) Clip {
+	return Clip{
+		PhoneID:       c.PhoneID,
+		Filename:      c.Filename,
+		State:         ClipState(c.State),
+		LocalPath:     c.LocalPath,
+		ThumbnailPath: c.ThumbnailPath,
+		CreatedAtMs:   c.CreatedAtMs,
+		DurationMs:    c.DurationMs,
+		SizeBytes:     c.SizeBytes,
+		Width:         int(c.Width),
+		Height:        int(c.Height),
+	}
+}
+
 // UpsertClip inserts a newly-synced clip, or is a no-op if (phone_id,
 // filename) already exists — the sync loop calls this once per clip
 // discovered via GET /api/clips, and dedupes on filename per
 // phone-http-api.md.
 func (s *Store) UpsertClip(c Clip) error {
-	_, err := s.db.Exec(`
-		INSERT INTO clips (phone_id, filename, state, local_path, thumbnail_path, created_at_ms, duration_ms, size_bytes, width, height)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(phone_id, filename) DO NOTHING`,
-		c.PhoneID, c.Filename, c.State, c.LocalPath, c.ThumbnailPath, c.CreatedAtMs, c.DurationMs, c.SizeBytes, c.Width, c.Height)
-	return err
+	return s.q.UpsertClip(context.Background(), queries.UpsertClipParams{
+		PhoneID:       c.PhoneID,
+		Filename:      c.Filename,
+		State:         string(c.State),
+		LocalPath:     c.LocalPath,
+		ThumbnailPath: c.ThumbnailPath,
+		CreatedAtMs:   c.CreatedAtMs,
+		DurationMs:    c.DurationMs,
+		SizeBytes:     c.SizeBytes,
+		Width:         int64(c.Width),
+		Height:        int64(c.Height),
+	})
 }
 
 // ClipExists reports whether (phoneID, filename) is already indexed —
@@ -47,8 +74,10 @@ func (s *Store) UpsertClip(c Clip) error {
 // (including one the user has since trashed/purged; per the data model,
 // resync must never resurrect a purged clip's file).
 func (s *Store) ClipExists(phoneID, filename string) (bool, error) {
-	var n int
-	err := s.db.QueryRow(`SELECT COUNT(1) FROM clips WHERE phone_id = ? AND filename = ?`, phoneID, filename).Scan(&n)
+	n, err := s.q.ClipExists(context.Background(), queries.ClipExistsParams{
+		PhoneID:  phoneID,
+		Filename: filename,
+	})
 	return n > 0, err
 }
 
@@ -56,46 +85,33 @@ func (s *Store) ClipExists(phoneID, filename string) (bool, error) {
 // optionally filtered to one phone (phoneID == "" means every phone),
 // newest first.
 func (s *Store) ListClips(phoneID string, state ClipState) ([]Clip, error) {
-	query := `SELECT phone_id, filename, state, local_path, thumbnail_path, created_at_ms, duration_ms, size_bytes, width, height FROM clips WHERE 1=1`
-	var args []any
-	if phoneID != "" {
-		query += ` AND phone_id = ?`
-		args = append(args, phoneID)
-	}
-	if state != "" {
-		query += ` AND state = ?`
-		args = append(args, state)
-	}
-	query += ` ORDER BY created_at_ms DESC`
-
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.q.ListClips(context.Background(), queries.ListClipsParams{
+		PhoneID: phoneID,
+		State:   string(state),
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []Clip
-	for rows.Next() {
-		var c Clip
-		if err := rows.Scan(&c.PhoneID, &c.Filename, &c.State, &c.LocalPath, &c.ThumbnailPath, &c.CreatedAtMs, &c.DurationMs, &c.SizeBytes, &c.Width, &c.Height); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
+	out := make([]Clip, len(rows))
+	for i, r := range rows {
+		out[i] = clipFromRow(r)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // GetClip looks up a single clip by its composite key.
 func (s *Store) GetClip(phoneID, filename string) (Clip, error) {
-	var c Clip
-	err := s.db.QueryRow(`
-		SELECT phone_id, filename, state, local_path, thumbnail_path, created_at_ms, duration_ms, size_bytes, width, height
-		FROM clips WHERE phone_id = ? AND filename = ?`, phoneID, filename).
-		Scan(&c.PhoneID, &c.Filename, &c.State, &c.LocalPath, &c.ThumbnailPath, &c.CreatedAtMs, &c.DurationMs, &c.SizeBytes, &c.Width, &c.Height)
-	if err == sql.ErrNoRows {
+	row, err := s.q.GetClip(context.Background(), queries.GetClipParams{
+		PhoneID:  phoneID,
+		Filename: filename,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
 		return Clip{}, ErrNotFound
 	}
-	return c, err
+	if err != nil {
+		return Clip{}, err
+	}
+	return clipFromRow(row), nil
 }
 
 // SetClipState transitions a clip's state (Trash/Restore/Delete per the
@@ -103,20 +119,15 @@ func (s *Store) GetClip(phoneID, filename string) (Clip, error) {
 // responsible for actually removing the on-disk file before transitioning
 // to purged; this method only updates the DB row.
 func (s *Store) SetClipState(phoneID, filename string, state ClipState) error {
-	_, err := s.db.Exec(`UPDATE clips SET state = ? WHERE phone_id = ? AND filename = ?`, state, phoneID, filename)
-	return err
+	return s.q.SetClipState(context.Background(), queries.SetClipStateParams{
+		State:    string(state),
+		PhoneID:  phoneID,
+		Filename: filename,
+	})
 }
 
 // DiskUsageBytes sums size_bytes across active+trashed clips (purged clips
 // have no file left to count) — the aggregate disk-usage stat on Fleet.
 func (s *Store) DiskUsageBytes(phoneID string) (int64, error) {
-	query := `SELECT COALESCE(SUM(size_bytes),0) FROM clips WHERE state IN ('active','trashed')`
-	var args []any
-	if phoneID != "" {
-		query += ` AND phone_id = ?`
-		args = append(args, phoneID)
-	}
-	var total int64
-	err := s.db.QueryRow(query, args...).Scan(&total)
-	return total, err
+	return s.q.DiskUsageBytes(context.Background(), phoneID)
 }

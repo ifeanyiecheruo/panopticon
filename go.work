@@ -1,0 +1,8 @@
+go 1.26.8
+
+use (
+	./controller
+	./tools/dbstore
+	./tools/go-deps
+	./tools/mock-phone
+)

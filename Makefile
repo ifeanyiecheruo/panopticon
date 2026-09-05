@@ -13,7 +13,8 @@
         device-info \
         install-tools install-tools-nvm-node install-tools-wails install-tools-vite \
         install-tools-shims install-tools-android-sdk \
-        phone-app-local-properties
+        phone-app-local-properties \
+        generate
 
 .DEFAULT_GOAL := help
 
@@ -198,6 +199,31 @@ install-tools-android-sdk:
 	$(SDKMANAGER_INVOKE) "platform-tools" "platforms;android-34" "build-tools;34.0.0"; \
 	echo "==> Android SDK installed at $(ANDROID_SDK_ROOT_POSIX)."
 
+## Generate
+
+# One .stamp per *.gen.json sidecar found anywhere under controller/ - e.g.
+# controller/internal/dbstore/queries.gen.json, which drives sqlc+goose codegen for the SQLite
+# store (see tools/dbstore, tools/go-deps, and that directory's own db.dbstore.json/README).
+# Ported from ../morsel's Makefile (see its own comments for the fuller original) - go-deps get
+# expands each sidecar's declared inputs into real file paths, so the .stamp file's prerequisite
+# list is always accurate and `make generate` only reruns a generator whose actual inputs changed.
+_GEN_JSON_FILES := $(shell find controller -name '*.gen.json' 2>/dev/null)
+_GEN_STAMP_FILES := $(addsuffix .stamp,$(_GEN_JSON_FILES))
+
+generate: $(_GEN_STAMP_FILES) ## Regenerate sqlc/goose-derived code (stamp-tracked; only reruns what changed)
+
+# GOPATH/TMP/TEMP/GOCACHE are passed explicitly (not relied on via `export` above) because this
+# $(shell ...) call runs at Makefile-parse time, before this make actually applies its own
+# `export` lines to $(shell)'s environment (confirmed empirically - the same `export GOPATH` that
+# reliably reaches every *recipe* shell below is invisible to a parse-time $(shell go ...) call).
+# One more entry in the same "don't trust this make's env handling" family - see docs/QUIRKS.md.
+define gen-stamp-rule
+$(1): $(shell GOPATH="$(GOPATH)" TMP="$(TMP)" TEMP="$(TEMP)" GOCACHE="$(GOCACHE)" go run ./tools/go-deps get $(1:.stamp=))
+	go run ./tools/go-deps gen $(1:.stamp=)
+
+endef
+$(foreach s,$(_GEN_STAMP_FILES),$(eval $(call gen-stamp-rule,$(s))))
+
 ## Build
 
 build: build-phone build-controller ## Build both apps
@@ -220,7 +246,7 @@ else
 	@printf 'sdk.dir=%s\n' "$(ANDROID_SDK_ROOT_POSIX)" > phone-app/local.properties
 endif
 
-build-controller: ## Build the controller production binary (wails build)
+build-controller: generate ## Build the controller production binary (wails build)
 	@command -v wails >/dev/null 2>&1 || { echo "wails not found on PATH - run 'make install-tools' (installs it privately under .local/), or: go install github.com/wailsapp/wails/v2/cmd/wails@latest" >&2; exit 1; }
 	cd controller && wails build
 

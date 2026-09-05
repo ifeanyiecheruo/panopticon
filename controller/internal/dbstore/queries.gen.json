@@ -1,0 +1,5 @@
+{
+  "cmd": "go run ../../../tools/dbstore generate --project db.dbstore.json",
+  "inputs": ["db.dbstore.json", "schemas", "queries/*.sql"],
+  "outputs": ["queries"]
+}

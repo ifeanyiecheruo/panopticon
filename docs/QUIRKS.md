@@ -1,4 +1,4 @@
-# Quirks (panopticon phone-app)
+# Quirks
 
 This is a **new** project doc, separate from `panopticon-prototype/QUIRKS.md` (the old,
 abandoned prototype's findings). Same format: what we assumed → what actually happens → what we
@@ -285,3 +285,43 @@ auto-written by Android Studio, silently relied upon rather than actually unders
 resolves for `install-tools-android-sdk`, and both `build-phone` and `test-phone` depend on it -
 cheap enough (one line) to just always rewrite rather than track staleness.
 **Where:** `Makefile` (root), the `phone-app-local-properties` target.
+
+### `go run <relative-path>` refuses to cross a module boundary, even to a directory with its own go.mod
+**Assumed:** `go run ../some/other/dir` (a plain filesystem path, not an import path) builds and
+runs whatever package lives at that path, the same way it would if that path were a subdirectory
+of the calling module.
+**Actually:** when the *target* directory has its own `go.mod` (i.e. it's a different module, as
+every `tools/*` module here deliberately is - see the "tools/ as separate modules" convention),
+`go run`/`go build` refuse outright: `directory ...\tools\dbstore outside main module or its
+selected dependencies`. This is true even for a path that's a perfectly valid, buildable module on
+its own - the restriction is specifically about crossing a module boundary via a bare relative
+path, and it bit both `controller/internal/dbstore/queries.gen.json`'s declared generator command
+(`go run ../../../tools/dbstore ...`) and `tools/mock-phone`'s own documented usage from
+`controller/README.md` (`go run ../tools/mock-phone/cmd/mockphone`) - the latter had apparently
+never actually been run exactly as documented until this was diagnosed.
+**Workaround:** a `go.work` file at the repo root listing every module (`controller`,
+`tools/dbstore`, `tools/go-deps`, `tools/mock-phone`) makes `go run`/`go build` workspace-aware,
+resolving relative paths across any module the workspace lists rather than just the calling
+module's own tree. Committed (not gitignored, unlike most projects' `go.work`) since `make
+generate` genuinely depends on it existing, not just as a per-developer convenience.
+**Where:** `go.work` (root); `controller/internal/dbstore/queries.gen.json`;
+`tools/dbstore/README.md`, `tools/go-deps/README.md`.
+
+### A parse-time `$(shell go ...)` call doesn't see this make's own `export`s, even though every recipe does
+**Assumed:** once a Makefile variable is `export`ed, every subsequent `$(shell ...)` call in that
+same Makefile sees it in its environment - recipe-time or parse-time, no difference.
+**Actually:** confirmed the opposite empirically: a `$(shell go ...)` call used to compute a target's
+prerequisite list (i.e. evaluated while Make is still reading the Makefile, via `$(eval $(call
+...))`) fails with the by-now-familiar `neither GOMODCACHE nor GOPATH is set`, even though the very
+same `export GOPATH := ...` line reliably reaches every ordinary recipe body elsewhere in this same
+file (extensively verified throughout the rest of this Makefile). A minimal repro nailed it down
+further: `$(info $(shell echo $$GOPATH))` placed *after* the `export GOPATH := ...` line still
+prints empty. Whatever this `make` does to apply `export` to a `$(shell)` call's environment, it
+isn't available yet during the file's own top-to-bottom parse pass, only once recipes start running.
+**Workaround:** don't rely on the `export` for a parse-time `$(shell ...)` call - pass the already-
+computed Makefile variables explicitly as an inline environment prefix instead: `$(shell
+GOPATH="$(GOPATH)" TMP="$(TMP)" TEMP="$(TEMP)" GOCACHE="$(GOCACHE)" go run ...)`. The values are
+already known as ordinary Make variables regardless of whether their `export` has "taken" yet, so
+this sidesteps the question entirely.
+**Where:** `Makefile` (root), the `gen-stamp-rule` define (used to compute each `.gen.json.stamp`
+target's prerequisites via `go-deps get`).

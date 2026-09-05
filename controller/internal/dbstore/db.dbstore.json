@@ -1,0 +1,11 @@
+{
+  "engine": "sqlite",
+  "src": {
+    "schemas": "schemas/db",
+    "queries": "queries"
+  },
+  "gen": {
+    "dst": "queries",
+    "package": "queries"
+  }
+}

@@ -68,7 +68,12 @@ rows, and the Gallery/Trash screens reading them back correctly.
   — no CGO/gcc toolchain needed, same reasoning as the old prototype's `node:sqlite` choice).
   Tables: `identity` (controller's own Ed25519 keypair), `phones` (paired phones + bearer
   token + sync cursor), `clips` (active/trashed/purged lifecycle), and an as-yet-unused
-  `calibration` table (schema reserved, not populated by this slice).
+  `calibration` table (schema reserved, not populated by this slice). Schema migrations are
+  goose-managed (`internal/dbstore/schemas/db/*.sql`, applied automatically on every `Open()`)
+  and query code is sqlc-generated (`internal/dbstore/queries/*.sql` → `queries/*.sql.go`) —
+  see `internal/dbstore/README.md` for what's hand-written vs. generated and how to add a
+  migration or a query. `Store` itself (`db.go`/`identity.go`/`phones.go`/`clips.go`) is the
+  hand-written domain-shaped wrapper on top, unchanged from a caller's perspective.
 - `internal/identity` — generates/persists the controller's Ed25519 keypair.
 - `internal/phoneapi` — HTTP client for the phone routes, one explicit timeout per call
   type, sentinel errors (`ErrUnreachable`, `ErrUnauthorized`, `ErrInvalidInvite`,
