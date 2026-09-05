@@ -67,6 +67,7 @@ class PanopticonService : Service() {
                     appConfig = app.appConfig,
                     appState = app.appState,
                     clipStore = app.clipStore,
+                    calibrationRunner = app.calibrationRunner,
                     onModeChanged = ::handleModeChanged,
                 )
                 server.start()

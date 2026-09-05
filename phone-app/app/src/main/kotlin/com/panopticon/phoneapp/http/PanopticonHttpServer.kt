@@ -2,7 +2,9 @@ package com.panopticon.phoneapp.http
 
 import android.content.Context
 import android.util.Log
+import com.panopticon.phoneapp.calibration.CalibrationRunner
 import com.panopticon.phoneapp.clips.ClipStore
+import com.panopticon.phoneapp.http.routes.calibrationRoutes
 import com.panopticon.phoneapp.http.routes.clipRoutes
 import com.panopticon.phoneapp.http.routes.deviceRoutes
 import com.panopticon.phoneapp.http.routes.modeRoutes
@@ -45,6 +47,7 @@ class PanopticonHttpServer(
     private val appConfig: AppConfig,
     private val appState: AppState,
     private val clipStore: ClipStore,
+    private val calibrationRunner: CalibrationRunner,
     private val onModeChanged: (AppMode) -> Unit,
 ) {
     private var engine: ApplicationEngine? = null
@@ -121,6 +124,7 @@ class PanopticonHttpServer(
             deviceRoutes(androidContext, appConfig, appState, clipStore)
             modeRoutes(appState, onModeChanged)
             clipRoutes(clipStore)
+            calibrationRoutes(calibrationRunner)
         }
     }
 }

@@ -6,8 +6,9 @@ background whether or not a window is open.
 
 This is a **vertical slice**, not the full app — see "What's deferred" below. It implements
 end to end: project scaffold, tray presence, embedded SQLite state, the Add-phone pairing
-flow, a Fleet screen, a background sync loop, and a Gallery/Trash. It does not implement
-live camera preview, calibration, or the eviction-probe loop.
+flow, a Fleet screen, a background sync loop, a Gallery/Trash, the manufacturer+model
+calibration store (opportunistic ingest on pair / Phone-detail open, plus a Phone-detail
+re-run). It does not implement live camera preview or the eviction-probe loop.
 
 Reference docs (read-only, live in the parent `panopticon` repo):
 - `../docs/implementation/phone-http-api.md` — the phone-side HTTP contract this controller
@@ -67,8 +68,9 @@ rows, and the Gallery/Trash screens reading them back correctly.
 - `internal/dbstore` — SQLite schema + typed queries (`modernc.org/sqlite`, a pure-Go driver
   — no CGO/gcc toolchain needed, same reasoning as the old prototype's `node:sqlite` choice).
   Tables: `identity` (controller's own Ed25519 keypair), `phones` (paired phones + bearer
-  token + sync cursor), `clips` (active/trashed/purged lifecycle), and an as-yet-unused
-  `calibration` table (schema reserved, not populated by this slice). Schema migrations are
+  token + sync cursor), `clips` (active/trashed/purged lifecycle), and `calibration`
+  (manufacturer+model → last result JSON + source phone + timestamp; see `calibration.go`).
+  Schema migrations are
   goose-managed (`internal/dbstore/schemas/db/*.sql`, applied automatically on every `Open()`)
   and query code is sqlc-generated (`internal/dbstore/queries/*.sql` → `queries/*.sql.go`) —
   see `internal/dbstore/README.md` for what's hand-written vs. generated and how to add a
@@ -79,7 +81,13 @@ rows, and the Gallery/Trash screens reading them back correctly.
   type, sentinel errors (`ErrUnreachable`, `ErrUnauthorized`, `ErrInvalidInvite`,
   `ErrEvicted`) so callers can react distinctly rather than pattern-matching error strings.
 - `internal/pairing` — the Add-phone flow: `POST /api/pair` with this controller's identity,
-  classifying failures into the two distinct UI messages the handoff doc calls for.
+  classifying failures into the two distinct UI messages the handoff doc calls for. Also does
+  the opportunistic calibration ingest right after a successful pair.
+- `internal/calibration` — the manufacturer+model calibration data model
+  (HANDOFF-controller-ux.md): `ModelKey`, `Lookup` (the Phone-detail summary view),
+  `IngestOpportunistic` (pull `GET /api/calibration/result`, store only if we don't already
+  hold something fresher), `StoreResult` (unconditional overwrite, for a manual re-run).
+  `internal/phoneapi/calibration.go` is the matching HTTP client surface.
 - `internal/syncer` — per-phone background poll loop (`syncPollInterval` in `main.go`, 30s by
   default). Downloads new clips + thumbnails, advances the sync cursor only after each clip
   is durably written and indexed (crash-safe/idempotent), treats a 404 on download as a
@@ -121,9 +129,11 @@ rows, and the Gallery/Trash screens reading them back correctly.
 Per the task's explicit scope cut — these are real gaps versus the full handoff doc, not
 oversights:
 
-- **Live preview / adjusters / calibration UI.** Phone detail shows only raw
-  `GET /api/status` + `GET /api/config` JSON instead. The `calibration` DB table exists
-  (schema settled) but nothing populates or reads it yet.
+- **Live preview / adjusters.** Phone detail shows raw `GET /api/status` + `GET /api/config`
+  JSON for those. (Calibration *is* wired now — Phone detail has a real Calibration section:
+  a manufacturer+model lookup with a "Calibration needed" vs. "N/M checks completed · via
+  &lt;phone&gt;" readout, and a Run/Re-run action that drives `/api/calibration/*` and polls
+  progress. See `internal/calibration` + `internal/phoneapi/calibration.go`.)
 - **Eviction-probe loop.** The handoff doc's tombstone-cleanup mechanism (probing
   `/api/clips/:filename/file` on trashed/purged clips until a 404 confirms the phone's ring
   buffer evicted them, then dropping the DB row) is not implemented. `DeleteClipPermanently`

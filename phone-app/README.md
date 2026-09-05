@@ -12,12 +12,17 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   embedded Ktor/Netty HTTP server.
 - **HTTP API** - implements a subset of `phone-http-api.md`: pairing (`POST`/`DELETE /api/pair`),
   device identity/status/config (`/api/device`, `/api/build-info`, `/api/status`, `/api/config`),
-  mode (`/api/mode` - `live` is a stub), and clip sync (`/api/clips`, `.../file`,
-  `.../thumbnail`, `DELETE .../:filename`). Every route except `POST /api/pair` requires
-  `Authorization: Bearer <token>`.
+  mode (`/api/mode` - `live` is a stub), clip sync (`/api/clips`, `.../file`, `.../thumbnail`,
+  `DELETE .../:filename`), and device-wide calibration (`POST /api/calibration/start`,
+  `GET /api/calibration/status`, `DELETE /api/calibration/:runId`, `GET /api/calibration/result`).
+  Every route except `POST /api/pair` requires `Authorization: Bearer <token>`.
+- **Calibration** - `CalibrationRunner` sweeps every camera `CameraManager` reports, walking a
+  fixed ordered set of steps per camera with full camera/step/within-step progress, cancellation,
+  and a last-result JSON persisted to disk (so `GET /api/calibration/result` answers after an app
+  restart without re-running). See the simplification note below for what "measure" means here today.
 - **Compose UI** - Home (device identity, storage, recording status), Connect (generate an
   invite code + show this phone's LAN address), Gallery (list clips, play via the system video
-  viewer, delete).
+  viewer, delete), Calibrate (run/re-run a sweep, live progress, per-camera per-check breakdown).
 
 ## Deliberate simplifications (see code comments for exact locations)
 
@@ -30,6 +35,14 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 - **`MediaRecorder`, not raw `MediaCodec`+`MediaMuxer`** - simpler for this slice; means no
   control over keyframe interval or explicit sync-frame requests (`MediaRecorder` doesn't expose
   either). See `docs/QUIRKS.md` for what this meant for reconfirming old keyframe-cadence findings.
+- **Calibration records _declared_ Camera2 capabilities, not empirically measured ones.** Each
+  check reads a `CameraCharacteristics` value and reports it as both `declared` and `measured`
+  with `ok = true`; the run/step/progress state machine, persistence, cancellation and the whole
+  wire contract are real. Opening a `CameraCaptureSession`, applying each control, and flagging
+  where the HAL's effective value diverges from what it declared (the actual point of
+  calibration) is deferred - it needs real-hardware iteration against the digital-zoom /
+  `SCALER_CROP_REGION` findings in the old prototype's `QUIRKS.md`. Calibration does **not** tear
+  down the recording pipeline (reading characteristics needs no exclusive camera access).
 - **Full `CameraCaptureSession` teardown+recreate every rotation** rather than a lighter in-place
   surface swap - simpler to reason about, doubles as a session-reconfigure stress test.
 - **Bottom nav bar instead of the mock's left icon rail + top status pill** - visual language
@@ -40,10 +53,11 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 
 ## Explicitly out of scope for this slice (not started)
 
-Calibration (`/api/calibration/*`), live HLS view (`/live/*`, `/api/live/*`), digital zoom /
-manual Camera2 controls (`/api/camera/*`), multi-camera switching (`/api/cameras*`), the
-Controllers/Configuration/Calibrate screens, QR-code invite display (code/URL are shown as plain
-text, which is enough for manual entry).
+Live HLS view (`/live/...`, `/api/live/...`), digital zoom / manual Camera2 controls
+(`/api/camera/...`), multi-camera switching (`/api/cameras`), the Controllers/Configuration
+screens, QR-code invite display (code/URL are shown as plain text, which is enough for manual
+entry). Calibration's routes + Calibrate screen exist now (see above) - what's out of scope is
+the empirical measure-vs-declared probing, noted under "Deliberate simplifications".
 
 ## Build / install / run
 

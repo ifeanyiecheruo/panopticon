@@ -4,9 +4,13 @@ import {main} from '../models';
 
 export function AddPhone(arg1:string,arg2:string):Promise<main.AddPhoneResult>;
 
+export function CancelCalibration(arg1:string,arg2:string):Promise<void>;
+
 export function DeleteClipPermanently(arg1:string,arg2:string):Promise<void>;
 
 export function EmptyTrash():Promise<number>;
+
+export function GetCalibrationProgress(arg1:string,arg2:string):Promise<main.CalibrationProgressResult>;
 
 export function GetPhoneDetail(arg1:string):Promise<main.PhoneDetailView>;
 
@@ -25,5 +29,7 @@ export function RequestQuit():Promise<void>;
 export function RestoreClip(arg1:string,arg2:string):Promise<void>;
 
 export function ShowWindow():Promise<void>;
+
+export function StartCalibration(arg1:string):Promise<main.CalibrationStartResult>;
 
 export function TrashClip(arg1:string,arg2:string):Promise<void>;

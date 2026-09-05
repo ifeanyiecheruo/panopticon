@@ -7,6 +7,18 @@ starting point for whoever picks this up next (a fresh session, most likely) to 
 remaining feature slices. Read this first; it links out rather than duplicating detail that
 already lives elsewhere and would drift.
 
+**Slices added since the initial handoff:**
+
+- **Calibration (both sides).** phone-app has the full `/api/calibration/*` route set + a
+  `CalibrationRunner` state machine (device-wide sweep, per-camera/step/within-step progress,
+  cancellation, on-disk last-result) + a Calibrate screen. controller has the
+  manufacturer+model `calibration` store, opportunistic ingest on pair / Phone-detail open,
+  and a Phone-detail Calibration section with a Run/Re-run action. **Deferred within this
+  slice:** the empirical measure-vs-declared probe — checks currently snapshot declared
+  `CameraCharacteristics` and always pass (see `phone-app/README.md`'s "Deliberate
+  simplifications"). That deepening is the natural next calibration pass and has the old
+  prototype's `SCALER_CROP_REGION`/digital-zoom `QUIRKS.md` findings to re-verify against.
+
 ## Where things live
 
 Single git repo (`panopticon/`, monorepo — see "Explicit decisions" below), plain linear
@@ -86,10 +98,8 @@ Worth calling out specifically: several deferred features require coordinated wo
 phone-app and controller together**, not just one side in isolation — these are natural
 candidates for "the next slice":
 
-- **Calibration.** phone-app has no `/api/calibration/*` routes or Calibrate screen at all yet;
-  controller has a reserved-but-unpopulated `calibration` DB table and no UI. The manufacturer+
-  model-keyed shared-resource design is fully specified in `HANDOFF-controller-ux.md`'s
-  "Calibration data model" section — that design work is done, only implementation is missing.
+- ~~**Calibration.**~~ **Implemented** (both sides) — see "Slices added since the initial
+  handoff" above. What remains is the empirical measure-vs-declared probe, called out there.
 - **Live HLS view.** phone-app's `POST /api/mode {"mode":"live"}` is a stub (flips the mode flag,
   no real encoder/relay); controller has no live-preview UI. `ARCHITECTURE.md`-equivalent design
   detail for this doesn't exist yet in this project's own docs (the *old prototype* did build a
@@ -141,10 +151,8 @@ own README and don't need cross-project design work — just implementation.
 
 ## Suggested next steps
 
-No hard ordering, but a reasonable path: **calibration** is the most self-contained of the
-cross-cutting items (clearest existing design doc, smallest phone-app surface — one device-wide
-sweep endpoint plus a handful of measurement steps) and would exercise both sides' generated-
-code/tooling setup without needing new architecture. **Motion-gated recording** is phone-app-only
+No hard ordering. **Calibration** is done as a slice (above); its remaining piece is the
+empirical measure-vs-declared probe. **Motion-gated recording** is phone-app-only
 and unblocks removing the biggest "deliberate simplification" flagged in that project's README.
 Live HLS view is almost certainly the largest single piece of remaining work (real-time muxing,
 adaptive bitrate, hls.js integration on the controller frontend) — worth its own dedicated design

@@ -1,6 +1,8 @@
 package com.panopticon.phoneapp
 
 import android.app.Application
+import com.panopticon.phoneapp.calibration.CalibrationRunner
+import com.panopticon.phoneapp.calibration.CalibrationStore
 import com.panopticon.phoneapp.clips.ClipStore
 import com.panopticon.phoneapp.pairing.ControllerRegistry
 import com.panopticon.phoneapp.pairing.InviteManager
@@ -23,6 +25,8 @@ class PanopticonApplication : Application() {
         private set
     lateinit var clipStore: ClipStore
         private set
+    lateinit var calibrationRunner: CalibrationRunner
+        private set
     val appState = AppState()
 
     override fun onCreate() {
@@ -32,6 +36,7 @@ class PanopticonApplication : Application() {
         inviteManager = InviteManager()
         clipStore = ClipStore(this)
         clipStore.reconcile()
+        calibrationRunner = CalibrationRunner(this, CalibrationStore(this))
     }
 
     companion object {

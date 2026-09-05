@@ -118,6 +118,12 @@ access to every route below (no read-only/view-only notion).
 
 ### Calibration (device-wide)
 
+> **Implemented** in `phone-app` (`CalibrationRunner` + `CalibrationRoutes`) and consumed by
+> `controller` (`internal/calibration`). One caveat vs. this spec's intent: a check currently
+> snapshots the *declared* `CameraCharacteristics` value rather than empirically measuring it,
+> so `measured` mirrors `declared` and results always pass — see `phone-app/README.md`. The
+> route shapes, `runId` lifecycle, progress fields and persistence all match the tables below.
+
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
 | POST | `/api/calibration/start` | — | `{}` | `{ "runId": "cal-8f2a1c", "status": "running", "startedAtMs": 1755270000000, "cameraIds": ["0", "2", "1"] }` | Sweeps every camera the device reports. `409` if already running. |

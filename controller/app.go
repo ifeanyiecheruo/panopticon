@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"panopticon-controller/internal/appdirs"
+	"panopticon-controller/internal/calibration"
 	"panopticon-controller/internal/dbstore"
 	"panopticon-controller/internal/pairing"
 	"panopticon-controller/internal/phoneapi"
@@ -165,16 +166,19 @@ func (a *App) AddPhone(address, code string) AddPhoneResult {
 // ---- Phone detail ----
 
 type PhoneDetailView struct {
-	Phone       PhoneView      `json:"phone"`
+	Phone       PhoneView        `json:"phone"`
 	Status      *phoneapi.Status `json:"status,omitempty"`
-	StatusError string         `json:"statusError,omitempty"`
+	StatusError string           `json:"statusError,omitempty"`
 	Config      *phoneapi.Config `json:"config,omitempty"`
-	ConfigError string         `json:"configError,omitempty"`
+	ConfigError string           `json:"configError,omitempty"`
+	Calibration calibration.View `json:"calibration"`
 }
 
-// GetPhoneDetail is the stub Phone-detail screen's data source: raw
-// GET /api/status + GET /api/config, per this slice's deliberately reduced
-// scope (no live preview/adjusters/calibration UI yet).
+// GetPhoneDetail is the Phone-detail screen's data source: raw
+// GET /api/status + GET /api/config (live preview / adjusters are still out
+// of scope for this slice), plus the manufacturer+model calibration lookup
+// (HANDOFF-controller-ux.md "Calibration data model") — re-checked
+// opportunistically against the phone on every open.
 func (a *App) GetPhoneDetail(phoneID string) (PhoneDetailView, error) {
 	phone, err := a.store.GetPhone(phoneID)
 	if err != nil {
@@ -216,7 +220,101 @@ func (a *App) GetPhoneDetail(phoneID string) (PhoneDetailView, error) {
 		detail.Config = &config
 	}
 
+	// Re-check calibration against the phone opportunistically (cheap: one
+	// GET that 404s fast if the phone has nothing). Never fatal — a failure
+	// just means we show whatever's already cached for this model.
+	if detail.Phone.Reachable {
+		if _, err := calibration.IngestOpportunistic(a.ctxOrBackground(), a.store, phone); err != nil {
+			log.Printf("phone detail: calibration re-check for %s: %v", phoneID, err)
+		}
+	}
+	calView, err := calibration.Lookup(a.store, phone)
+	if err != nil {
+		log.Printf("phone detail: calibration lookup for %s: %v", phoneID, err)
+	}
+	detail.Calibration = calView
+
 	return detail, nil
+}
+
+// ---- Calibration (re-run driven from Phone detail) ----
+
+type CalibrationStartResult struct {
+	OK      bool   `json:"ok"`
+	Outcome string `json:"outcome"` // "ok" | "running" | "unreachable" | "other"
+	RunID   string `json:"runId,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// StartCalibration triggers a device-wide sweep on one phone (Phone detail's
+// "Run calibration" / "Re-run" action). Poll GetCalibrationProgress with the
+// returned runId; the completed result is ingested into the model-keyed
+// store automatically once the sweep finishes.
+func (a *App) StartCalibration(phoneID string) CalibrationStartResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return CalibrationStartResult{Outcome: "other", Message: err.Error()}
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+	resp, err := client.StartCalibration(a.ctxOrBackground())
+	switch {
+	case err == nil:
+		return CalibrationStartResult{OK: true, Outcome: "ok", RunID: resp.RunID}
+	case errors.Is(err, phoneapi.ErrCalibrationRunning):
+		return CalibrationStartResult{Outcome: "running", Message: "A calibration sweep is already running on this phone."}
+	case errors.Is(err, phoneapi.ErrUnreachable):
+		return CalibrationStartResult{Outcome: "unreachable", Message: "Could not reach the phone."}
+	default:
+		return CalibrationStartResult{Outcome: "other", Message: err.Error()}
+	}
+}
+
+type CalibrationProgressResult struct {
+	OK       bool   `json:"ok"`
+	Error    string `json:"error,omitempty"`
+	Progress *phoneapi.CalibrationProgress `json:"progress,omitempty"`
+	// Stored is set true on the poll where a just-completed sweep's result was
+	// ingested into the model-keyed calibration store.
+	Stored bool `json:"stored"`
+}
+
+// GetCalibrationProgress polls one phone's sweep. When it reports "completed"
+// this also pulls the full result and writes it under the phone's
+// manufacturer+model key (a manual re-run always overwrites, per the data
+// model).
+func (a *App) GetCalibrationProgress(phoneID, runID string) CalibrationProgressResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return CalibrationProgressResult{Error: err.Error()}
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+	prog, err := client.CalibrationStatusCall(a.ctxOrBackground(), runID)
+	if err != nil {
+		return CalibrationProgressResult{Error: err.Error()}
+	}
+
+	res := CalibrationProgressResult{OK: true, Progress: &prog}
+	if prog.Status == "completed" {
+		result, raw, rerr := client.CalibrationResultRaw(a.ctxOrBackground())
+		if rerr != nil {
+			log.Printf("calibration progress: fetch completed result for %s: %v", phoneID, rerr)
+		} else if err := calibration.StoreResult(a.store, phone, result, raw); err != nil {
+			log.Printf("calibration progress: store result for %s: %v", phoneID, err)
+		} else {
+			res.Stored = true
+		}
+	}
+	return res
+}
+
+// CancelCalibration cooperatively stops an in-progress sweep on one phone.
+func (a *App) CancelCalibration(phoneID, runID string) error {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return err
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+	return client.CancelCalibration(a.ctxOrBackground(), runID)
 }
 
 // ---- Gallery / Trash ----

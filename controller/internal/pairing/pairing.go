@@ -9,7 +9,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 
+	"panopticon-controller/internal/calibration"
 	"panopticon-controller/internal/dbstore"
 	"panopticon-controller/internal/identity"
 	"panopticon-controller/internal/phoneapi"
@@ -116,6 +118,17 @@ func AddPhone(ctx context.Context, store *dbstore.Store, address, inviteCode str
 	}
 	if err := store.InsertPhone(rec); err != nil {
 		return Result{}, fmt.Errorf("save paired phone: %w", err)
+	}
+
+	// Opportunistic calibration ingest, per HANDOFF-controller-ux.md's data
+	// model: if this phone already has a persisted sweep result, pull it now
+	// so its model is calibrated for the whole fleet without anyone running a
+	// sweep. Best-effort — a phone that never calibrated, or dropped off wifi
+	// right after pairing, just leaves this for the next Phone-detail open.
+	if ingested, err := calibration.IngestOpportunistic(ctx, store, rec); err != nil {
+		log.Printf("pairing: opportunistic calibration ingest for %s: %v", phoneID, err)
+	} else if ingested {
+		log.Printf("pairing: ingested calibration result from %s for model %q", phoneID, calibration.ModelKey(manufacturer, model))
 	}
 
 	return Result{PhoneID: phoneID, Name: name, Manufacturer: manufacturer, Model: model}, nil

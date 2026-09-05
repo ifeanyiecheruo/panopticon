@@ -38,11 +38,44 @@ type fakePhone struct {
 	tokens      map[string]bool
 	clips       []fakeClip
 	evictedName string // if set, this filename 404s on download even though listed
+
+	manufacturer string // defaults to "Google" if empty
+	model        string // defaults to "Pixel 6" if empty
+	phoneName    string // defaults to "Test Phone" if empty
+
+	// calibrationResult, if non-empty, is served verbatim from
+	// GET /api/calibration/result; empty means the phone 404s it (never
+	// calibrated).
+	calibrationResult string
+	// calRunning drives a faked sweep: POST /start sets it, GET /status
+	// reports "running" until calStatusPolls polls have happened, then
+	// "completed".
+	calRunID       string
+	calStatusPolls int
 }
 
 func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePhone) {
 	t.Helper()
 	fp := &fakePhone{invite: invite, tokens: make(map[string]bool)}
+
+	devManufacturer := func() string {
+		if fp.manufacturer != "" {
+			return fp.manufacturer
+		}
+		return "Google"
+	}
+	devModel := func() string {
+		if fp.model != "" {
+			return fp.model
+		}
+		return "Pixel 6"
+	}
+	devName := func() string {
+		if fp.phoneName != "" {
+			return fp.phoneName
+		}
+		return "Test Phone"
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/pair", func(w http.ResponseWriter, r *http.Request) {
@@ -64,11 +97,69 @@ func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePho
 		writeJSON(w, map[string]any{
 			"controllerId": "ctl_1",
 			"token":        token,
-			"phone":        map[string]string{"phoneId": "ph_test1", "name": "Test Phone"},
+			// phoneId keyed off the invite so two fake phones in one test
+			// don't collide on the controller's phones-table primary key.
+			"phone": map[string]string{"phoneId": "ph_" + fp.invite, "name": devName()},
 		})
 	})
 	mux.HandleFunc("/api/device", authed(fp, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]string{"manufacturer": "Google", "model": "Pixel 6", "device": "test"})
+		writeJSON(w, map[string]string{"manufacturer": devManufacturer(), "model": devModel(), "device": "test"})
+	}))
+	mux.HandleFunc("/api/calibration/result", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+		fp.mu.Lock()
+		body := fp.calibrationResult
+		fp.mu.Unlock()
+		if body == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	mux.HandleFunc("/api/calibration/start", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+		fp.mu.Lock()
+		defer fp.mu.Unlock()
+		if fp.calRunID != "" {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		fp.calRunID = "cal-fake1"
+		fp.calStatusPolls = 0
+		writeJSON(w, map[string]any{"runId": fp.calRunID, "status": "running", "startedAtMs": 1, "cameraIds": []string{"0"}})
+	}))
+	mux.HandleFunc("/api/calibration/status", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+		fp.mu.Lock()
+		defer fp.mu.Unlock()
+		if fp.calRunID == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		fp.calStatusPolls++
+		status := "running"
+		if fp.calStatusPolls >= 2 {
+			status = "completed"
+			// A finished sweep is what the phone would now persist as its result.
+			if fp.calibrationResult == "" {
+				fp.calibrationResult = sampleCalibrationResult
+			}
+		}
+		writeJSON(w, map[string]any{
+			"runId": fp.calRunID, "status": status, "currentCameraId": "0",
+			"camerasCompleted": 1, "camerasTotal": 1, "currentStep": "zoom-quality",
+			"stepsCompleted": 1, "stepsTotal": 2,
+			"progressWithinStep": map[string]int{"index": 15, "total": 15}, "startedAtMs": 1,
+		})
+	}))
+	mux.HandleFunc("/api/calibration/", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+		// DELETE /api/calibration/:runId
+		fp.mu.Lock()
+		defer fp.mu.Unlock()
+		if fp.calRunID == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		fp.calRunID = ""
+		writeJSON(w, map[string]bool{"cancelled": true})
 	}))
 	mux.HandleFunc("/api/status", authed(fp, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{

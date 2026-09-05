@@ -6,6 +6,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -22,6 +23,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.panopticon.phoneapp.PanopticonApplication
+import com.panopticon.phoneapp.ui.calibrate.CalibrateScreen
 import com.panopticon.phoneapp.ui.connect.ConnectScreen
 import com.panopticon.phoneapp.ui.gallery.GalleryScreen
 import com.panopticon.phoneapp.ui.home.HomeScreen
@@ -31,6 +33,7 @@ private sealed class Dest(val route: String, val label: String) {
     object Home : Dest("home", "Home")
     object Connect : Dest("connect", "Connect")
     object Gallery : Dest("gallery", "Gallery")
+    object Calibrate : Dest("calibrate", "Calibrate")
 }
 
 /**
@@ -42,7 +45,7 @@ private sealed class Dest(val route: String, val label: String) {
 @Composable
 fun PanopticonNavHost(app: PanopticonApplication) {
     val navController = rememberNavController()
-    val destinations = listOf(Dest.Home, Dest.Connect, Dest.Gallery)
+    val destinations = listOf(Dest.Home, Dest.Connect, Dest.Gallery, Dest.Calibrate)
 
     Scaffold(
         containerColor = PanopticonColors.bg,
@@ -67,6 +70,7 @@ fun PanopticonNavHost(app: PanopticonApplication) {
                                     Dest.Home -> Icons.Filled.Home
                                     Dest.Connect -> Icons.Filled.Link
                                     Dest.Gallery -> Icons.Filled.PhotoLibrary
+                                    Dest.Calibrate -> Icons.Filled.Tune
                                 },
                                 contentDescription = dest.label,
                             )
@@ -94,6 +98,7 @@ fun PanopticonNavHost(app: PanopticonApplication) {
             composable(Dest.Home.route) { HomeScreen(app) }
             composable(Dest.Connect.route) { ConnectScreen(app) }
             composable(Dest.Gallery.route) { GalleryScreen(app) }
+            composable(Dest.Calibrate.route) { CalibrateScreen(app) }
         }
     }
 }

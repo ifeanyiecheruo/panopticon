@@ -1,3 +1,34 @@
+export namespace calibration {
+	
+	export class View {
+	    modelKey: string;
+	    present: boolean;
+	    checksPassed: number;
+	    checksTotal: number;
+	    calibratedAtMs: number;
+	    sourcePhoneId: string;
+	    sourcePhoneName: string;
+	    viaOtherPhone: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new View(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.modelKey = source["modelKey"];
+	        this.present = source["present"];
+	        this.checksPassed = source["checksPassed"];
+	        this.checksTotal = source["checksTotal"];
+	        this.calibratedAtMs = source["calibratedAtMs"];
+	        this.sourcePhoneId = source["sourcePhoneId"];
+	        this.sourcePhoneName = source["sourcePhoneName"];
+	        this.viaOtherPhone = source["viaOtherPhone"];
+	    }
+	}
+
+}
+
 export namespace main {
 	
 	export class PhoneView {
@@ -72,6 +103,60 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class CalibrationProgressResult {
+	    ok: boolean;
+	    error?: string;
+	    progress?: phoneapi.CalibrationProgress;
+	    stored: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CalibrationProgressResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.error = source["error"];
+	        this.progress = this.convertValues(source["progress"], phoneapi.CalibrationProgress);
+	        this.stored = source["stored"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CalibrationStartResult {
+	    ok: boolean;
+	    outcome: string;
+	    runId?: string;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CalibrationStartResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.outcome = source["outcome"];
+	        this.runId = source["runId"];
+	        this.message = source["message"];
+	    }
+	}
 	export class ClipView {
 	    phoneId: string;
 	    phoneName: string;
@@ -128,6 +213,7 @@ export namespace main {
 	    statusError?: string;
 	    config?: phoneapi.Config;
 	    configError?: string;
+	    calibration: calibration.View;
 	
 	    static createFrom(source: any = {}) {
 	        return new PhoneDetailView(source);
@@ -140,6 +226,7 @@ export namespace main {
 	        this.statusError = source["statusError"];
 	        this.config = this.convertValues(source["config"], phoneapi.Config);
 	        this.configError = source["configError"];
+	        this.calibration = this.convertValues(source["calibration"], calibration.View);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -164,6 +251,69 @@ export namespace main {
 }
 
 export namespace phoneapi {
+	
+	export class CalibrationStepProgress {
+	    index: number;
+	    total: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CalibrationStepProgress(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.index = source["index"];
+	        this.total = source["total"];
+	    }
+	}
+	export class CalibrationProgress {
+	    runId: string;
+	    status: string;
+	    currentCameraId: string;
+	    camerasCompleted: number;
+	    camerasTotal: number;
+	    currentStep: string;
+	    stepsCompleted: number;
+	    stepsTotal: number;
+	    progressWithinStep: CalibrationStepProgress;
+	    startedAtMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CalibrationProgress(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.runId = source["runId"];
+	        this.status = source["status"];
+	        this.currentCameraId = source["currentCameraId"];
+	        this.camerasCompleted = source["camerasCompleted"];
+	        this.camerasTotal = source["camerasTotal"];
+	        this.currentStep = source["currentStep"];
+	        this.stepsCompleted = source["stepsCompleted"];
+	        this.stepsTotal = source["stepsTotal"];
+	        this.progressWithinStep = this.convertValues(source["progressWithinStep"], CalibrationStepProgress);
+	        this.startedAtMs = source["startedAtMs"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	export class Config {
 	    deviceName: string;

@@ -16,9 +16,12 @@ export {
   RestoreClip,
   DeleteClipPermanently,
   EmptyTrash,
+  StartCalibration,
+  GetCalibrationProgress,
+  CancelCalibration,
 } from '../generated/wailsjs/go/main/App';
 
-import type { main, phoneapi } from '../generated/wailsjs/go/models';
+import type { main, phoneapi, calibration } from '../generated/wailsjs/go/models';
 
 export type PhoneView = main.PhoneView;
 export type AddPhoneResult = main.AddPhoneResult;
@@ -27,3 +30,7 @@ export type ParsedInvite = main.ParsedInvite;
 export type PhoneDetailView = main.PhoneDetailView;
 export type PhoneApiConfig = phoneapi.Config;
 export type PhoneApiStatus = phoneapi.Status;
+export type CalibrationView = calibration.View;
+export type CalibrationStartResult = main.CalibrationStartResult;
+export type CalibrationProgressResult = main.CalibrationProgressResult;
+export type CalibrationProgress = phoneapi.CalibrationProgress;

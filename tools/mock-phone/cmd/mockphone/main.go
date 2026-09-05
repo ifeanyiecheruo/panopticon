@@ -5,7 +5,9 @@
 //
 // Routes implemented: POST/DELETE /api/pair, GET /api/status, GET /api/device,
 // GET /api/config, GET /api/build-info, GET /api/clips, GET
-// /api/clips/:filename/file, GET /api/clips/:filename/thumbnail.
+// /api/clips/:filename/file, GET /api/clips/:filename/thumbnail,
+// POST /api/calibration/start, GET /api/calibration/status,
+// DELETE /api/calibration/:runId, GET /api/calibration/result.
 //
 // Usage: go run ./cmd/mockphone [-addr :8091] [-invite XYZF-EBDO-ORMS]
 package main
@@ -53,6 +55,12 @@ type server struct {
 	deviceName   string
 	manufacturer string
 	model        string
+
+	// Calibration: a sweep is faked as a short timed "running" window, after
+	// which /status reports "completed" and /result serves a canned body.
+	calRunID      string
+	calStartedAt  time.Time
+	calSweepDurMs int64
 }
 
 func main() {
@@ -62,11 +70,12 @@ func main() {
 	flag.Parse()
 
 	s := &server{
-		invite:       *invite,
-		controllers:  make(map[string]pairedController),
-		deviceName:   "Mock Porch Cam",
-		manufacturer: "Google",
-		model:        "Pixel 6",
+		invite:        *invite,
+		controllers:   make(map[string]pairedController),
+		deviceName:    "Mock Porch Cam",
+		manufacturer:  "Google",
+		model:         "Pixel 6",
+		calSweepDurMs: 6000,
 	}
 	s.seedClips(*numClips)
 
@@ -78,6 +87,10 @@ func main() {
 	mux.HandleFunc("/api/build-info", s.withAuth(s.handleBuildInfo))
 	mux.HandleFunc("/api/clips", s.withAuth(s.handleClipsList))
 	mux.HandleFunc("/api/clips/", s.withAuth(s.handleClipFileOrThumb))
+	mux.HandleFunc("/api/calibration/start", s.withAuth(s.handleCalibrationStart))
+	mux.HandleFunc("/api/calibration/status", s.withAuth(s.handleCalibrationStatus))
+	mux.HandleFunc("/api/calibration/result", s.withAuth(s.handleCalibrationResult))
+	mux.HandleFunc("/api/calibration/", s.withAuth(s.handleCalibrationCancel)) // DELETE /api/calibration/:runId
 
 	log.Printf("mockphone listening on %s (invite=%s, manufacturer=%s model=%s, %d seeded clips)",
 		*addr, *invite, s.manufacturer, s.model, *numClips)
@@ -278,6 +291,109 @@ func (s *server) handleClipFileOrThumb(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// ---- Calibration (faked as a short timed sweep) ----
+
+func (s *server) handleCalibrationStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.calRunID != "" && time.Since(s.calStartedAt).Milliseconds() < s.calSweepDurMs {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "calibration already running"})
+		return
+	}
+	s.calRunID = "cal-" + randHex(4)
+	s.calStartedAt = time.Now()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"runId":       s.calRunID,
+		"status":      "running",
+		"startedAtMs": s.calStartedAt.UnixMilli(),
+		"cameraIds":   []string{"0", "1"},
+	})
+}
+
+func (s *server) handleCalibrationStatus(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.calRunID == "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	elapsed := time.Since(s.calStartedAt).Milliseconds()
+	done := elapsed >= s.calSweepDurMs
+	status := "running"
+	if done {
+		status = "completed"
+	}
+	// Two cameras, two steps each, 15 within-step checks - progress scales with elapsed time.
+	frac := float64(elapsed) / float64(s.calSweepDurMs)
+	if frac > 1 {
+		frac = 1
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"runId":            s.calRunID,
+		"status":           status,
+		"currentCameraId":  "0",
+		"camerasCompleted": int(frac * 2),
+		"camerasTotal":     2,
+		"currentStep":      "zoom-quality",
+		"stepsCompleted":   int(frac*4) % 2,
+		"stepsTotal":       2,
+		"progressWithinStep": map[string]int{
+			"index": int(frac*15) % 16,
+			"total": 15,
+		},
+		"startedAtMs": s.calStartedAt.UnixMilli(),
+	})
+}
+
+func (s *server) handleCalibrationCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.calRunID == "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	// Force the sweep to look finished so /status stops reporting "running".
+	s.calStartedAt = time.Now().Add(-time.Duration(s.calSweepDurMs) * time.Millisecond)
+	writeJSON(w, http.StatusOK, map[string]bool{"cancelled": true})
+}
+
+func (s *server) handleCalibrationResult(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	runAt := s.calStartedAt
+	s.mu.Unlock()
+	if runAt.IsZero() {
+		runAt = time.Now().Add(-time.Hour) // pretend this mock phone was calibrated an hour ago
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"runId":   "cal-mock",
+		"runAtMs": runAt.UnixMilli(),
+		"cameras": map[string]any{
+			"0": map[string]any{
+				"deviceIdentity": map[string]any{"cameraId": "0", "facing": "back", "focalLengthMm": 6.81},
+				"steps": map[string]any{
+					"crop-region":  map[string]int{"checksTotal": 6, "checksPassed": 6},
+					"zoom-quality": map[string]int{"checksTotal": 15, "checksPassed": 15},
+				},
+			},
+			"1": map[string]any{
+				"deviceIdentity": map[string]any{"cameraId": "1", "facing": "front", "focalLengthMm": 2.74},
+				"steps": map[string]any{
+					"crop-region":  map[string]int{"checksTotal": 6, "checksPassed": 6},
+					"zoom-quality": map[string]int{"checksTotal": 15, "checksPassed": 13},
+				},
+			},
+		},
+	})
 }
 
 func makeFakeThumbnail() []byte {

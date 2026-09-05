@@ -6,12 +6,20 @@ export function AddPhone(arg1, arg2) {
   return window['go']['main']['App']['AddPhone'](arg1, arg2);
 }
 
+export function CancelCalibration(arg1, arg2) {
+  return window['go']['main']['App']['CancelCalibration'](arg1, arg2);
+}
+
 export function DeleteClipPermanently(arg1, arg2) {
   return window['go']['main']['App']['DeleteClipPermanently'](arg1, arg2);
 }
 
 export function EmptyTrash() {
   return window['go']['main']['App']['EmptyTrash']();
+}
+
+export function GetCalibrationProgress(arg1, arg2) {
+  return window['go']['main']['App']['GetCalibrationProgress'](arg1, arg2);
 }
 
 export function GetPhoneDetail(arg1) {
@@ -48,6 +56,10 @@ export function RestoreClip(arg1, arg2) {
 
 export function ShowWindow() {
   return window['go']['main']['App']['ShowWindow']();
+}
+
+export function StartCalibration(arg1) {
+  return window['go']['main']['App']['StartCalibration'](arg1);
 }
 
 export function TrashClip(arg1, arg2) {
