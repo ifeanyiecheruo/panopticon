@@ -1,0 +1,41 @@
+package com.panopticon.phoneapp
+
+import android.app.Application
+import com.panopticon.phoneapp.clips.ClipStore
+import com.panopticon.phoneapp.pairing.ControllerRegistry
+import com.panopticon.phoneapp.pairing.InviteManager
+import com.panopticon.phoneapp.state.AppConfig
+import com.panopticon.phoneapp.state.AppState
+
+/**
+ * Holds the process-wide singletons shared between the foreground service (which owns the
+ * camera + HTTP server) and the Compose UI (which reads/writes the same state over loopback-free
+ * direct calls, since they run in the same process). No DI framework - deliberately simple for
+ * this vertical slice.
+ */
+class PanopticonApplication : Application() {
+
+    lateinit var appConfig: AppConfig
+        private set
+    lateinit var controllerRegistry: ControllerRegistry
+        private set
+    lateinit var inviteManager: InviteManager
+        private set
+    lateinit var clipStore: ClipStore
+        private set
+    val appState = AppState()
+
+    override fun onCreate() {
+        super.onCreate()
+        appConfig = AppConfig(this)
+        controllerRegistry = ControllerRegistry(this)
+        inviteManager = InviteManager()
+        clipStore = ClipStore(this)
+        clipStore.reconcile()
+    }
+
+    companion object {
+        fun from(context: android.content.Context): PanopticonApplication =
+            context.applicationContext as PanopticonApplication
+    }
+}

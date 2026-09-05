@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Placeholder app icon for the vertical slice: a teal camera glyph on dark ground.
+     Not pixel-perfect branding, just enough to identify the app on-device. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#0b1210"
+        android:pathData="M0,0h108v108h-108z" />
+    <path
+        android:fillColor="#4fe3c9"
+        android:pathData="M30,40 h12 l6,-8 h20 l6,8 h4 a8,8 0 0 1 8,8 v28 a8,8 0 0 1 -8,8 h-48 a8,8 0 0 1 -8,-8 v-28 a8,8 0 0 1 8,-8 z" />
+    <path
+        android:fillColor="#0b1210"
+        android:pathData="M54,50 m-12,0 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0" />
+    <path
+        android:fillColor="#4fe3c9"
+        android:pathData="M54,50 m-6,0 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0" />
+</vector>
