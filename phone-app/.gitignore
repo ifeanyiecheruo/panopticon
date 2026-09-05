@@ -1,18 +1,15 @@
-*.iml
-.gradle/
+# Project-specific ignores only - OS/editor/generic-JVM-tooling churn (.DS_Store, .gradle/,
+# .idea/, *.class, .cxx/, etc.) lives in the root .gitignore instead (see its header comment for
+# why, and the one-time `git config core.excludesFile ../.gitignore` this repo needs to see it).
+
 /local.properties
-.idea/
-.DS_Store
 /build
 /captures
-.externalNativeBuildvre
-.cxx
 app/build/
 app/release/
 *.apk
 *.ap_
 *.dex
-*.class
 bin/
 gen/
 out/

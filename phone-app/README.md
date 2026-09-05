@@ -50,14 +50,17 @@ text, which is enough for manual entry).
 Requires a JDK (17+) and the Android SDK. No system-wide Gradle install needed - the wrapper
 (`gradlew`/`gradlew.bat`) is committed.
 
+Build/install/run/test tasks live in the **root Makefile** (`../Makefile`), alongside the
+controller's - run `make help` from the repo root for the full list. From there:
+
 ```
-make build     # ./gradlew assembleDebug
-make install   # + install onto ADB_SERIAL (see Makefile, default is this project's test Pixel 6)
-make run       # + grant camera/notification perms + launch MainActivity
-make test      # ./gradlew test
+make build-phone     # ./gradlew assembleDebug
+make install-phone   # + install onto ADB_SERIAL (default: this project's test Pixel 6)
+make run-phone       # + grant camera/notification perms + launch MainActivity
+make test-phone      # ./gradlew test
 ```
 
-Override the target device: `make install ADB_SERIAL=<serial>` (see `adb devices -l`).
+Override the target device: `make install-phone ADB_SERIAL=<serial>` (see `adb devices -l`).
 
 To reach the HTTP API from your dev machine: `adb -s <serial> forward tcp:8080 tcp:8080`, then
 `curl http://127.0.0.1:8080/api/device` (401 without a token - pair first via the app's Connect
