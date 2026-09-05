@@ -1,0 +1,218 @@
+export namespace main {
+	
+	export class PhoneView {
+	    id: string;
+	    name: string;
+	    manufacturer: string;
+	    model: string;
+	    baseUrl: string;
+	    reachable: boolean;
+	    status: string;
+	    batteryPercent: number;
+	    hasBattery: boolean;
+	    charging: boolean;
+	    lastSeenMs: number;
+	    syncCursorMs: number;
+	    diskUsageBytes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PhoneView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.manufacturer = source["manufacturer"];
+	        this.model = source["model"];
+	        this.baseUrl = source["baseUrl"];
+	        this.reachable = source["reachable"];
+	        this.status = source["status"];
+	        this.batteryPercent = source["batteryPercent"];
+	        this.hasBattery = source["hasBattery"];
+	        this.charging = source["charging"];
+	        this.lastSeenMs = source["lastSeenMs"];
+	        this.syncCursorMs = source["syncCursorMs"];
+	        this.diskUsageBytes = source["diskUsageBytes"];
+	    }
+	}
+	export class AddPhoneResult {
+	    ok: boolean;
+	    outcome: string;
+	    message: string;
+	    phone?: PhoneView;
+	
+	    static createFrom(source: any = {}) {
+	        return new AddPhoneResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.outcome = source["outcome"];
+	        this.message = source["message"];
+	        this.phone = this.convertValues(source["phone"], PhoneView);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ClipView {
+	    phoneId: string;
+	    phoneName: string;
+	    filename: string;
+	    state: string;
+	    createdAtMs: number;
+	    durationMs: number;
+	    sizeBytes: number;
+	    width: number;
+	    height: number;
+	    videoUrl: string;
+	    thumbnailUrl: string;
+	    hasThumbnail: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClipView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.phoneId = source["phoneId"];
+	        this.phoneName = source["phoneName"];
+	        this.filename = source["filename"];
+	        this.state = source["state"];
+	        this.createdAtMs = source["createdAtMs"];
+	        this.durationMs = source["durationMs"];
+	        this.sizeBytes = source["sizeBytes"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.videoUrl = source["videoUrl"];
+	        this.thumbnailUrl = source["thumbnailUrl"];
+	        this.hasThumbnail = source["hasThumbnail"];
+	    }
+	}
+	export class ParsedInvite {
+	    address: string;
+	    code: string;
+	    ok: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ParsedInvite(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.address = source["address"];
+	        this.code = source["code"];
+	        this.ok = source["ok"];
+	    }
+	}
+	export class PhoneDetailView {
+	    phone: PhoneView;
+	    status?: phoneapi.Status;
+	    statusError?: string;
+	    config?: phoneapi.Config;
+	    configError?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PhoneDetailView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.phone = this.convertValues(source["phone"], PhoneView);
+	        this.status = this.convertValues(source["status"], phoneapi.Status);
+	        this.statusError = source["statusError"];
+	        this.config = this.convertValues(source["config"], phoneapi.Config);
+	        this.configError = source["configError"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace phoneapi {
+	
+	export class Config {
+	    deviceName: string;
+	    motionSensitivity: string;
+	    storageCapBytes: number;
+	    ringBufferMaxAgeMs: number;
+	    rotationDegrees: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Config(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deviceName = source["deviceName"];
+	        this.motionSensitivity = source["motionSensitivity"];
+	        this.storageCapBytes = source["storageCapBytes"];
+	        this.ringBufferMaxAgeMs = source["ringBufferMaxAgeMs"];
+	        this.rotationDegrees = source["rotationDegrees"];
+	    }
+	}
+	export class Status {
+	    mode: string;
+	    status: string;
+	    cameraHealthy: boolean;
+	    liveViewers: number;
+	    storageUsedBytes: number;
+	    storageCapBytes: number;
+	    batteryPercent: number;
+	    charging: boolean;
+	    serverTimeMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Status(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.status = source["status"];
+	        this.cameraHealthy = source["cameraHealthy"];
+	        this.liveViewers = source["liveViewers"];
+	        this.storageUsedBytes = source["storageUsedBytes"];
+	        this.storageCapBytes = source["storageCapBytes"];
+	        this.batteryPercent = source["batteryPercent"];
+	        this.charging = source["charging"];
+	        this.serverTimeMs = source["serverTimeMs"];
+	    }
+	}
+
+}
+

@@ -1,6 +1,7 @@
 build/bin
 node_modules
 frontend/dist
+frontend/package.json.md5
 
 # Runtime state: SQLite DB, single-instance lock, downloaded clip archive.
 # Not part of the shipped source — recreated on first run (see internal/appdirs).
