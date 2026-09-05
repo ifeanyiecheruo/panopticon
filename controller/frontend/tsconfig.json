@@ -20,5 +20,5 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "wailsjs"]
+  "include": ["src", "generated/wailsjs"]
 }
