@@ -1,0 +1,9 @@
+build/bin
+node_modules
+frontend/dist
+
+# Runtime state: SQLite DB, single-instance lock, downloaded clip archive.
+# Not part of the shipped source — recreated on first run (see internal/appdirs).
+/data/
+/archive/
+

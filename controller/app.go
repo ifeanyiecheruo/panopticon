@@ -1,0 +1,368 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"log"
+	"os"
+	"sync"
+	"time"
+
+	"panopticon-controller/internal/appdirs"
+	"panopticon-controller/internal/dbstore"
+	"panopticon-controller/internal/pairing"
+	"panopticon-controller/internal/phoneapi"
+	"panopticon-controller/internal/syncer"
+
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+)
+
+// App is the Wails-bound backend: every exported method here becomes
+// callable from the frontend as window.go.main.App.<Method>(...).
+type App struct {
+	ctx      context.Context
+	store    *dbstore.Store
+	dirs     appdirs.Dirs
+	syncMgr  *syncer.Manager
+	quitting bool
+}
+
+func NewApp(store *dbstore.Store, dirs appdirs.Dirs, syncMgr *syncer.Manager) *App {
+	return &App{store: store, dirs: dirs, syncMgr: syncMgr}
+}
+
+func (a *App) startup(ctx context.Context) {
+	a.ctx = ctx
+}
+
+// ---- View types returned to the frontend ----
+
+type PhoneView struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Manufacturer   string `json:"manufacturer"`
+	Model          string `json:"model"`
+	BaseURL        string `json:"baseUrl"`
+	Reachable      bool   `json:"reachable"`
+	Status         string `json:"status"` // "recording" | "standby" | "unreachable"
+	BatteryPercent int    `json:"batteryPercent"`
+	HasBattery     bool   `json:"hasBattery"`
+	Charging       bool   `json:"charging"`
+	LastSeenMs     int64  `json:"lastSeenMs"`
+	SyncCursorMs   int64  `json:"syncCursorMs"`
+	DiskUsageBytes int64  `json:"diskUsageBytes"`
+}
+
+// ListPhones returns every paired phone with a fresh, best-effort live
+// status probe (short timeout — phoneapi.Status already applies its own
+// metadata timeout). Fetched concurrently since the Fleet screen wants all
+// cards to resolve without one slow phone stalling the others.
+func (a *App) ListPhones() ([]PhoneView, error) {
+	phones, err := a.store.ListPhones()
+	if err != nil {
+		return nil, err
+	}
+
+	views := make([]PhoneView, len(phones))
+	var wg sync.WaitGroup
+	for i, p := range phones {
+		views[i] = PhoneView{
+			ID: p.ID, Name: p.Name, Manufacturer: p.Manufacturer, Model: p.Model,
+			BaseURL: p.BaseURL, LastSeenMs: p.LastSeenMs, SyncCursorMs: p.SyncCursorMs,
+		}
+		usage, _ := a.store.DiskUsageBytes(p.ID)
+		views[i].DiskUsageBytes = usage
+
+		wg.Add(1)
+		go func(idx int, phone dbstore.Phone) {
+			defer wg.Done()
+			client := phoneapi.New(phone.BaseURL, phone.Token)
+			status, err := client.Status(a.ctxOrBackground())
+			if err != nil {
+				views[idx].Reachable = false
+				views[idx].Status = "unreachable"
+				return
+			}
+			views[idx].Reachable = true
+			views[idx].HasBattery = true
+			views[idx].BatteryPercent = status.BatteryPercent
+			views[idx].Charging = status.Charging
+			if status.Status == "recording" {
+				views[idx].Status = "recording"
+			} else {
+				views[idx].Status = "standby"
+			}
+		}(i, p)
+	}
+	wg.Wait()
+	return views, nil
+}
+
+func (a *App) ctxOrBackground() context.Context {
+	if a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
+}
+
+// ---- Add phone ----
+
+type ParsedInvite struct {
+	Address string `json:"address"`
+	Code    string `json:"code"`
+	OK      bool   `json:"ok"`
+}
+
+// ParseInviteURL lets the frontend auto-fill both paste-form fields when
+// either receives a full invite URL, per HANDOFF-controller-ux.md's
+// Add-phone flow.
+func (a *App) ParseInviteURL(raw string) ParsedInvite {
+	addr, code, ok := phoneapi.ParseInviteURL(raw)
+	return ParsedInvite{Address: addr, Code: code, OK: ok}
+}
+
+type AddPhoneResult struct {
+	OK      bool       `json:"ok"`
+	Outcome string     `json:"outcome"` // "ok" | "unreachable" | "invalid_invite" | "other"
+	Message string     `json:"message"`
+	Phone   *PhoneView `json:"phone,omitempty"`
+}
+
+// AddPhone drives POST /api/pair via internal/pairing and reports a
+// classified outcome so the UI can show the two distinct failure messages
+// the handoff doc calls for (unreachable address vs. invalid invite).
+func (a *App) AddPhone(address, code string) AddPhoneResult {
+	ctx, cancel := context.WithTimeout(a.ctxOrBackground(), 20*time.Second)
+	defer cancel()
+
+	result, err := pairing.AddPhone(ctx, a.store, address, code)
+	if err != nil {
+		var pe *pairing.Error
+		if errors.As(err, &pe) {
+			outcome := "other"
+			switch pe.Outcome {
+			case pairing.OutcomeUnreachable:
+				outcome = "unreachable"
+			case pairing.OutcomeInvalidInvite:
+				outcome = "invalid_invite"
+			}
+			return AddPhoneResult{OK: false, Outcome: outcome, Message: pe.Message}
+		}
+		return AddPhoneResult{OK: false, Outcome: "other", Message: err.Error()}
+	}
+
+	return AddPhoneResult{
+		OK:      true,
+		Outcome: "ok",
+		Phone: &PhoneView{
+			ID: result.PhoneID, Name: result.Name,
+			Manufacturer: result.Manufacturer, Model: result.Model,
+			Status: "standby",
+		},
+	}
+}
+
+// ---- Phone detail ----
+
+type PhoneDetailView struct {
+	Phone       PhoneView      `json:"phone"`
+	Status      *phoneapi.Status `json:"status,omitempty"`
+	StatusError string         `json:"statusError,omitempty"`
+	Config      *phoneapi.Config `json:"config,omitempty"`
+	ConfigError string         `json:"configError,omitempty"`
+}
+
+// GetPhoneDetail is the stub Phone-detail screen's data source: raw
+// GET /api/status + GET /api/config, per this slice's deliberately reduced
+// scope (no live preview/adjusters/calibration UI yet).
+func (a *App) GetPhoneDetail(phoneID string) (PhoneDetailView, error) {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return PhoneDetailView{}, err
+	}
+	usage, _ := a.store.DiskUsageBytes(phoneID)
+
+	view := PhoneView{
+		ID: phone.ID, Name: phone.Name, Manufacturer: phone.Manufacturer, Model: phone.Model,
+		BaseURL: phone.BaseURL, LastSeenMs: phone.LastSeenMs, SyncCursorMs: phone.SyncCursorMs,
+		DiskUsageBytes: usage,
+	}
+
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+	detail := PhoneDetailView{Phone: view}
+
+	status, err := client.Status(a.ctxOrBackground())
+	if err != nil {
+		detail.StatusError = err.Error()
+		detail.Phone.Reachable = false
+		detail.Phone.Status = "unreachable"
+	} else {
+		detail.Status = &status
+		detail.Phone.Reachable = true
+		detail.Phone.HasBattery = true
+		detail.Phone.BatteryPercent = status.BatteryPercent
+		detail.Phone.Charging = status.Charging
+		if status.Status == "recording" {
+			detail.Phone.Status = "recording"
+		} else {
+			detail.Phone.Status = "standby"
+		}
+	}
+
+	config, err := client.Config(a.ctxOrBackground())
+	if err != nil {
+		detail.ConfigError = err.Error()
+	} else {
+		detail.Config = &config
+	}
+
+	return detail, nil
+}
+
+// ---- Gallery / Trash ----
+
+type ClipView struct {
+	PhoneID       string `json:"phoneId"`
+	PhoneName     string `json:"phoneName"`
+	Filename      string `json:"filename"`
+	State         string `json:"state"`
+	CreatedAtMs   int64  `json:"createdAtMs"`
+	DurationMs    int64  `json:"durationMs"`
+	SizeBytes     int64  `json:"sizeBytes"`
+	Width         int    `json:"width"`
+	Height        int    `json:"height"`
+	VideoURL      string `json:"videoUrl"`
+	ThumbnailURL  string `json:"thumbnailUrl"`
+	HasThumbnail  bool   `json:"hasThumbnail"`
+}
+
+// ListClips returns active clips for the aggregate Gallery, optionally
+// filtered to one phone (phoneID == "" means every phone, i.e. the "All"
+// chip).
+func (a *App) ListClips(phoneID string) ([]ClipView, error) {
+	return a.listClipsByState(phoneID, dbstore.ClipActive)
+}
+
+// ListTrash returns trashed clips across every phone (Trash has no
+// phone-filter chip row per the handoff doc).
+func (a *App) ListTrash() ([]ClipView, error) {
+	return a.listClipsByState("", dbstore.ClipTrashed)
+}
+
+func (a *App) listClipsByState(phoneID string, state dbstore.ClipState) ([]ClipView, error) {
+	clips, err := a.store.ListClips(phoneID, state)
+	if err != nil {
+		return nil, err
+	}
+	// Cache phone names to avoid one DB round-trip per clip.
+	names := make(map[string]string)
+	out := make([]ClipView, len(clips))
+	for i, c := range clips {
+		name, ok := names[c.PhoneID]
+		if !ok {
+			if p, err := a.store.GetPhone(c.PhoneID); err == nil {
+				name = p.Name
+			} else {
+				name = c.PhoneID
+			}
+			names[c.PhoneID] = name
+		}
+		out[i] = ClipView{
+			PhoneID: c.PhoneID, PhoneName: name, Filename: c.Filename, State: string(c.State),
+			CreatedAtMs: c.CreatedAtMs, DurationMs: c.DurationMs, SizeBytes: c.SizeBytes,
+			Width: c.Width, Height: c.Height,
+			VideoURL:     archiveURL(c.PhoneID, c.Filename),
+			ThumbnailURL: archiveURL(c.PhoneID, c.Filename+".jpg"),
+			HasThumbnail: c.ThumbnailPath != "",
+		}
+	}
+	return out, nil
+}
+
+func archiveURL(phoneID, name string) string {
+	return "/archive/" + phoneID + "/" + name
+}
+
+// TrashClip: active -> trashed (file stays on disk, restorable).
+func (a *App) TrashClip(phoneID, filename string) error {
+	return a.store.SetClipState(phoneID, filename, dbstore.ClipTrashed)
+}
+
+// RestoreClip: trashed -> active.
+func (a *App) RestoreClip(phoneID, filename string) error {
+	return a.store.SetClipState(phoneID, filename, dbstore.ClipActive)
+}
+
+// DeleteClipPermanently: trashed -> purged. Deletes the on-disk file +
+// thumbnail immediately (permanent-on-disk right away per the handoff doc)
+// but keeps the DB tombstone — the eviction-probe loop that would eventually
+// drop the tombstone entirely is out of scope for this slice (see README).
+func (a *App) DeleteClipPermanently(phoneID, filename string) error {
+	clip, err := a.store.GetClip(phoneID, filename)
+	if err != nil {
+		return err
+	}
+	if clip.LocalPath != "" {
+		if err := removeIfExists(clip.LocalPath); err != nil {
+			log.Printf("delete clip file: %v", err)
+		}
+	}
+	if clip.ThumbnailPath != "" {
+		if err := removeIfExists(clip.ThumbnailPath); err != nil {
+			log.Printf("delete thumbnail file: %v", err)
+		}
+	}
+	return a.store.SetClipState(phoneID, filename, dbstore.ClipPurged)
+}
+
+// EmptyTrash purges every trashed clip (bulk version of DeleteClipPermanently).
+func (a *App) EmptyTrash() (int, error) {
+	clips, err := a.store.ListClips("", dbstore.ClipTrashed)
+	if err != nil {
+		return 0, err
+	}
+	for _, c := range clips {
+		if err := a.DeleteClipPermanently(c.PhoneID, c.Filename); err != nil {
+			log.Printf("empty trash: %v", err)
+		}
+	}
+	return len(clips), nil
+}
+
+// ---- Window / app lifecycle (tray integration) ----
+
+// ShowWindow is called from the tray's "Open" item.
+func (a *App) ShowWindow() {
+	if a.ctx != nil {
+		wailsRuntime.WindowShow(a.ctx)
+		wailsRuntime.WindowUnminimise(a.ctx)
+	}
+}
+
+// RequestQuit is called both from a frontend "Quit" affordance and from the
+// tray's "Quit" item — actually tears everything down rather than just
+// hiding the window.
+func (a *App) RequestQuit() {
+	a.quitting = true
+	if a.syncMgr != nil {
+		a.syncMgr.Stop()
+	}
+	if a.ctx != nil {
+		wailsRuntime.Quit(a.ctx)
+	}
+}
+
+// IsQuitting reports whether a real quit is underway, so main.go's
+// OnBeforeClose handler knows whether to hide-to-tray or let the window
+// actually close.
+func (a *App) IsQuitting() bool {
+	return a.quitting
+}
+
+func removeIfExists(path string) error {
+	err := os.Remove(path)
+	if err != nil && os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
