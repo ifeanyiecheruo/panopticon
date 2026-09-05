@@ -9,6 +9,12 @@ Gallery, Trash, Add phone) are designed and have a working interactive mock — 
 below. Use this doc, [phone-http-api.md](phone-http-api.md), and the mock as the starting
 point for controller implementation.
 
+> **Superseded by implementation as of 2026-09-05** — real Go/Wails + Preact code now exists
+> (see `controller/`). This doc is kept for the design rationale below (the Calibration data
+> model section in particular is still the authoritative spec for not-yet-built work), but for
+> current implementation status, what's built vs. deferred, and next steps, see
+> [`HANDOFF-implementation.md`](HANDOFF-implementation.md) and `controller/README.md` instead.
+
 ## Product shape
 
 A zero-dependency single binary the user launches, which then runs persistently in the

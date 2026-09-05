@@ -4,6 +4,11 @@ Status as of 2026-09-04: phone app UX has been prototyped as a clickable HTML/CS
 mock (no Kotlin/Compose code written yet). This doc is the compact starting point
 for the next session, which will move into real Android implementation.
 
+> **Superseded by implementation as of 2026-09-05** — real Kotlin/Compose code now exists (see
+> `phone-app/`). This doc is kept for the UX rationale below (still accurate design intent), but
+> for current implementation status, what's built vs. deferred, and next steps, see
+> [`HANDOFF-implementation.md`](HANDOFF-implementation.md) and `phone-app/README.md` instead.
+
 ## Where things live
 
 - **Live artifact** (always the latest version): https://claude.ai/code/artifact/a8956ebd-47ef-484b-abcd-178821c56c1a

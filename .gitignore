@@ -50,3 +50,11 @@ node_modules/
 
 # Code-generation stamps (see `make generate` / tools/go-deps) - local build state, not source.
 **/*.gen.json.stamp
+
+# controller's runtime state (SQLite DB, single-instance lock, downloaded clip archive - see
+# controller/.gitignore) lands here instead of under controller/ if the binary is ever launched
+# with the repo root as its working directory (e.g. `make run-controller`, which launches from
+# wherever `make` itself runs) - controller/internal/appdirs resolves these relative to launch
+# cwd, not a fixed app-data path. See docs/implementation/HANDOFF-implementation.md.
+/data/
+/archive/

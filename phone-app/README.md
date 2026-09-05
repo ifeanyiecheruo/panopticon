@@ -55,12 +55,13 @@ controller's - run `make help` from the repo root for the full list. From there:
 
 ```
 make build-phone     # ./gradlew assembleDebug
-make install-phone   # + install onto ADB_SERIAL (default: this project's test Pixel 6)
+make install-phone   # + install onto the connected device
 make run-phone       # + grant camera/notification perms + launch MainActivity
 make test-phone      # ./gradlew test
 ```
 
-Override the target device: `make install-phone ADB_SERIAL=<serial>` (see `adb devices -l`).
+If more than one device is visible to `adb`, these fail with a list of devices and ask you to
+target one explicitly: `make install-phone ADB_SERIAL=<serial>` (see `adb devices -l`).
 
 To reach the HTTP API from your dev machine: `adb -s <serial> forward tcp:8080 tcp:8080`, then
 `curl http://127.0.0.1:8080/api/device` (401 without a token - pair first via the app's Connect
