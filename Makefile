@@ -305,7 +305,12 @@ install-controller: build-controller ## Alias for build-controller (no separate 
 run-phone: install-phone check-adb-devices ## Install + launch phone-app on ADB_SERIAL (or the sole connected device), granting camera/notification perms
 	@echo "==> Granting camera + notification permissions (idempotent if already granted)"
 	-"$(ADB)" $(ADB_SERIAL_FLAG) shell pm grant $(PHONE_PACKAGE) android.permission.CAMERA
-	-"$(ADB)" $(ADB_SERIAL_FLAG) shell pm grant $(PHONE_PACKAGE) android.permission.POST_NOTIFICATIONS
+	@sdk="$$("$(ADB)" $(ADB_SERIAL_FLAG) shell getprop ro.build.version.sdk 2>/dev/null)"; \
+	if [ "$${sdk:-0}" -ge 33 ] 2>/dev/null; then \
+		"$(ADB)" $(ADB_SERIAL_FLAG) shell pm grant $(PHONE_PACKAGE) android.permission.POST_NOTIFICATIONS || true; \
+	else \
+		echo "    (skipping POST_NOTIFICATIONS grant - device is API $$sdk, that permission doesn't exist before API 33)"; \
+	fi
 	@echo "==> Launching $(PHONE_PACKAGE)"
 	"$(ADB)" $(ADB_SERIAL_FLAG) shell am start -n $(PHONE_PACKAGE)/.MainActivity
 	@echo "==> To reach the HTTP API from this machine: adb $(ADB_SERIAL_FLAG) forward tcp:8080 tcp:8080"
