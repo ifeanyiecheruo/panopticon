@@ -84,9 +84,28 @@ rows, and the Gallery/Trash screens reading them back correctly.
 - `internal/singleinstance` — Windows single-instance lock via an exclusive `CreateFile`
   share-mode handle (auto-released by the OS on crash, unlike a plain PID file).
 - `internal/appdirs` — resolves the `data/`/`archive/` directory layout.
-- `frontend/` — vanilla JS/HTML/CSS (no framework), visual language ported from
-  `controller-ux-mock.html`. `frontend/src/main.js` is a small hand-rolled router over the
-  five screens.
+- `frontend/` — TypeScript + JSX on [Preact](https://preactjs.com/) (a ~3kb React-API-compatible
+  library), built with Vite (`@preact/preset-vite`). Visual language ported from
+  `controller-ux-mock.html`; `src/style.css` is still plain hand-written CSS, imported once from
+  the entry point. Layout:
+  - `src/main.tsx` — entry point, mounts `<App/>`.
+  - `src/App.tsx` — top-level router/state: one `useState<AppState>` covering the current
+    route plus each screen's in-flight selection, mirroring the original single-object
+    `state` the vanilla router mutated. Every `navigate()` call bumps a `nonce` that's folded
+    into the active screen's `key`, forcing a full unmount/remount (and refetch) — the same
+    "wipe `main.innerHTML` and re-run `renderX()` from scratch on every navigation" behavior
+    the vanilla version had, including the loading flash on every clip selection.
+  - `src/screens/` — one component per screen: `Fleet.tsx`, `PhoneDetail.tsx`,
+    `Gallery.tsx`, `Trash.tsx`, `AddPhone.tsx`.
+  - `src/components/` — `Shell.tsx` (the left nav rail + main slot) and `ClipTiles.tsx`
+    (the day-grouped clip grid shared by Gallery and Trash).
+  - `src/api.ts` — thin typed re-export of the generated Wails bindings
+    (`wailsjs/go/main/App` + `wailsjs/go/models`) under stable names, so a binding-shape
+    change only needs a fix in one place.
+  - `src/lib/` — `format.ts` (byte/duration/status-label formatting), `clips.ts`
+    (day-grouping + the `phoneId|filename` selection-key helper), `icons.tsx` (the inline
+    SVG icon set, as small components instead of the old HTML-string map).
+  - `src/types.ts` — shared `Route`/`AppState` types.
 
 ## What's deferred (out of scope for this slice)
 
