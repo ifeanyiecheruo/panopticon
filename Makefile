@@ -10,7 +10,7 @@
         run-phone run-controller e2e \
         test test-phone test-controller \
         clean clean-phone clean-controller \
-        device-info \
+        device-info check-adb-devices \
         install-tools install-tools-nvm-node install-tools-wails install-tools-vite \
         install-tools-shims install-tools-android-sdk \
         phone-app-local-properties \
@@ -18,8 +18,13 @@
 
 .DEFAULT_GOAL := help
 
-ADB_SERIAL ?= 1C281FDF6005H0
 PHONE_PACKAGE := com.panopticon.phoneapp
+# Unset by default - only passed to adb at all when the caller sets it (make <target>
+# ADB_SERIAL=<serial>). With exactly one device connected, adb targets it with no flag needed;
+# with more than one, check-adb-devices (a prerequisite of every adb-targeting rule below) catches
+# the ambiguity up front and tells the caller to set this, rather than letting adb itself fail on
+# whichever command happens to run first.
+ADB_SERIAL_FLAG = $(if $(ADB_SERIAL),-s $(ADB_SERIAL))
 
 # --- Private per-project tool isolation (see `make install-tools`) ---------------------------
 # ROOT/.local holds every tool this Makefile can install without touching anything machine-wide
@@ -121,8 +126,8 @@ help: ## Show this help
 	@echo ""
 	@awk 'BEGIN { FS = ":.*##" } /^[a-zA-Z0-9_-]+:.*##/ { gsub(/^ /, "", $$2); printf "  make %-18s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo ""
-	@echo "  Override the phone-app target device: make run-phone ADB_SERIAL=<serial>"
-	@echo "  (see 'adb devices -l' if you have more than one attached)."
+	@echo "  Target a specific device (needed only if more than one is connected):"
+	@echo "  make run-phone ADB_SERIAL=<serial> (see 'adb devices -l' for available serials)."
 
 ## Tooling
 
@@ -199,6 +204,31 @@ install-tools-android-sdk:
 	$(SDKMANAGER_INVOKE) "platform-tools" "platforms;android-34" "build-tools;34.0.0"; \
 	echo "==> Android SDK installed at $(ANDROID_SDK_ROOT_POSIX)."
 
+# Prerequisite of every target below that runs an adb command against a specific device
+# (install-phone, run-phone, device-info). With ADB_SERIAL unset, adb happily targets "whichever
+# device" as long as exactly one is connected - but silently misbehaves (or just refuses) the
+# moment a second device (or emulator) shows up, which is exactly the situation this project's own
+# dev machine is in (see docs/QUIRKS.md's Pixel 6 + second-device notes). Catching that here, with
+# a clear "set ADB_SERIAL" message, beats letting whichever adb command runs first fail confusingly.
+check-adb-devices:
+	@command -v "$(ADB)" >/dev/null 2>&1 || [ -f "$(ADB)" ] || { \
+		echo "adb not found on PATH or at the usual Android SDK location." >&2; exit 1; }
+	@if [ -z "$(ADB_SERIAL)" ]; then \
+		devices_list="$(ROOT)/.local/tmp/adb-devices.txt"; \
+		mkdir -p "$(ROOT)/.local/tmp"; \
+		"$(ADB)" devices > "$$devices_list" 2>/dev/null; \
+		count=$$(awk 'NR>1 && $$2=="device" {c++} END{print c+0}' "$$devices_list"); \
+		rm -f "$$devices_list"; \
+		if [ "$$count" -gt 1 ]; then \
+			echo "More than one device is visible to adb - set ADB_SERIAL to target one:" >&2; \
+			echo >&2; \
+			"$(ADB)" devices -l >&2; \
+			echo >&2; \
+			echo "  make <target> ADB_SERIAL=<serial>" >&2; \
+			exit 1; \
+		fi; \
+	fi
+
 ## Generate
 
 # One .stamp per *.gen.json sidecar found anywhere under controller/ - e.g.
@@ -254,17 +284,17 @@ build-controller: generate ## Build the controller production binary (wails buil
 
 install: install-phone install-controller ## Build and install/prepare both apps
 
-install-phone: build-phone ## Build + install the debug APK onto ADB_SERIAL (default: this repo's test Pixel 6)
-	@command -v "$(ADB)" >/dev/null 2>&1 || [ -f "$(ADB)" ] || { \
-		echo "adb not found on PATH or at the usual Android SDK location - install Android SDK platform-tools." >&2; exit 1; }
-	@devices_output="$$("$(ADB)" devices)"; \
-	case "$$devices_output" in \
-		*"$(ADB_SERIAL)"*"device"*) ;; \
-		*) echo "$(ADB_SERIAL) not visible to adb (offline/disconnected?). If it just reconnected, try:" >&2; \
-		   echo "  \"$(ADB)\" kill-server && \"$(ADB)\" start-server" >&2; \
-		   echo "Currently visible to adb:" >&2; echo "$$devices_output" >&2; exit 1 ;; \
-	esac
-	"$(ADB)" -s $(ADB_SERIAL) install -r phone-app/app/build/outputs/apk/debug/app-debug.apk
+install-phone: build-phone check-adb-devices ## Build + install the debug APK onto ADB_SERIAL (or the sole connected device)
+	@if [ -n "$(ADB_SERIAL)" ]; then \
+		devices_output="$$("$(ADB)" devices)"; \
+		case "$$devices_output" in \
+			*"$(ADB_SERIAL)"*"device"*) ;; \
+			*) echo "$(ADB_SERIAL) not visible to adb (offline/disconnected?). If it just reconnected, try:" >&2; \
+			   echo "  \"$(ADB)\" kill-server && \"$(ADB)\" start-server" >&2; \
+			   echo "Currently visible to adb:" >&2; echo "$$devices_output" >&2; exit 1 ;; \
+		esac; \
+	fi
+	"$(ADB)" $(ADB_SERIAL_FLAG) install -r phone-app/app/build/outputs/apk/debug/app-debug.apk
 
 install-controller: build-controller ## Alias for build-controller (no separate OS install step in this slice)
 	@echo "==> Controller binary ready at $(CONTROLLER_BIN)"
@@ -272,13 +302,13 @@ install-controller: build-controller ## Alias for build-controller (no separate 
 
 ## Run
 
-run-phone: install-phone ## Install + launch phone-app on ADB_SERIAL, granting camera/notification perms
+run-phone: install-phone check-adb-devices ## Install + launch phone-app on ADB_SERIAL (or the sole connected device), granting camera/notification perms
 	@echo "==> Granting camera + notification permissions (idempotent if already granted)"
-	-"$(ADB)" -s $(ADB_SERIAL) shell pm grant $(PHONE_PACKAGE) android.permission.CAMERA
-	-"$(ADB)" -s $(ADB_SERIAL) shell pm grant $(PHONE_PACKAGE) android.permission.POST_NOTIFICATIONS
+	-"$(ADB)" $(ADB_SERIAL_FLAG) shell pm grant $(PHONE_PACKAGE) android.permission.CAMERA
+	-"$(ADB)" $(ADB_SERIAL_FLAG) shell pm grant $(PHONE_PACKAGE) android.permission.POST_NOTIFICATIONS
 	@echo "==> Launching $(PHONE_PACKAGE)"
-	"$(ADB)" -s $(ADB_SERIAL) shell am start -n $(PHONE_PACKAGE)/.MainActivity
-	@echo "==> To reach the HTTP API from this machine: adb -s $(ADB_SERIAL) forward tcp:8080 tcp:8080"
+	"$(ADB)" $(ADB_SERIAL_FLAG) shell am start -n $(PHONE_PACKAGE)/.MainActivity
+	@echo "==> To reach the HTTP API from this machine: adb $(ADB_SERIAL_FLAG) forward tcp:8080 tcp:8080"
 	@echo "    then curl http://127.0.0.1:8080/api/device (401 without a bearer token - pair first"
 	@echo "    from the app's Connect tab, or POST /api/pair with a code generated there)."
 
@@ -319,9 +349,7 @@ clean-phone: ## Remove phone-app build output (./gradlew clean)
 clean-controller: ## Remove controller build output (build/bin, frontend/dist)
 	rm -rf controller/build/bin controller/frontend/dist
 
-device-info: ## Print the target device's manufacturer/model/Android version (sanity check)
-	@command -v "$(ADB)" >/dev/null 2>&1 || [ -f "$(ADB)" ] || { \
-		echo "adb not found on PATH or at the usual Android SDK location." >&2; exit 1; }
-	"$(ADB)" -s $(ADB_SERIAL) shell getprop ro.product.manufacturer
-	"$(ADB)" -s $(ADB_SERIAL) shell getprop ro.product.model
-	"$(ADB)" -s $(ADB_SERIAL) shell getprop ro.build.version.release
+device-info: check-adb-devices ## Print the target device's manufacturer/model/Android version (sanity check)
+	"$(ADB)" $(ADB_SERIAL_FLAG) shell getprop ro.product.manufacturer
+	"$(ADB)" $(ADB_SERIAL_FLAG) shell getprop ro.product.model
+	"$(ADB)" $(ADB_SERIAL_FLAG) shell getprop ro.build.version.release

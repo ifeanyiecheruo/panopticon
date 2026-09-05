@@ -325,3 +325,18 @@ already known as ordinary Make variables regardless of whether their `export` ha
 this sidesteps the question entirely.
 **Where:** `Makefile` (root), the `gen-stamp-rule` define (used to compute each `.gen.json.stamp`
 target's prerequisites via `go-deps get`).
+
+### Piping a real command's output into `awk` inside a recipe's `$$(...)` can break, same as `head`
+**Assumed:** the earlier-documented "piping a glob through `head` inside `$(shell)` intermittently
+breaks" quirk (see `panopticon-prototype/QUIRKS.md`) was specific to `$(shell)` (Makefile-parse-time
+execution) and to `head`.
+**Actually:** hit the same failure mode (`awk: ... fatal: error reading input file '-': Broken
+pipe`) from a completely ordinary *recipe* (build-time, not parse-time) piping real `adb devices`
+output into `awk` via `count=$$("$(ADB)" devices | awk '...')` - neither `$(shell)` nor `head` were
+involved this time, just this `make`'s pipe handling in general being unreliable under this
+specific MSYS2 build.
+**Workaround:** avoid the pipe entirely - redirect the producer's output to a temp file, then have
+the consumer read that file instead of stdin: `"$(ADB)" devices > "$$devices_list"; count=$$(awk
+'...' "$$devices_list")`. Slightly more verbose, but never touches a pipe, so there's nothing left
+for this bug to trigger on.
+**Where:** `Makefile` (root), the `check-adb-devices` target.
