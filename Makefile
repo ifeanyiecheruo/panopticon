@@ -52,7 +52,7 @@ CMDLINE_TOOLS_BUILD := 15859902
 ifneq (,$(findstring MINGW,$(shell uname -s))$(findstring MSYS,$(shell uname -s))$(findstring CYGWIN,$(shell uname -s)))
 CMDEXE := /c/Windows/System32/cmd.exe //c
 GRADLEW := $(CMDEXE) .\\gradlew.bat
-CONTROLLER_BIN := controller/build/bin/panopticon-controller.exe
+CONTROLLER_BIN := controller/installer-src/bin/panopticon-controller.exe
 # The Android SDK installer commonly leaves platform-tools (adb) off PATH even when it's present -
 # fall back to its default Windows install location before giving up. Reading that location via
 # $LOCALAPPDATA doesn't work under this MSYS2 make (env vars get stripped from spawned processes -
@@ -100,7 +100,7 @@ export GOCACHE := $(GOPATH)/panopticon-make-gocache
 $(shell mkdir -p "$(TMP)" "$(GOCACHE)")
 else
 GRADLEW := ./gradlew
-CONTROLLER_BIN := controller/build/bin/panopticon-controller
+CONTROLLER_BIN := controller/installer-src/bin/panopticon-controller
 # Best-effort POSIX equivalents of the Windows block above (standard nvm.sh + Linux Android SDK
 # conventions) - this project is developed on Windows, so these paths are unexercised/untested
 # here; adjust CMDLINE_TOOLS_URL for macOS (commandlinetools-mac-*) if needed.
@@ -347,7 +347,7 @@ clean-phone: ## Remove phone-app build output (./gradlew clean)
 	cd phone-app && $(GRADLEW) clean
 
 clean-controller: ## Remove controller build output (build/bin, frontend/dist)
-	rm -rf controller/build/bin controller/frontend/dist
+	rm -rf controller/installer-src/bin controller/frontend/dist
 
 device-info: check-adb-devices ## Print the target device's manufacturer/model/Android version (sanity check)
 	"$(ADB)" $(ADB_SERIAL_FLAG) shell getprop ro.product.manufacturer

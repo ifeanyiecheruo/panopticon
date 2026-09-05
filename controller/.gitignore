@@ -2,7 +2,7 @@
 # .idea/, *.log, etc.) lives in the root .gitignore instead (applies automatically - this and the
 # root file are both part of the same monorepo).
 
-build/bin
+installer-src/bin
 frontend/dist
 frontend/package.json.md5
 /run-controller.log

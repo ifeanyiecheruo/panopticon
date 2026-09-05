@@ -22,7 +22,7 @@ Build/install/run/test tasks live in the **root Makefile** (`../Makefile`), alon
 phone-app's - run `make help` from the repo root for the full list. From there:
 
 ```
-make build-controller     # wails build -> build/bin/panopticon-controller.exe
+make build-controller     # wails build -> installer-src/bin/panopticon-controller.exe
 make run-controller       # build + launch (tray icon; keeps running in the background)
 make test-controller      # go test ./...
 ```
