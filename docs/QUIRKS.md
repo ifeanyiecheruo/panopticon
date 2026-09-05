@@ -7,17 +7,20 @@ real hardware while building this vertical slice (`phone-app/`). Entries under "
 were adopted as defensive workarounds from the old doc without being independently re-tested here
 - don't mistake them for confirmed-in-this-project.
 
-Test device for everything below: **Google Pixel 6 (`oriole`), Android 16 (API 36), build
-`BP2A.250605.031.A2`**, adb serial `1C281FDF6005H0`. Encoder observed in logcat:
+Primary test device for most of the entries below: **Google Pixel 6 (`oriole`), Android 16 (API
+36), build `BP2A.250605.031.A2`**, adb serial `1C281FDF6005H0`. Encoder observed in logcat:
 `ExynosC2H264EncComponent` (Exynos hardware AVC encoder) - a different SoC family from the old
 prototype's Pixel 9a (Tensor), which is itself a reason some findings below don't transfer
-directly.
+directly. A second device, a **BLU G5, Android 9 (API 28)**, also gets used opportunistically as
+a low-end/old-API check - see "Foreground service" below for what it caught that the Pixel 6
+(API 36) couldn't have.
 
 ## Contents
 
 - [Camera2 / recording pipeline](#camera2--recording-pipeline)
   - [Reconfirmed on Pixel 6](#reconfirmed-on-pixel-6)
   - [Carried forward, not yet re-verified in this project](#carried-forward-not-yet-re-verified-in-this-project)
+- [Foreground service](#foreground-service)
 - [HTTP server](#http-server)
 - [Development tooling (Windows) - new findings this project](#development-tooling-windows---new-findings-this-project)
 
@@ -131,6 +134,24 @@ calibration, no motion-gated recording, no multi-camera) - see
   live HLS pipeline in this slice to test it against)
 - All `Browser / hls.js` and `Server / Node` sections (no live pipeline, no Node server in this
   project - the controller is a separate, not-yet-built project)
+
+## Foreground service
+
+### `startForeground`'s 3-arg (foregroundServiceType) overload doesn't exist before API 29
+**Assumed:** calling the 3-argument `startForeground(id, notification, foregroundServiceType)`
+overload is safe on any API level as long as the *type value itself* is only supplied on API 29+
+(`if (SDK_INT >= Q) FOREGROUND_SERVICE_TYPE_CAMERA else 0`) - i.e. that the guard only needed to
+protect the *value*, not the *method call*.
+**Actually:** confirmed via a real crash on a BLU G5 (Android 9, API 28): the 3-arg overload
+doesn't exist at all in the `Service` class before API 29 (Q) - calling it unconditionally throws
+`java.lang.NoSuchMethodError: No virtual method startForeground(ILandroid/app/Notification;I)V`
+immediately on `onStartCommand`, and since the service is `START_STICKY`, Android just kept
+restarting and re-crashing it in a loop.
+**Workaround:** branch on the overload itself, not just the argument value - call the 2-arg
+`startForeground(id, notification)` below API 29, and only use the 3-arg
+`foregroundServiceType`-carrying overload on API 29+.
+**Where:** `phone-app/app/src/main/kotlin/com/panopticon/phoneapp/service/PanopticonService.kt`
+(`onStartCommand`).
 
 ## HTTP server
 

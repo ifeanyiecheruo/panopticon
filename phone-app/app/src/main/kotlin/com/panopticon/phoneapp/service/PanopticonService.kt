@@ -41,11 +41,18 @@ class PanopticonService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(
-            NOTIFICATION_ID,
-            buildNotification(),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA else 0,
-        )
+        // The 3-arg startForeground(id, notification, foregroundServiceType) overload doesn't
+        // exist before API 29 (Q) - it's not just that the type value is ignored, the method
+        // itself throws NoSuchMethodError on older devices (confirmed on a real API 28 device).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        }
 
         if (cameraPipeline == null) {
             startCameraPipeline()
