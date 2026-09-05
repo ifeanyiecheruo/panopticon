@@ -19,6 +19,17 @@ already lives elsewhere and would drift.
   simplifications"). That deepening is the natural next calibration pass and has the old
   prototype's `SCALER_CROP_REGION`/digital-zoom `QUIRKS.md` findings to re-verify against.
 
+- **Motion-gated recording (phone-app only).** The always-record pipeline is gone. `CameraPipeline`
+  now runs an always-on analysis `ImageReader` → `motion/MotionDetector` (frame-difference on a
+  32×24 luma grid) → `motion/RecordingPhaseController` (ARMED ⇄ RECORDING with a trailer tail).
+  `RecordingStatus.IDLE` now means "armed", so a phone with nothing moving reports
+  `status: "idle"` on `/api/status` and shows as **Standby** on the controller's Fleet (which
+  already handled non-recording that way — no controller change needed). Both `MotionDetector`
+  and `RecordingPhaseController` have JVM unit tests. **Not yet verified on the Pixel 6** — the
+  per-sensitivity thresholds are reasoned starting points; tuning against real lighting (and any
+  move to a real background-subtraction model, plus pre-roll once the `MediaCodec`+`MediaMuxer`
+  switch happens) is the follow-up.
+
 ## Where things live
 
 Single git repo (`panopticon/`, monorepo — see "Explicit decisions" below), plain linear
@@ -112,10 +123,9 @@ candidates for "the next slice":
   re-verify against the Pixel 6 rather than assuming, same approach this session took for the
   quirks that *were* re-verified (see `docs/QUIRKS.md`'s "Reconfirmed on Pixel 6" section for the
   pattern to follow).
-- **Motion-gated recording.** phone-app currently always records; the real
-  `RecordingPhaseController`-style state machine (motion-start/trailer/motion-stop) doesn't exist.
-  This is phone-app-only work, but changes what `POST /api/mode` and the recording pipeline
-  actually do, so double-check nothing on the controller side assumes "always recording."
+- ~~**Motion-gated recording.**~~ **Implemented** (phone-app only) — see "Slices added since the
+  initial handoff" above. Remaining: on-device threshold tuning, pre-roll, a real
+  background-subtraction model.
 - **Multi-camera.** `/api/cameras*` doesn't exist; nothing controller-side switches cameras.
 
 Single-side deferred items (unpair/force-unpair, bulk arm/stand-down, eviction-probe/tombstone
@@ -151,9 +161,8 @@ own README and don't need cross-project design work — just implementation.
 
 ## Suggested next steps
 
-No hard ordering. **Calibration** is done as a slice (above); its remaining piece is the
-empirical measure-vs-declared probe. **Motion-gated recording** is phone-app-only
-and unblocks removing the biggest "deliberate simplification" flagged in that project's README.
+No hard ordering. **Calibration** and **motion-gated recording** are both done as slices
+(above); their remaining pieces are noted there.
 Live HLS view is almost certainly the largest single piece of remaining work (real-time muxing,
 adaptive bitrate, hls.js integration on the controller frontend) — worth its own dedicated design
 pass before implementation, mining the old prototype's `ARCHITECTURE.md`/`QUIRKS.md` for the

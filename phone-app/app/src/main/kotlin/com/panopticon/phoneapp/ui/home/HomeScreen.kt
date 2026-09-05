@@ -25,6 +25,7 @@ import com.panopticon.phoneapp.ui.theme.PanopticonColors
 fun HomeScreen(app: PanopticonApplication) {
     val recordingStatus by app.appState.recordingStatus.collectAsStateWithLifecycle()
     val cameraHealthy by app.appState.cameraHealthy.collectAsStateWithLifecycle()
+    val motionActive by app.appState.motionActive.collectAsStateWithLifecycle()
     val config = app.appConfig.get()
     val usedBytes = app.clipStore.totalBytes()
     val capBytes = config.storageCapBytes
@@ -52,11 +53,18 @@ fun HomeScreen(app: PanopticonApplication) {
                 !cameraHealthy -> "UNAVAILABLE" to PanopticonColors.warn
                 recordingStatus == RecordingStatus.RECORDING -> "REC" to PanopticonColors.rec
                 recordingStatus == RecordingStatus.UNAVAILABLE -> "UNAVAILABLE" to PanopticonColors.warn
-                else -> "STANDBY" to PanopticonColors.textDim
+                else -> "ARMED" to PanopticonColors.accent
             }
             Text(text = label, color = color, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Text(
-                text = "Camera pipeline always-records ~10s clips in this build (no motion gate yet).",
+                text = when {
+                    recordingStatus == RecordingStatus.RECORDING ->
+                        "Motion gate open - writing rotating ~10s clips."
+                    motionActive ->
+                        "Motion detected - starting to record."
+                    else ->
+                        "Armed. Watching for motion (sensitivity: ${config.motionSensitivity}); records only while motion is present, plus a short tail."
+                },
                 color = PanopticonColors.textFaint,
                 fontSize = 12.sp,
             )

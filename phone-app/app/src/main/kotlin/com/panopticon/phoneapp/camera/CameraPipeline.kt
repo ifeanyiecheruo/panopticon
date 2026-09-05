@@ -6,6 +6,7 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.media.ImageReader
 import android.media.MediaCodecList
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -14,6 +15,10 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.util.Size
+import android.view.Surface
+import com.panopticon.phoneapp.motion.MotionDetector
+import com.panopticon.phoneapp.motion.RecordingPhaseController
+import com.panopticon.phoneapp.state.AppConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -31,26 +36,39 @@ import kotlin.coroutines.resumeWithException
 
 private const val TAG = "CameraPipeline"
 
+/** How often the phase loop wakes to check for an ARMED<->RECORDING transition. */
+private const val PHASE_POLL_MS = 100L
+
 /**
- * Camera2 + MediaRecorder pipeline that continuously records the back camera into rotating
- * H.264 clip files (~10s each). No real motion detection in this slice - deliberately always
- * recording ("always motion" gate). See QUIRKS.md for what was re-verified on the Pixel 6 while
- * building this (session-reconfigure stress from the rotation loop, keyframe-interval honesty).
+ * Camera2 + MediaRecorder pipeline for the back camera, now **motion-gated**:
+ * an always-on analysis stream (a small YUV `ImageReader`) feeds [MotionDetector],
+ * whose verdict drives [RecordingPhaseController]. While ARMED the session
+ * carries only the analysis surface and nothing is written; the first frame
+ * with motion flips to RECORDING, which reconfigures the session to add a
+ * `MediaRecorder` surface and starts rotating ~10s H.264 clips. Recording is
+ * held for a trailer window after motion last stopped, then it disarms.
  *
- * Simplifications called out explicitly (documented, not accidental):
- *  - Always-recording instead of real motion-gated start/stop (`RecordingPhaseController` in the
- *    old prototype). A real detector is out of scope for this slice.
- *  - Full CameraCaptureSession teardown+recreate on every rotation, rather than a lighter
- *    in-place surface swap. Simpler to reason about and doubles as a stress test of Camera2
- *    session-reconfigure robustness (see QUIRKS.md).
- *  - No audio track - video only, avoids RECORD_AUDIO permission entirely for this slice.
+ * Simplifications still in force for this slice (documented, not accidental):
+ *  - **Frame-difference motion only** - no background model / CV library. See
+ *    [MotionDetector]; thresholds are un-tuned starting points.
+ *  - **No pre-roll.** A clip starts at motion-detection time - `MediaRecorder`
+ *    can't back-date a buffer. Pre-roll is tied to the future
+ *    `MediaCodec`+`MediaMuxer` switch.
+ *  - **Full `CameraCaptureSession` teardown+recreate** on every ARMED<->RECORDING
+ *    transition and every clip rotation, rather than an in-place surface swap.
+ *    Simpler to reason about; doubles as a session-reconfigure stress test.
+ *  - **No audio track** - video only, avoids `RECORD_AUDIO` entirely.
  */
 class CameraPipeline(
     private val context: Context,
     private val clipsDir: File,
+    private val appConfig: AppConfig,
     private val rotationIntervalMs: Long = 10_000L,
+    private val trailerMs: Long = 5_000L,
     private val onClipFinished: (file: File, createdAtMs: Long, durationMs: Long, width: Int, height: Int) -> Unit,
     private val onHealthChanged: (Boolean) -> Unit,
+    private val onPhaseChanged: (recording: Boolean) -> Unit = {},
+    private val onMotionChanged: (motion: Boolean) -> Unit = {},
 ) {
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
@@ -60,12 +78,17 @@ class CameraPipeline(
     private val workExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "PanopticonCameraWork") }
     private val scope = CoroutineScope(SupervisorJob() + workExecutor.asCoroutineDispatcher())
 
+    private val phaseController = RecordingPhaseController(trailerMs)
+    @Volatile private var detector = MotionDetector(appConfig.get().motionSensitivity)
+    @Volatile private var lastMotionReported = false
+
     private var runLoopJob: Job? = null
     private var running = false
 
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var mediaRecorder: MediaRecorder? = null
+    private var analysisReader: ImageReader? = null
     private var recordingSize: Size = Size(1280, 720)
     private var currentFile: File? = null
     private var currentStartedAtMs: Long = 0
@@ -79,6 +102,7 @@ class CameraPipeline(
     fun stop() {
         running = false
         runLoopJob?.cancel()
+        phaseController.disarm()
         scope.launch {
             finishCurrentSegment(deleteIfEmpty = true)
             closeSessionAndDevice()
@@ -97,30 +121,129 @@ class CameraPipeline(
             try {
                 openCameraIfNeeded()
                 recordingSize = pickRecordingSize()
+                ensureAnalysisReader()
                 onHealthChanged(true)
                 attempt = 0
 
-                // Rotate clips on a fixed cadence for as long as the session stays healthy.
+                // Phase loop: stay in whichever phase the controller reports,
+                // reconfiguring the session on each transition.
                 while (running) {
-                    val started = beginSegment()
-                    if (!started) throw IllegalStateException("could not start a segment after retries")
-                    delay(rotationIntervalMs)
-                    if (!running) break
-                    finishCurrentSegment(deleteIfEmpty = false)
+                    when (phaseController.phase) {
+                        RecordingPhaseController.Phase.ARMED -> runArmedPhase()
+                        RecordingPhaseController.Phase.RECORDING -> runRecordingPhase()
+                    }
                 }
             } catch (e: Exception) {
-                // Camera2 calls have been observed to throw synchronously under HAL stress, not
-                // just report failure via callbacks - treat any failure here exactly like an
-                // unexpected device close: tear everything down and let the loop reopen.
                 Log.e(TAG, "camera loop error (attempt ${attempt + 1})", e)
                 onHealthChanged(false)
                 runCatching { finishCurrentSegment(deleteIfEmpty = true) }
                 runCatching { closeSessionAndDevice() }
+                detector.reset()
                 attempt++
                 delay(minOf(500L * attempt, 5000L))
             }
         }
     }
+
+    // ---- ARMED: analysis-only session, nothing recorded ----
+
+    private suspend fun runArmedPhase() {
+        onPhaseChanged(false)
+        // Re-read sensitivity each time we arm, so a POST /api/config change
+        // takes effect on the next idle period without restarting the service.
+        detector = MotionDetector(appConfig.get().motionSensitivity)
+        detector.reset()
+
+        val analysis = analysisReader ?: throw IllegalStateException("analysis reader missing")
+        val device = cameraDevice ?: throw IllegalStateException("camera closed")
+        val failed = AtomicBoolean(false)
+        val session = createCaptureSession(device, listOf(analysis.surface), failed)
+        delay(300)
+        if (failed.get()) {
+            session.close()
+            throw IllegalStateException("armed session failed asynchronously")
+        }
+        val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+            addTarget(analysis.surface)
+        }.build()
+        session.setRepeatingRequest(request, null, callbackHandler)
+        captureSession = session
+
+        try {
+            while (running && phaseController.phase == RecordingPhaseController.Phase.ARMED) {
+                delay(PHASE_POLL_MS)
+            }
+        } finally {
+            runCatching { session.close() }
+            captureSession = null
+        }
+    }
+
+    // ---- RECORDING: analysis + recorder session, rotating clips ----
+
+    private suspend fun runRecordingPhase() {
+        onPhaseChanged(true)
+        while (running && phaseController.phase == RecordingPhaseController.Phase.RECORDING) {
+            val started = beginSegment()
+            if (!started) throw IllegalStateException("could not start a recording segment after retries")
+
+            val segmentDeadline = System.currentTimeMillis() + rotationIntervalMs
+            while (running &&
+                phaseController.phase == RecordingPhaseController.Phase.RECORDING &&
+                System.currentTimeMillis() < segmentDeadline
+            ) {
+                delay(PHASE_POLL_MS)
+            }
+            finishCurrentSegment(deleteIfEmpty = false)
+        }
+    }
+
+    // ---- Analysis stream ----
+
+    private fun ensureAnalysisReader() {
+        if (analysisReader != null) return
+        val size = pickAnalysisSize()
+        val reader = ImageReader.newInstance(size.width, size.height, android.graphics.ImageFormat.YUV_420_888, 2)
+        reader.setOnImageAvailableListener({ r ->
+            val image = try {
+                r.acquireLatestImage()
+            } catch (e: Exception) {
+                null
+            } ?: return@setOnImageAvailableListener
+            try {
+                val plane = image.planes[0]
+                val buf = plane.buffer
+                val bytes = ByteArray(buf.remaining())
+                buf.get(bytes)
+                val result = detector.accept(bytes, image.width, image.height, plane.rowStride)
+                if (result.motion != lastMotionReported) {
+                    lastMotionReported = result.motion
+                    onMotionChanged(result.motion)
+                }
+                phaseController.onFrame(result.motion, System.currentTimeMillis())
+            } catch (e: Exception) {
+                Log.w(TAG, "frame analysis failed", e)
+            } finally {
+                image.close()
+            }
+        }, callbackHandler)
+        analysisReader = reader
+    }
+
+    private fun pickAnalysisSize(): Size {
+        val id = backCameraId() ?: return Size(320, 240)
+        val map = cameraManager.getCameraCharacteristics(id)
+            .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val sizes = map?.getOutputSizes(android.graphics.ImageFormat.YUV_420_888)?.toList().orEmpty()
+        // Smallest size at least ~QVGA - enough detail for grid differencing,
+        // cheap to shuttle every frame.
+        return sizes.filter { it.width >= 240 && it.height >= 180 }
+            .minByOrNull { it.width * it.height }
+            ?: sizes.minByOrNull { it.width * it.height }
+            ?: Size(320, 240)
+    }
+
+    // ---- Camera / session plumbing ----
 
     private suspend fun openCameraIfNeeded() {
         if (cameraDevice != null) return
@@ -152,8 +275,7 @@ class CameraPipeline(
                 }
             }, callbackHandler)
         } catch (e: CameraAccessException) {
-            // Reconfirmed on Pixel 6 during this slice: openCamera can throw synchronously
-            // (not just via the async callback) - see QUIRKS.md.
+            // Reconfirmed on Pixel 6: openCamera can throw synchronously - see QUIRKS.md.
             cont.resumeWithException(e)
         } catch (e: SecurityException) {
             cont.resumeWithException(e)
@@ -161,23 +283,24 @@ class CameraPipeline(
     }
 
     /**
-     * Builds a fresh MediaRecorder + capture session for the next clip file, then - per the old
-     * prototype's confirmed quirk that a session can report configured successfully and fail at
-     * the very first capture request - waits briefly and checks whether an async failure landed
-     * before trusting it and calling `recorder.start()`. Retries up to 3 times (fresh recorder +
-     * session each attempt, since a MediaRecorder that's failed once can't be reused).
+     * Builds a fresh MediaRecorder + capture session ([analysisReader] +
+     * recorder surfaces) for the next clip file. Keeps the old prototype's
+     * confirmed-quirk workaround: configure -> wait 500ms -> check for an async
+     * failure before trusting the session and calling `recorder.start()`.
+     * Retries up to 3x with a fresh recorder+session each attempt.
      */
     private suspend fun beginSegment(): Boolean {
         var attempt = 0
         while (attempt < 3 && running) {
             attempt++
             val device = cameraDevice ?: return false
+            val analysis = analysisReader ?: return false
             val recorder = buildRecorder()
-            val surface = recorder.surface
+            val recorderSurface = recorder.surface
             val sessionFailed = AtomicBoolean(false)
 
             val session = try {
-                createCaptureSession(device, surface, sessionFailed)
+                createCaptureSession(device, listOf(analysis.surface, recorderSurface), sessionFailed)
             } catch (e: Exception) {
                 Log.e(TAG, "createCaptureSession threw (attempt $attempt)", e)
                 recorder.release()
@@ -185,8 +308,6 @@ class CameraPipeline(
                 continue
             }
 
-            // Post-configure settle window: give any asynchronous HAL failure a chance to
-            // surface before we trust this session and start recording into it.
             delay(500)
             if (sessionFailed.get() || !running) {
                 Log.w(TAG, "session failed asynchronously after configure (attempt $attempt)")
@@ -198,7 +319,8 @@ class CameraPipeline(
 
             try {
                 val request = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                    addTarget(surface)
+                    addTarget(recorderSurface)
+                    addTarget(analysis.surface)
                 }.build()
                 session.setRepeatingRequest(request, null, callbackHandler)
                 recorder.start()
@@ -220,13 +342,13 @@ class CameraPipeline(
 
     private suspend fun createCaptureSession(
         device: CameraDevice,
-        surface: android.view.Surface,
+        surfaces: List<Surface>,
         sessionFailed: AtomicBoolean,
     ): CameraCaptureSession = suspendCancellableCoroutine { cont ->
         try {
             @Suppress("DEPRECATION")
             device.createCaptureSession(
-                listOf(surface),
+                surfaces,
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         if (cont.isActive) cont.resume(session)
@@ -247,9 +369,7 @@ class CameraPipeline(
     }
 
     private fun buildRecorder(): MediaRecorder {
-        val dir = clipsDir
-        val name = clipFileName()
-        val file = File(dir, name)
+        val file = File(clipsDir, clipFileName())
         currentFile = file
         val size = recordingSize
         @Suppress("DEPRECATION")
@@ -261,11 +381,9 @@ class CameraPipeline(
         recorder.setVideoFrameRate(30)
         recorder.setVideoSize(size.width, size.height)
         recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-        // Note: MediaRecorder has no public API for keyframe/I-frame interval or explicit
-        // sync-frame requests at all (those are MediaCodec-only - MediaFormat.KEY_I_FRAME_INTERVAL,
-        // PARAMETER_KEY_REQUEST_SYNC_FRAME - and this pipeline deliberately uses MediaRecorder for
-        // simplicity, see class doc). We can't set a target cadence, only measure whatever the
-        // device's default encoder produces; see logKeyframeCadence() and QUIRKS.md.
+        // MediaRecorder exposes no keyframe/I-frame-interval control (MediaCodec-only);
+        // we can only measure what the device's default encoder produces. See
+        // logKeyframeCadence() and QUIRKS.md.
         recorder.prepare()
         return recorder
     }
@@ -310,16 +428,17 @@ class CameraPipeline(
     private fun closeSessionAndDevice() {
         captureSession?.let { runCatching { it.close() } }
         captureSession = null
+        analysisReader?.let { runCatching { it.close() } }
+        analysisReader = null
         cameraDevice?.let { runCatching { it.close() } }
         cameraDevice = null
     }
 
     /**
-     * Cross-references camera-declared sizes against what the AVC encoder actually claims to
-     * support (`MediaCodecInfo.VideoCapabilities.isSizeSupported`) - reconfirms the old
-     * prototype's "unsupported encoder size silently black-frames" quirk defensively, by simply
-     * never selecting a size the encoder doesn't also agree on. Falls back to 1280x720 if that
-     * exact size isn't in the intersection, else the largest supported size.
+     * Camera-declared sizes intersected with what the AVC encoder actually
+     * supports (`isSizeSupported`) - defends against the old prototype's
+     * "unsupported encoder size silently black-frames" quirk. Falls back to
+     * 1280x720, else the largest agreed size.
      */
     private fun pickRecordingSize(): Size {
         val id = backCameraId() ?: return Size(1280, 720)
@@ -343,10 +462,9 @@ class CameraPipeline(
     }
 
     /**
-     * Reads back the actual keyframe timestamps MediaRecorder produced, to check the old
-     * prototype's "KEY_I_FRAME_INTERVAL isn't honored reliably" finding against this device.
-     * Purely diagnostic (logcat only) - doesn't change behavior, since a rotating ~10s clip
-     * doesn't depend on keyframe cadence the way the old live-HLS segmenter did.
+     * Diagnostic-only (logcat): reads back actual keyframe timestamps to check
+     * the old prototype's "KEY_I_FRAME_INTERVAL isn't honored reliably"
+     * finding against this device. Doesn't change behavior.
      */
     private fun logKeyframeCadence(file: File) {
         try {
@@ -375,7 +493,7 @@ class CameraPipeline(
                 val deltasMs = keyframeTimesUs.zipWithNext { a, b -> (b - a) / 1000 }
                 Log.i(TAG, "keyframe cadence for ${file.name}: ${deltasMs.size} intervals, deltas(ms)=$deltasMs")
             } else {
-                Log.i(TAG, "keyframe cadence for ${file.name}: only ${keyframeTimesUs.size} keyframe(s) in this ~${rotationIntervalMs}ms clip")
+                Log.i(TAG, "keyframe cadence for ${file.name}: only ${keyframeTimesUs.size} keyframe(s) in this clip")
             }
         } catch (e: Exception) {
             Log.w(TAG, "keyframe cadence probe failed for ${file.name}", e)

@@ -56,7 +56,7 @@ fun GalleryScreen(app: PanopticonApplication) {
 
         if (clips.isEmpty()) {
             Text(
-                text = "No clips yet - the recording pipeline rotates a new ~10s clip continuously once the service is running.",
+                text = "No clips yet - recording is motion-gated, so clips only appear once the analysis stream sees movement in the scene.",
                 color = PanopticonColors.textFaint,
                 fontSize = 13.sp,
             )

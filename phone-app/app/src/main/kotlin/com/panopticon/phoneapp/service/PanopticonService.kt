@@ -99,19 +99,36 @@ class PanopticonService : Service() {
     }
 
     private fun startCameraPipeline() {
-        app.appState.setRecordingStatus(RecordingStatus.RECORDING)
+        // Starts ARMED (analysing for motion), not RECORDING - the motion gate
+        // decides when a clip is actually written.
+        app.appState.setRecordingStatus(RecordingStatus.IDLE)
+        app.appState.setMotionActive(false)
         cameraPipeline = CameraPipeline(
             context = applicationContext,
             clipsDir = app.clipStore.clipsDir,
+            appConfig = app.appConfig,
             onClipFinished = { file, createdAtMs, durationMs, width, height ->
                 app.clipStore.addClip(file, createdAtMs, durationMs, width, height)
                 Log.i(TAG, "clip finished: ${file.name} (${durationMs}ms, ${width}x$height, ${file.length()} bytes)")
             },
             onHealthChanged = { healthy ->
                 app.appState.setCameraHealthy(healthy)
-                if (!healthy) app.appState.setRecordingStatus(RecordingStatus.UNAVAILABLE)
-                else if (app.appState.mode.value == AppMode.RECORD) app.appState.setRecordingStatus(RecordingStatus.RECORDING)
+                if (!healthy) {
+                    app.appState.setRecordingStatus(RecordingStatus.UNAVAILABLE)
+                    app.appState.setMotionActive(false)
+                } else if (app.appState.mode.value == AppMode.RECORD) {
+                    app.appState.setRecordingStatus(RecordingStatus.IDLE)
+                }
             },
+            onPhaseChanged = { recording ->
+                if (app.appState.mode.value == AppMode.RECORD && app.appState.cameraHealthy.value) {
+                    app.appState.setRecordingStatus(
+                        if (recording) RecordingStatus.RECORDING else RecordingStatus.IDLE,
+                    )
+                }
+                if (!recording) app.appState.setMotionActive(false)
+            },
+            onMotionChanged = { motion -> app.appState.setMotionActive(motion) },
         ).also { it.start() }
     }
 

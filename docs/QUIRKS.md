@@ -107,8 +107,9 @@ found the black-frame bug." Re-verify visually in normal lighting if this ever n
 ### Carried forward, not yet re-verified in this project
 
 Out of scope for this vertical slice (no manual Camera2 controls, no live HLS pipeline, no
-calibration, no motion-gated recording, no multi-camera) - see
-`panopticon-prototype/QUIRKS.md` for the original write-ups:
+multi-camera; calibration and motion-gated recording now exist but the specific quirks below
+still haven't been re-tested against the Pixel 6) - see `panopticon-prototype/QUIRKS.md` for the
+original write-ups:
 
 - `SCALER_CROP_REGION` position isn't honored, and the device lies about it
 - Digital zoom quality collapses well below the declared max, invisible to crop-region metadata
@@ -126,8 +127,16 @@ calibration, no motion-gated recording, no multi-camera) - see
 - The automatic keyframe timer and explicit requests fight each other
 - In-place bitrate changes are silently ignored
 - Concurrent `MediaCodec` access crashes natively, and a decoder that's thrown once throws forever
-- Two concurrent camera surfaces for record + motion sampling never configure (moot here - this
-  slice has no motion-sampling surface at all, real motion detection is out of scope)
+- **Two concurrent camera surfaces for record + motion sampling never configure** - the old
+  prototype's claim (Pixel 9a / Tensor). **No longer moot:** this slice's motion-gated
+  `CameraPipeline` now configures exactly that combination - an analysis `ImageReader`
+  (`YUV_420_888`, ~QVGA) plus the `MediaRecorder` surface - in its RECORDING-phase session
+  (`createCaptureSession(listOf(analysis.surface, recorderSurface), ...)`, `TEMPLATE_RECORD`).
+  It has **not** been run on the Pixel 6 yet. If the RECORDING session fails to configure on
+  hardware, the fallback is to alternate surfaces instead of co-configuring them: analyse only
+  during ARMED, drop the analysis surface while RECORDING and rely on a fixed max-clip / trailer
+  timeout for motion-stop rather than live detection during a recording. `MotionDetector` /
+  `RecordingPhaseController` don't change either way - only how `CameraPipeline` wires sessions.
 - CORS needs explicit header exposure for hls.js (adopted defensively in `PanopticonHttpServer.kt`
   for ranged clip downloads generally - `exposeHeader(Content-Range/Content-Length)` - but not
   verified against an actual browser `fetch()`/hls.js client, only via `curl`, since there's no

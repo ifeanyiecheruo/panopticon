@@ -8,8 +8,14 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 ## What's here
 
 - **`PanopticonService`** - foreground, `START_STICKY` service. Opens the back camera via
-  Camera2, records continuously into rotating ~10s H.264 clips via `MediaRecorder`, and runs an
-  embedded Ktor/Netty HTTP server.
+  Camera2, runs a **motion-gated** recording pipeline (rotating ~10s H.264 clips via
+  `MediaRecorder`, written only while motion is present plus a short tail), and runs an embedded
+  Ktor/Netty HTTP server.
+- **Motion gate** - an always-on analysis stream (small YUV `ImageReader`) feeds a
+  frame-difference `MotionDetector`; its verdict drives a `RecordingPhaseController` state
+  machine (ARMED &lt;-&gt; RECORDING, with a trailer tail after motion stops). `motionSensitivity`
+  from `/api/config` picks the threshold and takes effect on the next idle period. See the
+  simplification note below for what the detector does and doesn't handle.
 - **HTTP API** - implements a subset of `phone-http-api.md`: pairing (`POST`/`DELETE /api/pair`),
   device identity/status/config (`/api/device`, `/api/build-info`, `/api/status`, `/api/config`),
   mode (`/api/mode` - `live` is a stub), clip sync (`/api/clips`, `.../file`, `.../thumbnail`,
@@ -26,8 +32,15 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 
 ## Deliberate simplifications (see code comments for exact locations)
 
-- **No real motion detection.** The camera always records ("always motion" gate) - a real
-  motion-gated `RecordingPhaseController`-style state machine is out of scope for this slice.
+- **Frame-difference motion only, thresholds un-tuned.** `MotionDetector` subsamples the luma
+  plane on a 32x24 grid and counts cells whose brightness changed since the last frame - no
+  background model, no CV library. It's knowingly naive about lighting steps (a light switching
+  on trips it), auto-exposure/gain drift (a warmup guard + the per-cell delta threshold absorb
+  small global shifts), and slow scene drift. The per-sensitivity thresholds in the code are
+  starting points chosen by reasoning, **not measured against the Pixel 6 in real lighting** -
+  that tuning (and any move to a real background-subtraction model) is follow-up work. Also **no
+  pre-roll**: a clip starts at motion-detection time, since `MediaRecorder` can't back-date a
+  buffer (pre-roll is tied to the future `MediaCodec`+`MediaMuxer` switch).
 - **`live` mode is a stub.** `POST /api/mode {"mode":"live"}` flips the mode flag and tears down
   the recording pipeline (RECORD/LIVE stay mutually exclusive, per the architecture doc) but
   there's no real HLS encoder/relay behind it.
@@ -43,8 +56,10 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   calibration) is deferred - it needs real-hardware iteration against the digital-zoom /
   `SCALER_CROP_REGION` findings in the old prototype's `QUIRKS.md`. Calibration does **not** tear
   down the recording pipeline (reading characteristics needs no exclusive camera access).
-- **Full `CameraCaptureSession` teardown+recreate every rotation** rather than a lighter in-place
-  surface swap - simpler to reason about, doubles as a session-reconfigure stress test.
+- **Full `CameraCaptureSession` teardown+recreate on every clip rotation and every ARMED&lt;-&gt;RECORDING
+  transition** rather than a lighter in-place surface swap - simpler to reason about, doubles as a
+  session-reconfigure stress test. The analysis `ImageReader` persists across those; only the
+  session and `MediaRecorder` churn.
 - **Bottom nav bar instead of the mock's left icon rail + top status pill** - visual language
   (dark/teal theme, `ui/theme/Theme.kt`) carried over; exact chrome layout wasn't a priority for
   this slice.
