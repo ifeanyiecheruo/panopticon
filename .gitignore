@@ -1,13 +1,9 @@
-# Invariant ignores shared across every project in this repo - OS/editor churn and generic
+# Invariant ignores shared across every project in this monorepo - OS/editor churn and generic
 # build-tool caches that look the same regardless of which project produced them. Project-specific
 # output paths (APK layout, wails' build/bin, this app's own data/archive dirs, etc.) stay in that
-# project's own .gitignore instead - only move a pattern here if it would apply unchanged in any
-# project of that general kind (any JVM project, any project touched on a Mac, etc.).
-#
-# panopticon/ itself isn't a git repo - phone-app/ and controller/ are separate ones. This file
-# only takes effect for them because each has `git config core.excludesFile ../.gitignore` set
-# locally (see each project's README). That setting lives in .git/config, isn't itself versioned,
-# and needs to be re-run once after a fresh clone of either child repo.
+# project's own .gitignore instead (git applies both automatically within one repo - no config
+# needed) - only move a pattern here if it would apply unchanged in any project of that general
+# kind (any JVM project, any project touched on a Mac, etc.).
 
 # OS
 .DS_Store
@@ -34,3 +30,6 @@ node_modules/
 
 # Generic
 *.log
+
+# Claude Code session-local state (not project source)
+.claude/*.lock

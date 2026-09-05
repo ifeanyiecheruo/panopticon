@@ -1,6 +1,6 @@
 # Project-specific ignores only - OS/editor/generic-node-tooling churn (.DS_Store, node_modules/,
-# .idea/, *.log, etc.) lives in the root .gitignore instead (see its header comment for why, and
-# the one-time `git config core.excludesFile ../.gitignore` this repo needs to see it).
+# .idea/, *.log, etc.) lives in the root .gitignore instead (applies automatically - this and the
+# root file are both part of the same monorepo).
 
 build/bin
 frontend/dist
