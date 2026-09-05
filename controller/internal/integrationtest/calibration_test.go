@@ -2,6 +2,7 @@ package integrationtest
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -150,6 +151,14 @@ func TestCalibration_ReRunStoresResult(t *testing.T) {
 
 	phone := mustGetPhone(t, store, res.PhoneID)
 	client := phoneapi.New(phone.BaseURL, phone.Token)
+
+	// A sweep is blocked until recording is explicitly stopped.
+	if _, err := client.StartCalibration(context.Background()); !errors.Is(err, phoneapi.ErrPhoneRecording) {
+		t.Fatalf("expected ErrPhoneRecording while recording, got %v", err)
+	}
+	if err := client.SetMode(context.Background(), "standby"); err != nil {
+		t.Fatalf("SetMode standby: %v", err)
+	}
 
 	start, err := client.StartCalibration(context.Background())
 	if err != nil || start.RunID == "" {

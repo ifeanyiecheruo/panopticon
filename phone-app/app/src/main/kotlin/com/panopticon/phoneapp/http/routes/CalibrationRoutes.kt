@@ -27,6 +27,8 @@ fun Route.calibrationRoutes(runner: CalibrationRunner) {
                     call.respond(outcome.response)
                 is CalibrationRunner.StartOutcome.AlreadyRunning ->
                     call.respond(HttpStatusCode.Conflict, ErrorBody("calibration already running (runId=${outcome.runId})"))
+                is CalibrationRunner.StartOutcome.CameraBusy ->
+                    call.respond(HttpStatusCode.Conflict, ErrorBody(outcome.message))
                 is CalibrationRunner.StartOutcome.NoCameras ->
                     call.respond(HttpStatusCode.UnprocessableEntity, ErrorBody(outcome.message))
             }

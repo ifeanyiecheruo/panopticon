@@ -53,6 +53,7 @@ fun HomeScreen(app: PanopticonApplication) {
                 !cameraHealthy -> "UNAVAILABLE" to PanopticonColors.warn
                 recordingStatus == RecordingStatus.RECORDING -> "REC" to PanopticonColors.rec
                 recordingStatus == RecordingStatus.UNAVAILABLE -> "UNAVAILABLE" to PanopticonColors.warn
+                recordingStatus == RecordingStatus.STOPPED -> "STOPPED" to PanopticonColors.textDim
                 else -> "ARMED" to PanopticonColors.accent
             }
             Text(text = label, color = color, fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -60,6 +61,8 @@ fun HomeScreen(app: PanopticonApplication) {
                 text = when {
                     recordingStatus == RecordingStatus.RECORDING ->
                         "Motion gate open - writing rotating ~10s clips."
+                    recordingStatus == RecordingStatus.STOPPED ->
+                        "Recording explicitly stopped - the camera is free for calibration / live preview. Re-arm from the Calibrate tab."
                     motionActive ->
                         "Motion detected - starting to record."
                     else ->

@@ -152,6 +152,9 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
   const p = detail.phone;
   const cal = detail.calibration;
   const running = runId !== null;
+  // Calibration (and, later, live preview) need exclusive camera access, which
+  // the phone only gives up when recording is explicitly stopped on the phone.
+  const phoneRecording = detail.status?.mode === 'record';
 
   return (
     <div className="body-scroll">
@@ -231,10 +234,56 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
               </>
             )}
           </div>
-          <button className="btn small" onClick={startCalibration} disabled={running || !cal.modelKey}>
+          <button
+            className="btn small"
+            onClick={startCalibration}
+            disabled={running || !cal.modelKey || phoneRecording}
+            title={phoneRecording ? 'Stop recording on the phone first' : undefined}
+          >
             {running ? 'Running…' : cal.present ? 'Re-run' : 'Run calibration'}
           </button>
         </div>
+
+        {phoneRecording && (
+          <div className="calib-sub" style={{ marginTop: '8px' }}>
+            Recording — calibration and live preview are unavailable until recording is stopped on
+            the phone's own screen.
+          </div>
+        )}
+
+        {cal.present && cal.cameras && cal.cameras.length > 0 && (
+          <div className="calib-cameras">
+            {cal.cameras.map((c) => (
+              <div className="calib-cam" key={c.cameraId}>
+                <div className="calib-cam-head">
+                  Camera {c.cameraId} · {c.facing}
+                </div>
+                <div className="calib-cam-grid">
+                  <span>optical</span>
+                  <span>
+                    {c.opticalRange.lo.toFixed(2)}×–{c.opticalRange.hi.toFixed(2)}×
+                  </span>
+                  <span>digital</span>
+                  <span>
+                    {c.digitalRange.lo.toFixed(2)}×–{c.digitalRange.hi.toFixed(2)}×
+                  </span>
+                  <span>crossover</span>
+                  <span>{c.crossoverRatio != null ? `${c.crossoverRatio.toFixed(2)}×` : '—'}</span>
+                  <span>zoom-rect position</span>
+                  <span className={c.positionHonored ? '' : 'calib-bad'}>
+                    {c.positionHonored ? 'honoured' : 'NOT honoured'}
+                  </span>
+                  <span>quality collapse</span>
+                  <span className={c.qualityCollapseRatio != null ? 'calib-bad' : ''}>
+                    {c.qualityCollapseRatio != null ? `from ${c.qualityCollapseRatio.toFixed(2)}×` : 'not seen'}
+                  </span>
+                  <span>resolutions probed</span>
+                  <span>{c.resolutions}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {progress && (
           <>

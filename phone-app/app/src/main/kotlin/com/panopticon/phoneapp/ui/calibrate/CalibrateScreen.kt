@@ -27,10 +27,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.panopticon.phoneapp.PanopticonApplication
 import com.panopticon.phoneapp.calibration.CalibrationResult
 import com.panopticon.phoneapp.calibration.CalibrationRunner
 import com.panopticon.phoneapp.calibration.CalibrationStatus
+import com.panopticon.phoneapp.state.AppMode
 import com.panopticon.phoneapp.ui.theme.PanopticonColors
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -40,18 +42,17 @@ import java.util.Locale
 /**
  * On-device Calibrate screen. Talks to [CalibrationRunner] directly (same
  * process - no HTTP), mirroring what a controller would drive over the
- * calibration routes. Shows the live per-step probe view + per-capability
- * pass/fail breakdown that HANDOFF-controller-ux.md notes the phone's own
- * screen has (the controller only summarises "N/M checks").
+ * calibration routes. A real sweep needs exclusive camera access, so it's only
+ * available from STANDBY - recording has to be explicitly stopped first.
  */
 @Composable
 fun CalibrateScreen(app: PanopticonApplication) {
     val runner = app.calibrationRunner
+    val mode by app.appState.mode.collectAsStateWithLifecycle()
     var status by remember { mutableStateOf<CalibrationStatus?>(runner.status(null)) }
     var result by remember { mutableStateOf<CalibrationResult?>(currentResult(runner)) }
     var runId by remember { mutableStateOf(status?.runId?.takeIf { status?.status == "running" }) }
 
-    // Poll while a sweep is running; stop once it settles.
     LaunchedEffect(runId) {
         if (runId == null) return@LaunchedEffect
         while (true) {
@@ -62,11 +63,12 @@ fun CalibrateScreen(app: PanopticonApplication) {
                 runId = null
                 break
             }
-            delay(300)
+            delay(400)
         }
     }
 
     val running = status?.status == "running"
+    val recording = mode == AppMode.RECORD
 
     Column(
         modifier = Modifier
@@ -77,11 +79,31 @@ fun CalibrateScreen(app: PanopticonApplication) {
     ) {
         Text("Calibration", color = PanopticonColors.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text(
-            "Sweeps every camera the device reports, comparing declared Camera2 capabilities " +
-                "against what they actually do. Results are keyed by device model and shared with paired controllers.",
+            "Empirically probes every camera at every resolution: effective field of view per " +
+                "zoom level, where optical zoom hands off to digital, whether a zoom rect's " +
+                "position is honoured, and image sharpness. Results are keyed by device model " +
+                "and shared with paired controllers.",
             color = PanopticonColors.textDim,
             fontSize = 13.sp,
         )
+
+        if (recording) {
+            CardBox(title = "Recording is active") {
+                Text(
+                    "Calibration (and live preview) need exclusive use of the camera. Stop " +
+                        "recording to run a sweep; it stays stopped until you start it again.",
+                    color = PanopticonColors.textDim,
+                    fontSize = 12.sp,
+                )
+                Button(
+                    onClick = { app.requestMode(AppMode.STANDBY) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PanopticonColors.rec,
+                        contentColor = PanopticonColors.text,
+                    ),
+                ) { Text("Stop recording") }
+            }
+        }
 
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
@@ -91,13 +113,11 @@ fun CalibrateScreen(app: PanopticonApplication) {
                             runId = outcome.response.runId
                             status = runner.status(runId)
                         }
-                        is CalibrationRunner.StartOutcome.AlreadyRunning -> {
-                            runId = outcome.runId
-                        }
-                        is CalibrationRunner.StartOutcome.NoCameras -> Unit
+                        is CalibrationRunner.StartOutcome.AlreadyRunning -> runId = outcome.runId
+                        else -> Unit
                     }
                 },
-                enabled = !running,
+                enabled = !running && !recording,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = PanopticonColors.accent,
                     contentColor = PanopticonColors.accentInk,
@@ -109,10 +129,14 @@ fun CalibrateScreen(app: PanopticonApplication) {
                 OutlinedButton(onClick = { status?.runId?.let { runner.cancel(it) } }) {
                     Text("Cancel", color = PanopticonColors.text)
                 }
+            } else if (mode == AppMode.STANDBY) {
+                OutlinedButton(onClick = { app.requestMode(AppMode.RECORD) }) {
+                    Text("Resume recording", color = PanopticonColors.text)
+                }
             }
         }
 
-        status?.let { s -> ProgressCard(s) }
+        status?.let { s -> if (s.status == "running") ProgressCard(s) }
         result?.let { r -> ResultCard(r) }
         if (result == null && !running) {
             Text(
@@ -141,9 +165,9 @@ private fun ProgressCard(s: CalibrationStatus) {
             fontSize = 13.sp,
         )
         Text(
-            "Step ${s.stepsCompleted}/${s.stepsTotal}" +
+            "Resolution ${s.stepsCompleted}/${s.stepsTotal}" +
                 (s.currentStep?.let { " - $it" } ?: "") +
-                (if (s.progressWithinStep.total > 0) " - check ${s.progressWithinStep.index}/${s.progressWithinStep.total}" else ""),
+                (if (s.progressWithinStep.total > 0) " - zoom ${s.progressWithinStep.index}/${s.progressWithinStep.total}" else ""),
             color = PanopticonColors.textDim,
             fontSize = 12.sp,
         )
@@ -154,36 +178,41 @@ private fun ProgressCard(s: CalibrationStatus) {
 private fun ResultCard(r: CalibrationResult) {
     val fmt = remember { SimpleDateFormat("MMM d, HH:mm:ss", Locale.US) }
     CardBox(title = "Last result - ${fmt.format(Date(r.runAtMs))}") {
-        val total = r.cameras.values.sumOf { c -> c.steps.values.sumOf { it.checksTotal } }
-        val passed = r.cameras.values.sumOf { c -> c.steps.values.sumOf { it.checksPassed } }
-        Text("$passed / $total checks passed across ${r.cameras.size} camera(s)", color = PanopticonColors.text, fontSize = 14.sp)
-
+        Text(
+            "${r.deviceIdentity.manufacturer} ${r.deviceIdentity.model} - ${r.cameras.size} camera(s)",
+            color = PanopticonColors.text,
+            fontSize = 13.sp,
+        )
         r.cameras.forEach { (cameraId, cam) ->
+            val id = cam.deviceIdentity
             Text(
-                "Camera $cameraId - ${cam.deviceIdentity.facing}" +
-                    (cam.deviceIdentity.focalLengthMm?.let { " - %.1fmm".format(it) } ?: ""),
+                "Camera $cameraId - ${id.facing}" +
+                    (if (id.isLogicalMultiCam) " - logical (${id.physicalIds.size} physical)" else "") +
+                    " - active ${id.activeArrayWidth}x${id.activeArrayHeight}",
                 color = PanopticonColors.accent,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.padding(top = 6.dp),
             )
-            cam.steps.forEach { (stepName, step) ->
-                Text(
-                    "  $stepName: ${step.checksPassed}/${step.checksTotal}",
-                    color = PanopticonColors.textDim,
-                    fontSize = 12.sp,
-                )
-                step.checks.forEach { check ->
-                    Text(
-                        "    ${if (check.ok) "OK " else "!! "}${check.name}: ${check.declared}",
-                        color = if (check.ok) PanopticonColors.textFaint else PanopticonColors.warn,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                    )
-                }
+            Line("optical zoom", "%.2fx .. %.2fx".format(cam.opticalRange.lo, cam.opticalRange.hi))
+            Line("digital zoom", "%.2fx .. %.2fx".format(cam.digitalRange.lo, cam.digitalRange.hi))
+            Line(
+                "crossover",
+                cam.crossoverRatio?.let { "%.2fx (%s)".format(it, cam.crossoverMethod) } ?: cam.crossoverMethod,
+            )
+            Line("zoom-rect position honoured", if (cam.positionHonored) "yes" else "NO ${cam.positionFailRatios.joinToString(prefix = "@", transform = { "%.1fx".format(it) })}")
+            Line("quality collapse", cam.qualityCollapseRatio?.let { "from %.2fx".format(it) } ?: "not seen")
+            cam.perResolution.forEach { (res, zm) ->
+                val honored = zm.samples.count { it.ratioHonored }
+                Line("  $res", "$honored/${zm.samples.size} zooms honoured")
             }
         }
     }
+}
+
+@Composable
+private fun Line(k: String, v: String) {
+    Text("$k: $v", color = PanopticonColors.textFaint, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
 }
 
 @Composable

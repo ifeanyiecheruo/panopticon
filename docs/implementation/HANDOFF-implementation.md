@@ -9,15 +9,20 @@ already lives elsewhere and would drift.
 
 **Slices added since the initial handoff:**
 
-- **Calibration (both sides).** phone-app has the full `/api/calibration/*` route set + a
-  `CalibrationRunner` state machine (device-wide sweep, per-camera/step/within-step progress,
-  cancellation, on-disk last-result) + a Calibrate screen. controller has the
-  manufacturer+model `calibration` store, opportunistic ingest on pair / Phone-detail open,
-  and a Phone-detail Calibration section with a Run/Re-run action. **Deferred within this
-  slice:** the empirical measure-vs-declared probe — checks currently snapshot declared
-  `CameraCharacteristics` and always pass (see `phone-app/README.md`'s "Deliberate
-  simplifications"). That deepening is the natural next calibration pass and has the old
-  prototype's `SCALER_CROP_REGION`/digital-zoom `QUIRKS.md` findings to re-verify against.
+- **Calibration (both sides), incl. the real empirical zoom probe.** phone-app's
+  `CalibrationRunner` now does a real per-camera / per-`StreamConfigurationMap`-size / per-zoom
+  sweep — applies `CONTROL_ZOOM_RATIO` (API 30+) / `SCALER_CROP_REGION`, reads back the
+  effective crop, checks ratio + off-centre position honouring, tracks the active physical
+  camera (optical→digital crossover) and a Laplacian-variance sharpness score; derives
+  `opticalRange` / `digitalRange` / `crossoverRatio` / `positionHonored` / `qualityCollapseRatio`
+  per camera. A new `standby` mode (RECORD is sticky) frees the camera for it. controller
+  decodes the full per-resolution map, shows the per-camera summary in Phone detail (button
+  disabled + reason while the phone is recording), and has `calibration.EffectiveRect` (requested
+  zoom+centre → honoured crop). **Verified on the BLU G5 (API 28, legacy path).** **Still to
+  do:** the Pixel 6 run (it was USB-disconnected during this pass — the `CONTROL_ZOOM_RATIO` /
+  logical-multi-camera path); and the controller-side **zoom-rect picker UI** that consumes
+  `EffectiveRect` (deferred — it hangs off Live preview). See `docs/QUIRKS.md`'s "Calibration
+  zoom probe" for the real BLU G5 findings + the two weak-HAL quirks the probe now works around.
 
 - **Motion-gated recording (phone-app only).** The always-record pipeline is gone. `CameraPipeline`
   now runs an always-on analysis `ImageReader` → `motion/MotionDetector` (frame-difference on a
@@ -109,8 +114,9 @@ Worth calling out specifically: several deferred features require coordinated wo
 phone-app and controller together**, not just one side in isolation — these are natural
 candidates for "the next slice":
 
-- ~~**Calibration.**~~ **Implemented** (both sides) — see "Slices added since the initial
-  handoff" above. What remains is the empirical measure-vs-declared probe, called out there.
+- ~~**Calibration.**~~ **Implemented** (both sides), including the real empirical zoom probe —
+  see "Slices added since the initial handoff" above. What remains: the Pixel 6 verification run
+  and the controller-side zoom-rect picker UI.
 - **Live HLS view.** phone-app's `POST /api/mode {"mode":"live"}` is a stub (flips the mode flag,
   no real encoder/relay); controller has no live-preview UI. `ARCHITECTURE.md`-equivalent design
   detail for this doesn't exist yet in this project's own docs (the *old prototype* did build a

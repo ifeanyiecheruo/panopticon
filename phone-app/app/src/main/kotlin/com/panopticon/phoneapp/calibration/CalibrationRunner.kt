@@ -1,62 +1,98 @@
 package com.panopticon.phoneapp.calibration
 
 import android.content.Context
+import android.graphics.ImageFormat
+import android.graphics.Rect
+import android.hardware.camera2.CameraAccessException
+import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
+import android.media.ImageReader
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import android.util.Range
+import android.util.Size
+import com.panopticon.phoneapp.BuildConfig
+import com.panopticon.phoneapp.state.AppMode
+import com.panopticon.phoneapp.state.AppState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.security.SecureRandom
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.math.pow
 
 private const val TAG = "CalibrationRunner"
 
-/** Milliseconds paused between individual probe points - see class doc. */
-private const val CHECK_PACING_MS = 120L
-private const val ZOOM_QUALITY_SAMPLES = 15
+/** Zoom requests swept per resolution (geometric spacing, dense at the low end). */
+private const val ZOOM_STEPS = 14
+
+/** Of those, how many also get an off-centre crop-region probe (position honoured?). */
+private const val POSITION_PROBE_STEPS = 6
+
+/** Guardrail against pathological device size lists. */
+private const val MAX_RESOLUTIONS_PER_CAMERA = 24
+
+private const val INITIAL_SETTLE_MS = 800L
+private const val PER_SAMPLE_SETTLE_MS = 320L
+
+private const val SHARPNESS_PATCH = 256
 
 /**
- * Owns the single device-wide calibration sweep at a time. A sweep walks
- * **every** camera `CameraManager` reports (per phone-http-api.md - the whole
- * point of calibration is catching a device lying about its Camera2
- * capabilities, and that risk is per-camera, not just the default one),
- * running a fixed ordered set of steps per camera and reporting camera + step
- * + within-step progress the whole way.
+ * Runs one device-wide **empirical** zoom calibration sweep at a time.
  *
- * Deliberate simplification for this slice (documented, not accidental): each
- * check records the camera's **declared** `CameraCharacteristics` value as
- * both `declared` and `measured` and reports `ok = true`. Wiring the
- * empirical half - open a `CameraCaptureSession`, apply the control, read the
- * effective value back from the `CaptureResult`, and flag the mismatch - is
- * deferred; it needs iteration against real hardware (the old prototype's
- * `QUIRKS.md` has hard-won `SCALER_CROP_REGION`/digital-zoom findings to
- * re-verify against, per HANDOFF-implementation.md). The run/step/progress
- * state machine, persistence, cancellation, and the whole wire contract are
- * real now, so that deepening is a drop-in.
+ * For every camera `CameraManager` reports, at every `StreamConfigurationMap`
+ * output size, the sweep applies a geometric range of zoom requests and
+ * records what the HAL actually did:
  *
- * Calibration does NOT tear down the recording pipeline: reading
- * `CameraCharacteristics` needs no exclusive camera access, so RECORD keeps
- * running through a sweep. (If/when the empirical half lands it will need to
- * coordinate with the pipeline the way LIVE mode does.)
+ *  - the effective crop rect (`SCALER_CROP_REGION` read back), normalised -
+ *    i.e. the true field of view at that zoom;
+ *  - whether the requested ratio was honoured (`CONTROL_ZOOM_RATIO` on API 30+,
+ *    else area of the reported crop);
+ *  - whether an intentionally off-centre crop keeps its offset or is recentred;
+ *  - which physical camera answered (`LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID`)
+ *    and the reported lens focal length, to locate the optical->digital
+ *    crossover;
+ *  - a frame-sharpness score (variance of Laplacian on a centred Y patch), to
+ *    catch digital-zoom quality collapse.
+ *
+ * Needs exclusive camera access, so it only runs from `AppMode.STANDBY` -
+ * recording (and live preview) must be explicitly stopped first.
  */
 class CalibrationRunner(
     context: Context,
     private val store: CalibrationStore,
+    private val appState: AppState,
 ) {
     private val appContext = context.applicationContext
     private val cameraManager = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val lock = Any()
 
+    private val callbackThread = HandlerThread("PanopticonCalibration").apply { start() }
+    private val callbackHandler = Handler(callbackThread.looper)
+
+    // Whether the API-gated Camera2 zoom keys exist on this device. Read once;
+    // all use of them is funnelled through ZoomRatioApi30 / ActivePhysicalIdApi29
+    // so the verifier never touches those fields on older devices.
+    private val hasZoomRatio = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+    private val hasActivePhysicalId = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+
     @Volatile
     private var active: ActiveRun? = null
 
-    /** runId of the last run that reached "completed" (the result itself lives on disk). */
     @Volatile
     private var lastCompletedRunId: String? = store.load()?.runId
 
@@ -66,11 +102,20 @@ class CalibrationRunner(
         data class Started(val response: CalibrationStartResponse) : StartOutcome
         data class AlreadyRunning(val runId: String) : StartOutcome
         data class NoCameras(val message: String) : StartOutcome
+        data class CameraBusy(val message: String) : StartOutcome
     }
 
     fun start(): StartOutcome {
         synchronized(lock) {
             active?.takeIf { it.status == "running" }?.let { return StartOutcome.AlreadyRunning(it.runId) }
+
+            when (appState.mode.value) {
+                AppMode.RECORD -> return StartOutcome.CameraBusy(
+                    "stop recording on the phone before calibrating (POST /api/mode standby)",
+                )
+                AppMode.LIVE -> return StartOutcome.CameraBusy("live preview is using the camera")
+                AppMode.STANDBY -> Unit
+            }
 
             val cameraIds = try {
                 cameraManager.cameraIdList.toList()
@@ -98,7 +143,6 @@ class CalibrationRunner(
         }
     }
 
-    /** null -> respond 404. `runId == null` means "the current or last run". */
     fun status(runId: String?): CalibrationStatus? {
         val run = active
         if (runId == null) return run?.snapshot() ?: lastCompletedSnapshot()
@@ -111,7 +155,7 @@ class CalibrationRunner(
         synchronized(lock) {
             val run = active ?: return false
             if (run.runId != runId || run.status != "running") return false
-            run.status = "cancelled" // set before cancel() so sweep()'s catch knows it was deliberate
+            run.status = "cancelled"
             run.job?.cancel()
             return true
         }
@@ -119,15 +163,13 @@ class CalibrationRunner(
 
     sealed interface ResultOutcome {
         data class Completed(val result: CalibrationResult) : ResultOutcome
-        object NotCompleted : ResultOutcome // -> 409
-        object Unknown : ResultOutcome // -> 404
+        object NotCompleted : ResultOutcome
+        object Unknown : ResultOutcome
     }
 
     fun result(runId: String?): ResultOutcome {
         val persisted = store.load()
-        if (runId == null) {
-            return persisted?.let { ResultOutcome.Completed(it) } ?: ResultOutcome.Unknown
-        }
+        if (runId == null) return persisted?.let { ResultOutcome.Completed(it) } ?: ResultOutcome.Unknown
         if (persisted != null && persisted.runId == runId) return ResultOutcome.Completed(persisted)
         val run = active
         if (run != null && run.runId == runId) return ResultOutcome.NotCompleted
@@ -138,34 +180,26 @@ class CalibrationRunner(
 
     private suspend fun sweep(run: ActiveRun) {
         try {
+            // Grace period: if we just came out of RECORD, the motion pipeline's
+            // camera teardown is still in flight on its own executor. Opening a
+            // camera into that race gets the device disconnected out from under
+            // us (seen on the BLU G5). Give it a beat.
+            delay(1200)
+
             for ((camIndex, cameraId) in run.cameraIds.withIndex()) {
                 run.currentCameraId = cameraId
                 run.camerasCompleted = camIndex
                 run.stepsCompleted = 0
+                run.stepsTotal = 0
 
-                val chars = try {
-                    cameraManager.getCameraCharacteristics(cameraId)
+                val cam = try {
+                    probeCamera(cameraId, run)
                 } catch (e: Exception) {
-                    Log.w(TAG, "characteristics for camera $cameraId failed; recording error checks", e)
+                    if (run.status == "cancelled") throw e
+                    Log.e(TAG, "camera $cameraId probe failed", e)
                     null
                 }
-
-                val steps = linkedMapOf<String, CalibrationStep>()
-                val stepIds = CalibrationStepId.values()
-                for ((stepIndex, stepId) in stepIds.withIndex()) {
-                    run.currentStep = stepId.wire
-                    run.stepsCompleted = stepIndex
-                    // delay() inside runStep() throws CancellationException if
-                    // cancel() fired - that propagates out to the catch below,
-                    // leaving cameras finished so far with their partial results.
-                    steps[stepId.wire] = runStep(run, stepId, chars)
-                    run.stepsCompleted = stepIndex + 1
-                }
-
-                run.cameras[cameraId] = CameraCalibration(
-                    deviceIdentity = deviceIdentity(cameraId, chars),
-                    steps = steps,
-                )
+                if (cam != null) run.cameras[cameraId] = cam
                 run.camerasCompleted = camIndex + 1
             }
 
@@ -173,6 +207,12 @@ class CalibrationRunner(
                 val result = CalibrationResult(
                     runId = run.runId,
                     runAtMs = System.currentTimeMillis(),
+                    deviceIdentity = ResultDeviceIdentity(
+                        manufacturer = Build.MANUFACTURER,
+                        model = Build.MODEL,
+                        device = Build.DEVICE,
+                        appVersionName = BuildConfig.VERSION_NAME,
+                    ),
                     cameras = run.cameras.toMap(),
                 )
                 store.save(result)
@@ -181,142 +221,397 @@ class CalibrationRunner(
                 Log.i(TAG, "calibration ${run.runId} completed (${result.cameras.size} cameras)")
             }
         } catch (e: Exception) {
-            // cancel() sets status = "cancelled" then cancels the job, which
-            // surfaces here as a CancellationException - expected, not an error.
             if (run.status == "cancelled") {
                 Log.i(TAG, "calibration ${run.runId} cancelled; ${run.cameras.size} camera(s) kept partial results")
             } else {
                 run.status = "error"
-                Log.e(TAG, "calibration ${run.runId} failed mid-sweep", e)
+                Log.e(TAG, "calibration ${run.runId} failed", e)
             }
         }
     }
 
-    private suspend fun runStep(
-        run: ActiveRun,
-        stepId: CalibrationStepId,
-        chars: CameraCharacteristics?,
-    ): CalibrationStep {
-        val checks = when (stepId) {
-            CalibrationStepId.CROP_REGION -> cropRegionChecks(chars)
-            CalibrationStepId.ZOOM_QUALITY -> zoomQualityChecks(chars)
-        }
-        run.stepChecksTotal = checks.size
-        run.stepCheckIndex = 0
-        val done = ArrayList<CalibrationCheck>(checks.size)
-        for ((i, check) in checks.withIndex()) {
-            delay(CHECK_PACING_MS)
-            run.stepCheckIndex = i + 1
-            done += check
-        }
-        return CalibrationStep(
-            checksTotal = checks.size,
-            checksPassed = done.count { it.ok },
-            checks = done,
-        )
-    }
+    private suspend fun probeCamera(cameraId: String, run: ActiveRun): CameraCalibration {
+        val chars = cameraManager.getCameraCharacteristics(cameraId)
+        val active = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+            ?: Rect(0, 0, 4032, 3024)
+        val activeRect = active.toIntRect()
 
-    // ---- Per-step check builders (declared-characteristics snapshot) ----
-
-    private fun cropRegionChecks(chars: CameraCharacteristics?): List<CalibrationCheck> {
-        if (chars == null) return listOf(errCheck("characteristics-unavailable"))
-        val out = mutableListOf<CalibrationCheck>()
-
-        val maxDigitalZoom = chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
-        out += declaredCheck("SCALER_AVAILABLE_MAX_DIGITAL_ZOOM", maxDigitalZoom?.toString() ?: "unset")
-
-        val zoomRange = zoomRatioRange(chars)
-        out += declaredCheck(
-            "CONTROL_ZOOM_RATIO_RANGE",
-            zoomRange?.let { "${it.lower}..${it.upper}" } ?: "n/a (<API 30)",
-        )
-
-        val activeArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-        out += declaredCheck("SENSOR_INFO_ACTIVE_ARRAY_SIZE", activeArray?.toShortString() ?: "unset") // Rect member
-
-        val pixelArray = chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
-        out += declaredCheck("SENSOR_INFO_PIXEL_ARRAY_SIZE", pixelArray?.toString() ?: "unset")
-
-        out += declaredCheck(
-            "SCALER_CROPPING_TYPE",
-            when (chars.get(CameraCharacteristics.SCALER_CROPPING_TYPE)) {
-                CameraCharacteristics.SCALER_CROPPING_TYPE_CENTER_ONLY -> "CENTER_ONLY"
-                CameraCharacteristics.SCALER_CROPPING_TYPE_FREEFORM -> "FREEFORM"
-                else -> "unset"
-            },
-        )
-
-        val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
-        out += declaredCheck("REQUEST_AVAILABLE_CAPABILITIES", "${caps?.size ?: 0} capabilities")
-
-        return out
-    }
-
-    private fun zoomQualityChecks(chars: CameraCharacteristics?): List<CalibrationCheck> {
-        if (chars == null) return listOf(errCheck("characteristics-unavailable"))
-
-        val declaredMax = chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
-        val zoomRange = zoomRatioRange(chars)
+        val zoomRange: Range<Float>? = if (hasZoomRatio) ZoomRatioApi30.ratioRange(chars) else null
+        val maxDigital = chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
         val lo = zoomRange?.lower ?: 1f
-        val hi = zoomRange?.upper ?: declaredMax.coerceAtLeast(1f)
+        val hi = zoomRange?.upper ?: (maxDigital ?: 1f).coerceAtLeast(1.0001f)
+        val ratios = geometricRatios(lo, hi, ZOOM_STEPS)
+        val positionProbeRatios = ratios.filterIndexed { i, _ ->
+            i % (ratios.size / POSITION_PROBE_STEPS).coerceAtLeast(1) == 0
+        }.toSet()
 
-        return (0 until ZOOM_QUALITY_SAMPLES).map { i ->
-            val t = i.toFloat() / (ZOOM_QUALITY_SAMPLES - 1)
-            val ratio = lo + t * (hi - lo)
-            val inRange = ratio in lo..hi
-            CalibrationCheck(
-                name = "zoom-ratio %.2fx".format(ratio),
-                declared = "supported in %.2f..%.2f".format(lo, hi),
-                measured = if (inRange) "accepted" else "out of declared range", // == declared for this slice
-                ok = inRange,
-            )
+        val identity = buildIdentity(cameraId, chars, activeRect, maxDigital, zoomRange)
+
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val sizes = (map?.getOutputSizes(ImageFormat.YUV_420_888)?.toList() ?: emptyList())
+            .distinctBy { it.width to it.height }
+            // Smallest first: on a weak HAL we get real data from the easy
+            // sizes before a large one has any chance of tipping the device over.
+            .sortedBy { it.width.toLong() * it.height }
+            .take(MAX_RESOLUTIONS_PER_CAMERA)
+        run.stepsTotal = sizes.size
+
+        // One camera open per resolution. Reusing a single CameraDevice across
+        // session teardown+recreate disconnects the device entirely on some
+        // HALs (reproduced on the BLU G5, API 28 - see docs/QUIRKS.md); a fresh
+        // device per resolution is slower but every resolution actually gets
+        // probed.
+        val perResolution = LinkedHashMap<String, ResolutionZoomMap>()
+        for ((resIndex, size) in sizes.withIndex()) {
+            run.currentStep = "${size.width}x${size.height}"
+            run.stepsCompleted = resIndex
+
+            val lost = AtomicBoolean(false)
+            val device = try {
+                openCameraDeviceWithRetry(cameraId, lost)
+            } catch (e: Exception) {
+                if (run.status == "cancelled") throw e
+                Log.w(TAG, "camera $cameraId won't open for ${size.width}x${size.height}", e)
+                null
+            }
+            if (device != null) {
+                try {
+                    val zoomMap = probeResolution(device, size, activeRect, ratios, positionProbeRatios, lost, run)
+                    if (zoomMap.samples.isNotEmpty()) {
+                        perResolution["${size.width}x${size.height}"] = zoomMap
+                    }
+                } catch (e: Exception) {
+                    if (run.status == "cancelled") throw e
+                    Log.w(TAG, "camera $cameraId resolution ${size.width}x${size.height} failed", e)
+                } finally {
+                    runCatching { device.close() }
+                    delay(600) // let the HAL release before the next open
+                }
+            }
+            run.stepsCompleted = resIndex + 1
         }
+
+        return summariseCamera(identity, perResolution, ratios)
     }
 
-    private fun zoomRatioRange(chars: CameraCharacteristics): Range<Float>? =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
-        } else {
-            null
+    private suspend fun probeResolution(
+        device: CameraDevice,
+        size: Size,
+        activeRect: ZoomMath.IntRect,
+        ratios: List<Float>,
+        positionProbeRatios: Set<Float>,
+        lost: AtomicBoolean,
+        run: ActiveRun,
+    ): ResolutionZoomMap {
+        val reader = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2)
+        val frameHolder = FrameHolder()
+        val frameLock = Any()
+        reader.setOnImageAvailableListener({ r ->
+            synchronized(frameLock) {
+                val img = runCatching { r.acquireLatestImage() }.getOrNull() ?: return@synchronized
+                try {
+                    val plane = img.planes[0]
+                    val buf = plane.buffer
+                    val bytes = ByteArray(buf.remaining())
+                    buf.get(bytes)
+                    frameHolder.set(bytes, img.width, img.height, plane.rowStride)
+                } catch (e: Exception) {
+                    // image closed under us mid-read - benign, just drop this frame
+                } finally {
+                    runCatching { img.close() }
+                }
+            }
+        }, callbackHandler)
+
+        val resultHolder = ResultHolder()
+        val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                s: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult,
+            ) {
+                resultHolder.set(result)
+            }
         }
 
-    private fun deviceIdentity(cameraId: String, chars: CameraCharacteristics?): CameraDeviceIdentity {
-        val facing = when (chars?.get(CameraCharacteristics.LENS_FACING)) {
+        val session = createSession(device, reader.surface, lost)
+        val samples = ArrayList<ZoomSample>(ratios.size)
+        try {
+            var settle = INITIAL_SETTLE_MS
+            var lockAe = false
+            for (ratio in ratios) {
+                if (lost.get()) break
+                val requestedCrop = ZoomMath.centeredCropForRatio(activeRect, ratio)
+                val ok = try {
+                    val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                    builder.addTarget(reader.surface)
+                    if (lockAe) {
+                        builder.set(CaptureRequest.CONTROL_AE_LOCK, true)
+                        builder.set(CaptureRequest.CONTROL_AWB_LOCK, true)
+                    }
+                    if (hasZoomRatio) {
+                        ZoomRatioApi30.setRequest(builder, ratio)
+                    } else {
+                        builder.set(CaptureRequest.SCALER_CROP_REGION, requestedCrop.toRect())
+                    }
+                    session.setRepeatingRequest(builder.build(), captureCallback, callbackHandler)
+                    true
+                } catch (e: Exception) {
+                    lost.set(true)
+                    Log.w(TAG, "request for ${ratio}x failed; abandoning this resolution", e)
+                    false
+                }
+                if (!ok) break
+                delay(settle)
+                settle = PER_SAMPLE_SETTLE_MS
+                lockAe = true
+
+                val result = resultHolder.get()
+                val frame = frameHolder.get()
+
+                val reportedRatio = if (hasZoomRatio && result != null) ZoomRatioApi30.readResult(result) else null
+                val reportedCrop = result?.get(CaptureResult.SCALER_CROP_REGION)?.toIntRect()
+                val effectiveCrop = reportedCrop
+                    ?: reportedRatio?.let { ZoomMath.centeredCropForRatio(activeRect, it) }
+                    ?: requestedCrop
+                val effRatioForHonor = reportedRatio ?: reportedCrop?.let { ZoomMath.ratioFromCrop(it, activeRect) }
+                val sharpness = frame?.let {
+                    ZoomMath.varianceOfLaplacian(it.y, it.width, it.height, it.rowStride, SHARPNESS_PATCH)
+                } ?: 0.0
+                val activePhysical = if (hasActivePhysicalId && result != null)
+                    ActivePhysicalIdApi29.read(result) else null
+                val focal = result?.get(CaptureResult.LENS_FOCAL_LENGTH)
+
+                var positionRequestedNorm: RectNorm? = null
+                var positionReportedNorm: RectNorm? = null
+                var positionHonored: Boolean? = null
+
+                // ---- off-centre crop-region probe (position honoured?): reuse the
+                //      repeating request, just overlay an off-centre crop and read
+                //      back what the HAL reports. Metadata only - no frame needed. ----
+                if (ratio in positionProbeRatios && ratio > 1.02f && !lost.get()) {
+                    try {
+                        val offCrop = ZoomMath.offsetCropForRatio(activeRect, ratio, 0.6f, 0.6f)
+                        val pb = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                        pb.addTarget(reader.surface)
+                        pb.set(CaptureRequest.CONTROL_AE_LOCK, true)
+                        pb.set(CaptureRequest.CONTROL_AWB_LOCK, true)
+                        pb.set(CaptureRequest.SCALER_CROP_REGION, offCrop.toRect())
+                        session.setRepeatingRequest(pb.build(), captureCallback, callbackHandler)
+                        delay(PER_SAMPLE_SETTLE_MS)
+                        val pReported = resultHolder.get()?.get(CaptureResult.SCALER_CROP_REGION)?.toIntRect()
+                        positionRequestedNorm = ZoomMath.normalize(offCrop, activeRect)
+                        positionReportedNorm = pReported?.let { ZoomMath.normalize(it, activeRect) }
+                        positionHonored = ZoomMath.positionHonored(offCrop, pReported, tolPx = activeRect.width / 50)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "position probe at ${ratio}x failed", e)
+                    }
+                }
+
+                samples += ZoomSample(
+                    requestedRatio = ratio,
+                    reportedRatio = reportedRatio,
+                    ratioHonored = ZoomMath.ratioHonored(ratio, effRatioForHonor),
+                    requestedCropNorm = ZoomMath.normalize(requestedCrop, activeRect),
+                    effectiveCropNorm = ZoomMath.normalize(effectiveCrop, activeRect),
+                    positionRequestedNorm = positionRequestedNorm,
+                    positionReportedNorm = positionReportedNorm,
+                    positionHonored = positionHonored,
+                    activePhysicalId = activePhysical,
+                    lensFocalLengthMm = focal,
+                    sharpness = sharpness,
+                    sharpnessRelToBaseline = 1.0, // filled below
+                )
+                run.stepChecksTotal = ratios.size
+                run.stepCheckIndex = samples.size
+            }
+        } finally {
+            runCatching { session.stopRepeating() }
+            runCatching { session.close() }
+            runCatching { reader.close() }
+        }
+
+        val baseline = samples.firstOrNull { it.sharpness > 0.0 }?.sharpness ?: 0.0
+        val withRel = if (baseline > 0.0) {
+            samples.map { it.copy(sharpnessRelToBaseline = it.sharpness / baseline) }
+        } else samples
+        return ResolutionZoomMap(size.width, size.height, withRel)
+    }
+
+    private fun summariseCamera(
+        identity: CameraDeviceIdentity,
+        perResolution: Map<String, ResolutionZoomMap>,
+        ratios: List<Float>,
+    ): CameraCalibration {
+        // Optical/digital split + quality collapse don't depend on output size,
+        // so derive them from whichever resolution captured the most samples
+        // (a resolution that bailed early would give a truncated ratio range).
+        val ref = perResolution.values.maxByOrNull { it.samples.size }?.samples ?: emptyList()
+        val split = ZoomMath.deriveOpticalDigitalSplit(
+            ratios = ref.map { it.requestedRatio },
+            activePhysicalIds = ref.map { it.activePhysicalId },
+            focalLengths = ref.map { it.lensFocalLengthMm },
+        )
+        val collapse = ZoomMath.deriveQualityCollapse(
+            ref.map { it.requestedRatio },
+            ref.map { it.sharpnessRelToBaseline },
+        )
+
+        val allSamples = perResolution.values.flatMap { it.samples }
+        val posProbes = allSamples.filter { it.positionHonored != null }
+        val posHonored = posProbes.isNotEmpty() && posProbes.all { it.positionHonored == true }
+        val posFailRatios = posProbes.filter { it.positionHonored == false }
+            .map { it.requestedRatio }.distinct().sorted()
+
+        val zoomChecksPassed = allSamples.count { it.ratioHonored && it.positionHonored != false }
+        val steps = mapOf(
+            "zoom-map" to CalibrationStep(checksTotal = allSamples.size, checksPassed = zoomChecksPassed),
+            "crop-region" to CalibrationStep(
+                checksTotal = posProbes.size,
+                checksPassed = posProbes.count { it.positionHonored == true },
+            ),
+        )
+
+        return CameraCalibration(
+            deviceIdentity = identity,
+            opticalRange = split.opticalRange,
+            digitalRange = split.digitalRange,
+            crossoverRatio = split.crossoverRatio,
+            crossoverMethod = split.method,
+            positionHonored = posHonored,
+            positionFailRatios = posFailRatios,
+            qualityCollapseRatio = collapse,
+            perResolution = perResolution,
+            steps = steps,
+        )
+    }
+
+    private fun buildIdentity(
+        cameraId: String,
+        chars: CameraCharacteristics,
+        activeRect: ZoomMath.IntRect,
+        maxDigital: Float?,
+        zoomRange: Range<Float>?,
+    ): CameraDeviceIdentity {
+        val facing = when (chars.get(CameraCharacteristics.LENS_FACING)) {
             CameraCharacteristics.LENS_FACING_FRONT -> "front"
             CameraCharacteristics.LENS_FACING_BACK -> "back"
             CameraCharacteristics.LENS_FACING_EXTERNAL -> "external"
             else -> "unknown"
         }
-        val focal = chars?.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
-        val activeArray = chars?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        val onP = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+        val isLogical = onP && LogicalCameraApi28.isLogicalMultiCam(chars)
+        val physicalIds = if (onP) LogicalCameraApi28.physicalIds(chars) else emptyList()
+        val croppingType = when (chars.get(CameraCharacteristics.SCALER_CROPPING_TYPE)) {
+            CameraCharacteristics.SCALER_CROPPING_TYPE_CENTER_ONLY -> "CENTER_ONLY"
+            CameraCharacteristics.SCALER_CROPPING_TYPE_FREEFORM -> "FREEFORM"
+            else -> "unknown"
+        }
         return CameraDeviceIdentity(
             cameraId = cameraId,
             facing = facing,
-            focalLengthMm = focal,
-            sensorActiveArray = activeArray?.toShortString(), // android.graphics.Rect member: "[l,t][r,b]"
+            focalLengthsMm = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.toList() ?: emptyList(),
+            isLogicalMultiCam = isLogical,
+            physicalIds = physicalIds,
+            activeArrayWidth = activeRect.width,
+            activeArrayHeight = activeRect.height,
+            croppingType = croppingType,
+            maxDigitalZoom = maxDigital,
+            zoomRatioRange = zoomRange?.let { FloatRange2(it.lower, it.upper) },
         )
     }
 
-    private fun declaredCheck(name: String, declared: String) =
-        CalibrationCheck(name = name, declared = declared, measured = declared, ok = true)
+    // ---- Camera2 plumbing ----
 
-    private fun errCheck(name: String) =
-        CalibrationCheck(name = name, declared = "-", measured = "characteristics unavailable", ok = false)
+    /** Retries a camera open a few times - a just-released camera (from the
+     *  motion pipeline, or the previous camera in this sweep) can briefly
+     *  report IN_USE / MAX_CAMERAS on slower devices. */
+    private suspend fun openCameraDeviceWithRetry(id: String, lost: AtomicBoolean): CameraDevice {
+        var lastError: Exception? = null
+        repeat(4) { attempt ->
+            try {
+                return openCameraDevice(id, lost)
+            } catch (e: Exception) {
+                lastError = e
+                lost.set(false) // a failed open isn't a mid-probe loss
+                Log.w(TAG, "camera $id open attempt ${attempt + 1} failed: ${e.message}")
+                delay(1000L * (attempt + 1))
+            }
+        }
+        throw lastError ?: IllegalStateException("camera $id would not open")
+    }
 
-    // ---- Snapshots ----
+    /**
+     * Opens [id]. [lost] is flipped true if the HAL later disconnects/errors
+     * the device out from under us mid-probe (common on weak devices - this is
+     * the old prototype's "session configures then fails async" quirk) so the
+     * probe loop can bail gracefully instead of crashing on every subsequent
+     * Camera2 call.
+     */
+    private suspend fun openCameraDevice(id: String, lost: AtomicBoolean): CameraDevice =
+        suspendCancellableCoroutine { cont ->
+            try {
+                cameraManager.openCamera(id, object : CameraDevice.StateCallback() {
+                    override fun onOpened(device: CameraDevice) {
+                        if (cont.isActive) cont.resume(device)
+                    }
+                    override fun onDisconnected(device: CameraDevice) {
+                        lost.set(true)
+                        device.close()
+                        if (cont.isActive) cont.resumeWithException(IllegalStateException("camera $id disconnected"))
+                    }
+                    override fun onError(device: CameraDevice, error: Int) {
+                        lost.set(true)
+                        device.close()
+                        if (cont.isActive) cont.resumeWithException(RuntimeException("camera $id open error $error"))
+                    }
+                }, callbackHandler)
+            } catch (e: CameraAccessException) {
+                cont.resumeWithException(e)
+            } catch (e: SecurityException) {
+                cont.resumeWithException(e)
+            }
+        }
+
+    private suspend fun createSession(
+        device: CameraDevice,
+        surface: android.view.Surface,
+        lost: AtomicBoolean,
+    ): CameraCaptureSession = suspendCancellableCoroutine { cont ->
+        try {
+            @Suppress("DEPRECATION")
+            device.createCaptureSession(
+                listOf(surface),
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        if (cont.isActive) cont.resume(session)
+                    }
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        lost.set(true)
+                        if (cont.isActive) cont.resumeWithException(IllegalStateException("session configure failed"))
+                    }
+                    override fun onClosed(session: CameraCaptureSession) {
+                        lost.set(true)
+                    }
+                },
+                callbackHandler,
+            )
+        } catch (e: CameraAccessException) {
+            cont.resumeWithException(e)
+        }
+    }
+
+    // ---- Snapshots / misc ----
 
     private fun lastCompletedSnapshot(): CalibrationStatus? {
         val result = store.load() ?: return null
-        val stepsTotal = CalibrationStepId.values().size
         return CalibrationStatus(
             runId = result.runId,
             status = "completed",
-            currentCameraId = null,
             camerasCompleted = result.cameras.size,
             camerasTotal = result.cameras.size,
-            currentStep = null,
-            stepsCompleted = stepsTotal,
-            stepsTotal = stepsTotal,
+            stepsCompleted = 0,
+            stepsTotal = 0,
             progressWithinStep = ProgressWithinStep(0, 0),
             startedAtMs = result.runAtMs,
         )
@@ -328,11 +623,6 @@ class CalibrationRunner(
         return buf.joinToString("") { "%02x".format(it) }
     }
 
-    /**
-     * Mutable per-run state. Progress fields are `@Volatile` and only ever
-     * advanced by the single sweep coroutine, then read (never written) by the
-     * status endpoint - no lock needed for those reads.
-     */
     private class ActiveRun(
         val runId: String,
         val cameraIds: List<String>,
@@ -344,10 +634,11 @@ class CalibrationRunner(
         @Volatile var currentStep: String? = null
         @Volatile var camerasCompleted: Int = 0
         @Volatile var stepsCompleted: Int = 0
+        @Volatile var stepsTotal: Int = 0
         @Volatile var stepChecksTotal: Int = 0
         @Volatile var stepCheckIndex: Int = 0
 
-        val cameras = linkedMapOf<String, CameraCalibration>()
+        val cameras = LinkedHashMap<String, CameraCalibration>()
 
         fun snapshot() = CalibrationStatus(
             runId = runId,
@@ -357,9 +648,37 @@ class CalibrationRunner(
             camerasTotal = cameraIds.size,
             currentStep = currentStep,
             stepsCompleted = stepsCompleted,
-            stepsTotal = CalibrationStepId.values().size,
+            stepsTotal = stepsTotal,
             progressWithinStep = ProgressWithinStep(stepCheckIndex, stepChecksTotal),
             startedAtMs = startedAtMs,
         )
     }
+
+    private class FrameHolder {
+        class Frame(val y: ByteArray, val width: Int, val height: Int, val rowStride: Int)
+
+        @Volatile private var frame: Frame? = null
+        fun set(y: ByteArray, w: Int, h: Int, stride: Int) { frame = Frame(y, w, h, stride) }
+        fun get(): Frame? = frame
+    }
+
+    private class ResultHolder {
+        @Volatile private var result: TotalCaptureResult? = null
+        fun set(r: TotalCaptureResult) { result = r }
+        fun get(): TotalCaptureResult? = result
+    }
+}
+
+private fun Rect.toIntRect() = ZoomMath.IntRect(left, top, right, bottom)
+private fun ZoomMath.IntRect.toRect() = Rect(left, top, right, bottom)
+
+/** [count] ratios from [lo] to [hi] with geometric spacing (dense at the low end). */
+private fun geometricRatios(lo: Float, hi: Float, count: Int): List<Float> {
+    if (count <= 1 || hi <= lo) return listOf(lo)
+    val out = ArrayList<Float>(count)
+    for (i in 0 until count) {
+        val t = i.toFloat() / (count - 1)
+        out += lo * (hi / lo).toDouble().pow(t.toDouble()).toFloat()
+    }
+    return out
 }

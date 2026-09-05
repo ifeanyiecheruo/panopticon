@@ -37,6 +37,7 @@ class PanopticonService : Service() {
     override fun onCreate() {
         super.onCreate()
         app = PanopticonApplication.from(this)
+        app.onModeChangeRequested = ::handleModeChanged
         createNotificationChannel()
     }
 
@@ -93,7 +94,16 @@ class PanopticonService : Service() {
                 // yet - out of scope here.
                 cameraPipeline?.release()
                 cameraPipeline = null
+                app.appState.setMotionActive(false)
                 app.appState.setRecordingStatus(RecordingStatus.IDLE)
+            }
+            AppMode.STANDBY -> {
+                // Explicit stop: fully release the camera so a calibration sweep
+                // (or, later, live preview) can take it.
+                cameraPipeline?.release()
+                cameraPipeline = null
+                app.appState.setMotionActive(false)
+                app.appState.setRecordingStatus(RecordingStatus.STOPPED)
             }
         }
     }
@@ -133,6 +143,7 @@ class PanopticonService : Service() {
     }
 
     override fun onDestroy() {
+        app.onModeChangeRequested = null
         cameraPipeline?.release()
         cameraPipeline = null
         httpServer?.stop()

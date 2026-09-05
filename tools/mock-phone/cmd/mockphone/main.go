@@ -55,6 +55,7 @@ type server struct {
 	deviceName   string
 	manufacturer string
 	model        string
+	mode         string // "record" | "standby" | "live" - RECORD blocks calibration
 
 	// Calibration: a sweep is faked as a short timed "running" window, after
 	// which /status reports "completed" and /result serves a canned body.
@@ -75,6 +76,7 @@ func main() {
 		deviceName:    "Mock Porch Cam",
 		manufacturer:  "Google",
 		model:         "Pixel 6",
+		mode:          "record",
 		calSweepDurMs: 6000,
 	}
 	s.seedClips(*numClips)
@@ -85,6 +87,7 @@ func main() {
 	mux.HandleFunc("/api/device", s.withAuth(s.handleDevice))
 	mux.HandleFunc("/api/config", s.withAuth(s.handleConfig))
 	mux.HandleFunc("/api/build-info", s.withAuth(s.handleBuildInfo))
+	mux.HandleFunc("/api/mode", s.withAuth(s.handleMode))
 	mux.HandleFunc("/api/clips", s.withAuth(s.handleClipsList))
 	mux.HandleFunc("/api/clips/", s.withAuth(s.handleClipFileOrThumb))
 	mux.HandleFunc("/api/calibration/start", s.withAuth(s.handleCalibrationStart))
@@ -191,9 +194,16 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	mode := s.mode
+	s.mu.Unlock()
+	recStatus := "recording"
+	if mode != "record" {
+		recStatus = "stopped"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"mode":             "record",
-		"status":           "recording",
+		"mode":             mode,
+		"status":           recStatus,
 		"cameraHealthy":    true,
 		"liveViewers":      0,
 		"storageUsedBytes": 4_200_000_000,
@@ -202,6 +212,42 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"charging":         true,
 		"serverTimeMs":     time.Now().UnixMilli(),
 	})
+}
+
+// handleMode: GET returns the current mode; POST switches it. `standby` is the
+// explicit stop that frees the camera; `live` from `record` is a 409.
+func (s *server) handleMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		s.mu.Lock()
+		mode := s.mode
+		s.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]string{"mode": mode})
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch body.Mode {
+	case "record", "standby":
+		s.mode = body.Mode
+	case "live":
+		if s.mode == "record" {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "stop recording first: POST /api/mode {\"mode\":\"standby\"}"})
+			return
+		}
+		s.mode = "live"
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be record|standby|live"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"mode": s.mode})
 }
 
 func (s *server) handleDevice(w http.ResponseWriter, r *http.Request) {
@@ -302,6 +348,10 @@ func (s *server) handleCalibrationStart(w http.ResponseWriter, r *http.Request) 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.mode == "record" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "stop recording on the phone before calibrating"})
+		return
+	}
 	if s.calRunID != "" && time.Since(s.calStartedAt).Milliseconds() < s.calSweepDurMs {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "calibration already running"})
 		return
@@ -375,25 +425,62 @@ func (s *server) handleCalibrationResult(w http.ResponseWriter, r *http.Request)
 		runAt = time.Now().Add(-time.Hour) // pretend this mock phone was calibrated an hour ago
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"runId":   "cal-mock",
-		"runAtMs": runAt.UnixMilli(),
+		"runId":          "cal-mock",
+		"runAtMs":        runAt.UnixMilli(),
+		"deviceIdentity": map[string]any{"manufacturer": s.manufacturer, "model": s.model, "device": "mockdevice", "appVersionName": "0.1.0-mock"},
 		"cameras": map[string]any{
-			"0": map[string]any{
-				"deviceIdentity": map[string]any{"cameraId": "0", "facing": "back", "focalLengthMm": 6.81},
-				"steps": map[string]any{
-					"crop-region":  map[string]int{"checksTotal": 6, "checksPassed": 6},
-					"zoom-quality": map[string]int{"checksTotal": 15, "checksPassed": 15},
-				},
-			},
-			"1": map[string]any{
-				"deviceIdentity": map[string]any{"cameraId": "1", "facing": "front", "focalLengthMm": 2.74},
-				"steps": map[string]any{
-					"crop-region":  map[string]int{"checksTotal": 6, "checksPassed": 6},
-					"zoom-quality": map[string]int{"checksTotal": 15, "checksPassed": 13},
-				},
-			},
+			"0": mockCameraResult("0", "back", true, 2.0, false, 6.0),
+			"1": mockCameraResult("1", "front", false, 0, false, 0),
 		},
 	})
+}
+
+// mockCameraResult fabricates a rich per-camera zoom map: crop shrinks
+// linearly with the requested ratio across two resolutions.
+func mockCameraResult(id, facing string, logical bool, crossover float64, positionHonored bool, qualityCollapse float64) map[string]any {
+	sample := func(ratio, l float64) map[string]any {
+		return map[string]any{
+			"requestedRatio": ratio, "reportedRatio": ratio, "ratioHonored": true,
+			"requestedCropNorm": map[string]float64{"l": l, "t": l, "r": 1 - l, "b": 1 - l},
+			"effectiveCropNorm": map[string]float64{"l": l, "t": l, "r": 1 - l, "b": 1 - l},
+			"sharpness":         1000.0 / ratio, "sharpnessRelToBaseline": 1.0 / ratio,
+		}
+	}
+	res := func(w, h int) map[string]any {
+		return map[string]any{"width": w, "height": h, "samples": []any{
+			sample(1.0, 0.0), sample(2.0, 0.25), sample(4.0, 0.375), sample(8.0, 0.4375),
+		}}
+	}
+	var crossoverPtr any
+	if crossover > 0 {
+		crossoverPtr = crossover
+	}
+	var collapsePtr any
+	if qualityCollapse > 0 {
+		collapsePtr = qualityCollapse
+	}
+	return map[string]any{
+		"deviceIdentity": map[string]any{
+			"cameraId": id, "facing": facing, "isLogicalMultiCam": logical,
+			"physicalIds": []string{}, "activeArrayWidth": 4032, "activeArrayHeight": 3024,
+			"croppingType": "FREEFORM", "focalLengthsMm": []float64{4.38},
+		},
+		"opticalRange":         map[string]float64{"lo": 1.0, "hi": 2.0},
+		"digitalRange":         map[string]float64{"lo": 2.0, "hi": 8.0},
+		"crossoverRatio":       crossoverPtr,
+		"crossoverMethod":      "active-physical-id",
+		"positionHonored":      positionHonored,
+		"positionFailRatios":   []float64{4.0, 8.0},
+		"qualityCollapseRatio": collapsePtr,
+		"perResolution": map[string]any{
+			"1920x1080": res(1920, 1080),
+			"1280x720":  res(1280, 720),
+		},
+		"steps": map[string]any{
+			"zoom-map":    map[string]int{"checksTotal": 8, "checksPassed": 8},
+			"crop-region": map[string]int{"checksTotal": 2, "checksPassed": 0},
+		},
+	}
 }
 
 func makeFakeThumbnail() []byte {

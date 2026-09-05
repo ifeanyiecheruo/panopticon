@@ -242,7 +242,7 @@ func (a *App) GetPhoneDetail(phoneID string) (PhoneDetailView, error) {
 
 type CalibrationStartResult struct {
 	OK      bool   `json:"ok"`
-	Outcome string `json:"outcome"` // "ok" | "running" | "unreachable" | "other"
+	Outcome string `json:"outcome"` // "ok" | "running" | "recording" | "unreachable" | "other"
 	RunID   string `json:"runId,omitempty"`
 	Message string `json:"message,omitempty"`
 }
@@ -263,6 +263,8 @@ func (a *App) StartCalibration(phoneID string) CalibrationStartResult {
 		return CalibrationStartResult{OK: true, Outcome: "ok", RunID: resp.RunID}
 	case errors.Is(err, phoneapi.ErrCalibrationRunning):
 		return CalibrationStartResult{Outcome: "running", Message: "A calibration sweep is already running on this phone."}
+	case errors.Is(err, phoneapi.ErrPhoneRecording):
+		return CalibrationStartResult{Outcome: "recording", Message: "The phone is recording. Stop recording on the phone before calibrating."}
 	case errors.Is(err, phoneapi.ErrUnreachable):
 		return CalibrationStartResult{Outcome: "unreachable", Message: "Could not reach the phone."}
 	default:

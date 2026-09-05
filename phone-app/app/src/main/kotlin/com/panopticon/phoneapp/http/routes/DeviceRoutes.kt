@@ -88,6 +88,7 @@ fun Route.deviceRoutes(
                 RecordingStatus.RECORDING -> "recording"
                 RecordingStatus.UNAVAILABLE -> "unavailable"
                 RecordingStatus.IDLE -> "idle"
+                RecordingStatus.STOPPED -> "stopped"
             }
 
             call.respond(

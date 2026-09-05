@@ -1,5 +1,49 @@
 export namespace calibration {
 	
+	export class CameraZoomSummary {
+	    cameraId: string;
+	    facing: string;
+	    opticalRange: phoneapi.FloatRange2;
+	    digitalRange: phoneapi.FloatRange2;
+	    crossoverRatio?: number;
+	    positionHonored: boolean;
+	    qualityCollapseRatio?: number;
+	    resolutions: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CameraZoomSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cameraId = source["cameraId"];
+	        this.facing = source["facing"];
+	        this.opticalRange = this.convertValues(source["opticalRange"], phoneapi.FloatRange2);
+	        this.digitalRange = this.convertValues(source["digitalRange"], phoneapi.FloatRange2);
+	        this.crossoverRatio = source["crossoverRatio"];
+	        this.positionHonored = source["positionHonored"];
+	        this.qualityCollapseRatio = source["qualityCollapseRatio"];
+	        this.resolutions = source["resolutions"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class View {
 	    modelKey: string;
 	    present: boolean;
@@ -9,6 +53,7 @@ export namespace calibration {
 	    sourcePhoneId: string;
 	    sourcePhoneName: string;
 	    viaOtherPhone: boolean;
+	    cameras: CameraZoomSummary[];
 	
 	    static createFrom(source: any = {}) {
 	        return new View(source);
@@ -24,7 +69,26 @@ export namespace calibration {
 	        this.sourcePhoneId = source["sourcePhoneId"];
 	        this.sourcePhoneName = source["sourcePhoneName"];
 	        this.viaOtherPhone = source["viaOtherPhone"];
+	        this.cameras = this.convertValues(source["cameras"], CameraZoomSummary);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }
@@ -352,6 +416,20 @@ export namespace phoneapi {
 	        this.storageCapBytes = source["storageCapBytes"];
 	        this.ringBufferMaxAgeMs = source["ringBufferMaxAgeMs"];
 	        this.rotationDegrees = source["rotationDegrees"];
+	    }
+	}
+	export class FloatRange2 {
+	    lo: number;
+	    hi: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new FloatRange2(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.lo = source["lo"];
+	        this.hi = source["hi"];
 	    }
 	}
 	export class Status {

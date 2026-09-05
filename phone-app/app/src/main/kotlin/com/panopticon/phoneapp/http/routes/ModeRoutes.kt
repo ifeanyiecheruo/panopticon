@@ -16,9 +16,16 @@ import kotlinx.serialization.Serializable
 data class ModeBody(val mode: String)
 
 /**
- * GET/POST /api/mode. For this vertical slice, switching to "live" is a stub: it flips the mode
- * flag (and the recording pipeline pauses, since RECORD/LIVE are still mutually exclusive per the
- * architecture doc) but there is no real HLS encoder/relay behind it yet - out of scope here.
+ * GET/POST /api/mode.
+ *
+ * RECORD is sticky and takes precedence over every other camera-using feature.
+ * Transitions:
+ *  - `standby`  - always allowed. This is the *explicit stop* that frees the
+ *                 camera for calibration / live preview.
+ *  - `record`   - always allowed (re-arm).
+ *  - `live`     - allowed only from STANDBY (or LIVE); from RECORD it's a 409,
+ *                 the caller must stop recording first. `live` itself is still a
+ *                 stub - no real HLS encoder/relay behind it yet.
  */
 fun Route.modeRoutes(appState: AppState, onModeChanged: (AppMode) -> Unit) {
     // Authenticated by the global installAuth() intercept.
@@ -32,13 +39,24 @@ fun Route.modeRoutes(appState: AppState, onModeChanged: (AppMode) -> Unit) {
             val requested = when (body.mode.lowercase()) {
                 "record" -> AppMode.RECORD
                 "live" -> AppMode.LIVE
+                "standby" -> AppMode.STANDBY
                 else -> null
             }
             if (requested == null) {
-                call.respond(HttpStatusCode.BadRequest, ErrorBody("mode must be 'record' or 'live'"))
+                call.respond(HttpStatusCode.BadRequest, ErrorBody("mode must be 'record', 'live', or 'standby'"))
                 return@post
             }
-            if (requested != appState.mode.value) {
+
+            val current = appState.mode.value
+            if (requested == AppMode.LIVE && current == AppMode.RECORD) {
+                call.respond(
+                    HttpStatusCode.Conflict,
+                    ErrorBody("stop recording first: POST /api/mode {\"mode\":\"standby\"}"),
+                )
+                return@post
+            }
+
+            if (requested != current) {
                 appState.setMode(requested)
                 onModeChanged(requested)
             }

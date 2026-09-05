@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"panopticon-controller/internal/dbstore"
@@ -28,16 +29,31 @@ func ModelKey(manufacturer, model string) string {
 	return m + "|" + d
 }
 
+// CameraZoomSummary is the per-camera headline the Phone-detail Calibration
+// section shows (the full per-resolution sample map stays in the DB blob and
+// is read only by EffectiveRect).
+type CameraZoomSummary struct {
+	CameraID             string               `json:"cameraId"`
+	Facing               string               `json:"facing"`
+	OpticalRange         phoneapi.FloatRange2 `json:"opticalRange"`
+	DigitalRange         phoneapi.FloatRange2 `json:"digitalRange"`
+	CrossoverRatio       *float64             `json:"crossoverRatio"`
+	PositionHonored      bool                 `json:"positionHonored"`
+	QualityCollapseRatio *float64             `json:"qualityCollapseRatio"`
+	Resolutions          int                  `json:"resolutions"`
+}
+
 // View is the Phone-detail summary of a model's calibration state.
 type View struct {
-	ModelKey        string `json:"modelKey"`
-	Present         bool   `json:"present"`
-	ChecksPassed    int    `json:"checksPassed"`
-	ChecksTotal     int    `json:"checksTotal"`
-	CalibratedAtMs  int64  `json:"calibratedAtMs"`
-	SourcePhoneID   string `json:"sourcePhoneId"`
-	SourcePhoneName string `json:"sourcePhoneName"`
-	ViaOtherPhone   bool   `json:"viaOtherPhone"` // data came from a different phone of the same model
+	ModelKey        string              `json:"modelKey"`
+	Present         bool                `json:"present"`
+	ChecksPassed    int                 `json:"checksPassed"`
+	ChecksTotal     int                 `json:"checksTotal"`
+	CalibratedAtMs  int64               `json:"calibratedAtMs"`
+	SourcePhoneID   string              `json:"sourcePhoneId"`
+	SourcePhoneName string              `json:"sourcePhoneName"`
+	ViaOtherPhone   bool                `json:"viaOtherPhone"` // data came from a different phone of the same model
+	Cameras         []CameraZoomSummary `json:"cameras"`
 }
 
 // Lookup returns the stored calibration view for a phone's model, or a
@@ -71,9 +87,22 @@ func Lookup(store *dbstore.Store, phone dbstore.Phone) (View, error) {
 	}
 	if perr != nil {
 		// A stored blob we can't parse still counts as "present" (so we don't
-		// re-prompt a sweep), we just can't show counts.
+		// re-prompt a sweep), we just can't show detail.
 		return v, nil
 	}
+	for id, cam := range summary.Cameras {
+		v.Cameras = append(v.Cameras, CameraZoomSummary{
+			CameraID:             id,
+			Facing:               cam.DeviceIdentity.Facing,
+			OpticalRange:         cam.OpticalRange,
+			DigitalRange:         cam.DigitalRange,
+			CrossoverRatio:       cam.CrossoverRatio,
+			PositionHonored:      cam.PositionHonored,
+			QualityCollapseRatio: cam.QualityCollapseRatio,
+			Resolutions:          len(cam.PerResolution),
+		})
+	}
+	sort.Slice(v.Cameras, func(i, j int) bool { return v.Cameras[i].CameraID < v.Cameras[j].CameraID })
 	return v, nil
 }
 

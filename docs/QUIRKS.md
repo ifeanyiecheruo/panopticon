@@ -104,6 +104,63 @@ quirk** - flagged here only so a future reader doesn't mistake "we saw a black t
 found the black-frame bug." Re-verify visually in normal lighting if this ever needs re-checking.
 **Where:** observed via `ClipStore.thumbnailFor()`'s output during manual testing, not a code change.
 
+### Calibration zoom probe
+
+The empirical zoom probe (`phone-app`'s `calibration/CalibrationRunner`) was built and run on
+the **BLU G5 (Android 9 / API 28)**. The Pixel 6 was physically disconnected from USB for this
+pass — its run (the `CONTROL_ZOOM_RATIO` / logical-multi-camera path) is still pending.
+
+#### An API-gated `CaptureResult`/`CaptureRequest` key throws `NoSuchFieldError` even behind a runtime `SDK_INT` guard
+**What we assumed:** wrapping a use of `CaptureResult.CONTROL_ZOOM_RATIO` (API 30) in
+`if (Build.VERSION.SDK_INT >= R) { ... }` is enough to keep it off older devices.
+**What actually happens (BLU G5, API 28):** ART verifies the whole method when it's first run
+and resolves *every* field reference in it, guard or not — so the first zoom sample threw
+`java.lang.NoSuchFieldError: No static field CONTROL_ZOOM_RATIO ... in class CaptureResult`.
+Same trap for `LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID` (API 29), `CONTROL_ZOOM_RATIO_RANGE`
+(API 30), and `getPhysicalCameraIds()` / `REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA`
+(API 28) on anything below their level.
+**What we do:** every such key lives in its own `@RequiresApi` object
+(`calibration/ZoomApiCompat.kt`: `ZoomRatioApi30`, `ActivePhysicalIdApi29`, `LogicalCameraApi28`).
+A separate class is only loaded/verified when it's actually referenced, which only happens
+inside the SDK check — so older devices never touch the missing field.
+**Where:** `calibration/ZoomApiCompat.kt`, `calibration/CalibrationRunner.kt` (`hasZoomRatio` /
+`hasActivePhysicalId`).
+
+#### Closing a `CameraCaptureSession` and opening the next one on the same still-open `CameraDevice` disconnects the device entirely (BLU G5)
+**What we assumed:** keep one `CameraDevice` open for a camera and cycle
+`ImageReader` + `CameraCaptureSession` per output resolution.
+**What actually happens (BLU G5):** the *first* resolution probes fine; creating the *second*
+session's request throws `IllegalStateException: CameraDevice was already closed` /
+`ServiceSpecificException: The camera device has been disconnected (code 4)` — the HAL dropped
+the whole device on the session teardown, not just the session. The old prototype flagged the
+adjacent "two concurrent record + analysis surfaces never configure" case; this is a related
+weak-HAL failure on plain session recycling.
+**What we do:** the probe opens a **fresh `CameraDevice` per resolution** (open → one session →
+sweep the zoom steps → close → ~600 ms settle → next). Slower, but every resolution is actually
+probed. `openCameraDeviceWithRetry` also retries `ERROR_MAX_CAMERAS_IN_USE` (a just-closed
+camera reports busy briefly on this device), and a per-run 1.2 s grace delay covers the motion
+pipeline's still-in-flight teardown when calibration is entered straight from RECORD.
+**Where:** `calibration/CalibrationRunner.kt` (`probeCamera`, `openCameraDeviceWithRetry`).
+
+#### Frame-sharpness (variance-of-Laplacian) is only meaningful in a lit scene
+Same root cause as the black-thumbnail note above: the BLU G5 run was in a near-dark room, so
+the per-zoom sharpness values were 5–40 (noise floor) and `qualityCollapseRatio` fired at the
+2nd–3rd zoom step for the back camera — an artefact of the dark test scene, **not** a real
+digital-zoom quality cliff. The metric and its `~0.6 × baseline` threshold need re-checking
+against a normally-lit scene before any conclusion is drawn from `qualityCollapseRatio`.
+**Where:** `calibration/ZoomMath.varianceOfLaplacian` / `deriveQualityCollapse`.
+
+#### BLU G5 findings (API 28, legacy `SCALER_CROP_REGION` path)
+Both cameras are single physical sensors — `crossoverMethod = "single-camera"`, everything is
+digital zoom, `SCALER_AVAILABLE_MAX_DIGITAL_ZOOM = 2.0`, no `CONTROL_ZOOM_RATIO_RANGE`.
+`SCALER_CROPPING_TYPE = FREEFORM` and, matching that, **an off-centre crop rect's position
+*was* honoured** at every probed ratio (`positionHonored = true`, no `positionFailRatios`) —
+i.e. this device does *not* reproduce the old prototype's "SCALER_CROP_REGION position isn't
+honoured" finding. Reported crop area tracked the request cleanly across all 24 YUV output
+sizes (2 of 24 on the back camera captured only 1–3 of 14 zoom steps — the two smallest sizes,
+right after camera open; the resilience path kept the run going and the per-camera summary is
+derived from the richest resolution).
+
 ### Carried forward, not yet re-verified in this project
 
 Out of scope for this vertical slice (no manual Camera2 controls, no live HLS pipeline, no
@@ -111,9 +168,15 @@ multi-camera; calibration and motion-gated recording now exist but the specific 
 still haven't been re-tested against the Pixel 6) - see `panopticon-prototype/QUIRKS.md` for the
 original write-ups:
 
-- `SCALER_CROP_REGION` position isn't honored, and the device lies about it
-- Digital zoom quality collapses well below the declared max, invisible to crop-region metadata
-- Crop readback is unreliable
+- `SCALER_CROP_REGION` position isn't honored, and the device lies about it — the new
+  calibration probe measures exactly this (`positionHonored` / `positionFailRatios` per camera).
+  **Not reproduced on the BLU G5** (FREEFORM cropping, position honoured); **still to run on the
+  Pixel 6**, which is the device the old finding came from a sibling of.
+- Digital zoom quality collapses well below the declared max, invisible to crop-region metadata —
+  the probe's `qualityCollapseRatio` targets this, but needs a lit scene to mean anything (see
+  the zoom-probe section above); **not yet meaningfully measured on either device.**
+- Crop readback is unreliable — the probe reads `SCALER_CROP_REGION` back from every
+  `TotalCaptureResult`; on the BLU G5 it tracked the request cleanly. **Pixel 6 pending.**
 - Manual controls aren't reliably honored at all
 - `AE_MODE_OFF` (manual exposure) needs `MANUAL_SENSOR`, despite being independently selectable
 - `CONTROL_AE_LOCK` is a metering freeze, not a manual-exposure dial

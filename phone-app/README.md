@@ -22,13 +22,23 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   `DELETE .../:filename`), and device-wide calibration (`POST /api/calibration/start`,
   `GET /api/calibration/status`, `DELETE /api/calibration/:runId`, `GET /api/calibration/result`).
   Every route except `POST /api/pair` requires `Authorization: Bearer <token>`.
-- **Calibration** - `CalibrationRunner` sweeps every camera `CameraManager` reports, walking a
-  fixed ordered set of steps per camera with full camera/step/within-step progress, cancellation,
-  and a last-result JSON persisted to disk (so `GET /api/calibration/result` answers after an app
-  restart without re-running). See the simplification note below for what "measure" means here today.
+- **Calibration** - `CalibrationRunner` runs a real **empirical zoom probe**: for every camera,
+  at every `StreamConfigurationMap` output size, it applies a geometric range of zoom requests
+  (`CONTROL_ZOOM_RATIO` on API 30+, `SCALER_CROP_REGION` on every API) and records what the HAL
+  actually did - the effective crop rect read back, whether the requested ratio/position was
+  honoured, which physical camera answered (optical→digital crossover), and a frame-sharpness
+  score (variance of Laplacian). Per camera it derives `opticalRange` / `digitalRange` /
+  `crossoverRatio` / `positionHonored` / `qualityCollapseRatio`. Cancellable, resilient to a
+  weak HAL dropping the device mid-sweep, last result persisted to disk. See
+  `calibration/ZoomMath.kt` for the pure geometry/metric helpers.
+- **Mode** - `record` (motion-gated pipeline), `standby` (camera released), `live` (stub).
+  `record` is sticky: calibration and live preview only run from `standby`, which must be
+  entered explicitly (`POST /api/mode {"mode":"standby"}` or the Calibrate screen's "Stop
+  recording").
 - **Compose UI** - Home (device identity, storage, recording status), Connect (generate an
   invite code + show this phone's LAN address), Gallery (list clips, play via the system video
-  viewer, delete), Calibrate (run/re-run a sweep, live progress, per-camera per-check breakdown).
+  viewer, delete), Calibrate (stop recording → run/re-run a sweep, live progress, per-camera
+  optical/digital/position/quality readout).
 
 ## Deliberate simplifications (see code comments for exact locations)
 
@@ -48,14 +58,18 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 - **`MediaRecorder`, not raw `MediaCodec`+`MediaMuxer`** - simpler for this slice; means no
   control over keyframe interval or explicit sync-frame requests (`MediaRecorder` doesn't expose
   either). See `docs/QUIRKS.md` for what this meant for reconfirming old keyframe-cadence findings.
-- **Calibration records _declared_ Camera2 capabilities, not empirically measured ones.** Each
-  check reads a `CameraCharacteristics` value and reports it as both `declared` and `measured`
-  with `ok = true`; the run/step/progress state machine, persistence, cancellation and the whole
-  wire contract are real. Opening a `CameraCaptureSession`, applying each control, and flagging
-  where the HAL's effective value diverges from what it declared (the actual point of
-  calibration) is deferred - it needs real-hardware iteration against the digital-zoom /
-  `SCALER_CROP_REGION` findings in the old prototype's `QUIRKS.md`. Calibration does **not** tear
-  down the recording pipeline (reading characteristics needs no exclusive camera access).
+- **Calibration sweep is long and rare.** Every output size × every camera × ~14 zoom steps,
+  with a fresh `CameraDevice` per resolution (some HALs disconnect the device on plain session
+  recycling - see `docs/QUIRKS.md`). Tens of minutes on a phone with many resolutions and
+  cameras; it's meant to be run once, phone stood down. The `MAX_RESOLUTIONS_PER_CAMERA` cap is
+  a safety net, not a normal limit.
+- **Frame-sharpness metric needs a lit scene.** `qualityCollapseRatio` is meaningless in a dark
+  room (the BLU G5 verification run was; see `docs/QUIRKS.md`). Verified so far only on the
+  BLU G5 (API 28, legacy `SCALER_CROP_REGION` path) - the Pixel 6 / `CONTROL_ZOOM_RATIO` /
+  multi-camera path is still to run.
+- **Debug-only `adb` calibration trigger.** `src/debug/…/DebugCalibrationReceiver` (declared in
+  `src/debug/AndroidManifest.xml`, never in release) drives a sweep via
+  `adb shell am broadcast` on devices whose Compose UI uiautomator/screencap can't touch.
 - **Full `CameraCaptureSession` teardown+recreate on every clip rotation and every ARMED&lt;-&gt;RECORDING
   transition** rather than a lighter in-place surface swap - simpler to reason about, doubles as a
   session-reconfigure stress test. The analysis `ImageReader` persists across those; only the
@@ -71,8 +85,9 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 Live HLS view (`/live/...`, `/api/live/...`), digital zoom / manual Camera2 controls
 (`/api/camera/...`), multi-camera switching (`/api/cameras`), the Controllers/Configuration
 screens, QR-code invite display (code/URL are shown as plain text, which is enough for manual
-entry). Calibration's routes + Calibrate screen exist now (see above) - what's out of scope is
-the empirical measure-vs-declared probing, noted under "Deliberate simplifications".
+entry). Calibration (routes, empirical zoom probe, Calibrate screen) is implemented; the
+controller-side zoom-rect picker that consumes the effective-rect data is deferred (it's tied
+to Live preview, which doesn't exist yet).
 
 ## Build / install / run
 

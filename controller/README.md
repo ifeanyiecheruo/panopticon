@@ -85,10 +85,15 @@ rows, and the Gallery/Trash screens reading them back correctly.
   classifying failures into the two distinct UI messages the handoff doc calls for. Also does
   the opportunistic calibration ingest right after a successful pair.
 - `internal/calibration` — the manufacturer+model calibration data model
-  (HANDOFF-controller-ux.md): `ModelKey`, `Lookup` (the Phone-detail summary view),
-  `IngestOpportunistic` (pull `GET /api/calibration/result`, store only if we don't already
-  hold something fresher), `StoreResult` (unconditional overwrite, for a manual re-run).
-  `internal/phoneapi/calibration.go` is the matching HTTP client surface.
+  (HANDOFF-controller-ux.md): `ModelKey`, `Lookup` (the Phone-detail summary view — per camera
+  optical/digital ranges, crossover, position-honoured, quality-collapse), `IngestOpportunistic`
+  (pull `GET /api/calibration/result`, store only if we don't already hold something fresher),
+  `StoreResult` (unconditional overwrite, for a manual re-run), and `EffectiveRect` — maps a
+  requested zoom + centre for a camera/resolution to the crop the phone's HAL will actually
+  honour (nearest-resolution + interpolation over the stored `ZoomSample`s). `EffectiveRect` is
+  the data side of the deferred zoom-rect picker; nothing in the UI consumes it yet.
+  `internal/phoneapi/calibration.go` is the matching HTTP client surface (decodes the full
+  per-resolution zoom map).
 - `internal/unpair` — `DELETE /api/pair` wiring. `Unpair` (safe path): checks
   `GET /api/clips` for clips the phone still has that we never archived and returns
   `needs_confirmation` if any; requires the phone reachable and the revoke to succeed (or a 401
@@ -136,11 +141,14 @@ rows, and the Gallery/Trash screens reading them back correctly.
 Per the task's explicit scope cut — these are real gaps versus the full handoff doc, not
 oversights:
 
-- **Live preview / adjusters.** Phone detail shows raw `GET /api/status` + `GET /api/config`
-  JSON for those. (Calibration *is* wired now — Phone detail has a real Calibration section:
-  a manufacturer+model lookup with a "Calibration needed" vs. "N/M checks completed · via
-  &lt;phone&gt;" readout, and a Run/Re-run action that drives `/api/calibration/*` and polls
-  progress. See `internal/calibration` + `internal/phoneapi/calibration.go`.)
+- **Live preview / adjusters, and the zoom-rect picker.** Phone detail shows raw
+  `GET /api/status` + `GET /api/config` JSON for preview/adjusters. Calibration *is* wired —
+  Phone detail has a real Calibration section (manufacturer+model lookup, per-camera
+  optical/digital/crossover/position/quality readout, and a Run/Re-run action, disabled with a
+  reason while the phone is recording since calibration needs the camera). What's deferred is
+  the UI that lets a user draw a zoom rect and see the "effective rect" overlay — the data and
+  `calibration.EffectiveRect` helper are in place, but the overlay hangs off Live preview,
+  which doesn't exist yet.
 - **Eviction-probe loop.** The handoff doc's tombstone-cleanup mechanism (probing
   `/api/clips/:filename/file` on trashed/purged clips until a 404 confirms the phone's ring
   buffer evicted them, then dropping the DB row) is not implemented. `DeleteClipPermanently`

@@ -8,16 +8,13 @@ import kotlinx.serialization.Serializable
  * example bodies exactly so the controller can decode them without a mapping
  * layer.
  *
- * Scope note (a deliberate simplification, in the same spirit as
- * `CameraPipeline`'s "no real motion detection" and `ModeRoutes`' "live is a
- * stub"): a calibration sweep here reads each camera's **declared**
- * `CameraCharacteristics` and records them as the reference values, pacing
- * itself through cameras x steps x checks so the progress API is exercised
- * for real. The empirical half - open a capture session, apply each control,
- * read the value back from the `CaptureResult`, and flag where the HAL lied -
- * is the deferred deepening (needs real-hardware iteration, see
- * `CalibrationRunner`). `measured` currently mirrors `declared` and every
- * check reports `ok = true`; the shapes are settled so that pass is drop-in.
+ * The sweep is a **real empirical probe** now: for every camera, at every
+ * `StreamConfigurationMap` output size, it applies a range of zoom
+ * requests (via `CONTROL_ZOOM_RATIO` on API 30+ and `SCALER_CROP_REGION` on
+ * every API) and records what the HAL actually did - the effective crop rect,
+ * whether the requested ratio/position was honored, which physical camera was
+ * active (optical vs. digital zoom), and a frame-sharpness score. See
+ * `CalibrationRunner` + `ZoomMath`.
  */
 
 @Serializable
@@ -39,7 +36,7 @@ data class CalibrationStatus(
     val currentCameraId: String? = null,
     val camerasCompleted: Int,
     val camerasTotal: Int,
-    val currentStep: String? = null,
+    val currentStep: String? = null, // the resolution being swept, e.g. "1920x1080"
     val stepsCompleted: Int,
     val stepsTotal: Int,
     val progressWithinStep: ProgressWithinStep,
@@ -49,34 +46,90 @@ data class CalibrationStatus(
 @Serializable
 data class CalibrationCancelled(val cancelled: Boolean)
 
-/** One measured-vs-declared probe point within a step. */
+// ---- Result ----
+
 @Serializable
-data class CalibrationCheck(
-    val name: String,
-    val declared: String,
-    val measured: String,
-    val ok: Boolean,
+data class RectNorm(val l: Float, val t: Float, val r: Float, val b: Float)
+
+@Serializable
+data class FloatRange2(val lo: Float, val hi: Float)
+
+/** One zoom request and what the HAL actually did with it, at one resolution. */
+@Serializable
+data class ZoomSample(
+    val requestedRatio: Float,
+    val reportedRatio: Float? = null,
+    val ratioHonored: Boolean,
+    /** Requested crop as a fraction of the sensor active array. */
+    val requestedCropNorm: RectNorm,
+    /** What the HAL reported back (SCALER_CROP_REGION), normalised. This is the
+     *  "effective viewport" for this zoom request. */
+    val effectiveCropNorm: RectNorm,
+    /** Off-centre probe: did an intentionally off-centre crop keep its offset? */
+    val positionRequestedNorm: RectNorm? = null,
+    val positionReportedNorm: RectNorm? = null,
+    val positionHonored: Boolean? = null,
+    /** Which physical camera answered (logical multi-cam only, API 29+). */
+    val activePhysicalId: String? = null,
+    val lensFocalLengthMm: Float? = null,
+    /** Variance of Laplacian over a centred Y-plane patch. */
+    val sharpness: Double = 0.0,
+    /** sharpness / (sharpness at ratio 1.0). < ~0.6 => visible quality collapse. */
+    val sharpnessRelToBaseline: Double = 1.0,
 )
 
 @Serializable
-data class CalibrationStep(
-    val checksTotal: Int,
-    val checksPassed: Int,
-    val checks: List<CalibrationCheck>,
+data class ResolutionZoomMap(
+    val width: Int,
+    val height: Int,
+    val samples: List<ZoomSample>,
 )
 
 @Serializable
 data class CameraDeviceIdentity(
     val cameraId: String,
     val facing: String,
-    val focalLengthMm: Float? = null,
-    val sensorActiveArray: String? = null,
+    val focalLengthsMm: List<Float> = emptyList(),
+    val isLogicalMultiCam: Boolean = false,
+    val physicalIds: List<String> = emptyList(),
+    val activeArrayWidth: Int = 0,
+    val activeArrayHeight: Int = 0,
+    val croppingType: String = "unknown",
+    val maxDigitalZoom: Float? = null,
+    val zoomRatioRange: FloatRange2? = null,
+)
+
+/** Cheap summary of one step's outcome - keeps the controller's "N/M checks" readout working. */
+@Serializable
+data class CalibrationStep(
+    val checksTotal: Int,
+    val checksPassed: Int,
 )
 
 @Serializable
 data class CameraCalibration(
     val deviceIdentity: CameraDeviceIdentity,
-    val steps: Map<String, CalibrationStep>,
+    /** Zoom ratios served by an actual optical element / native FOV. `[1,1]` if
+     *  this camera has a single physical sensor. */
+    val opticalRange: FloatRange2,
+    /** Zoom ratios served by cropping (digital zoom). */
+    val digitalRange: FloatRange2,
+    val crossoverRatio: Float? = null,
+    val crossoverMethod: String = "none", // active-physical-id | focal-length | single-camera | none
+    val positionHonored: Boolean = false,
+    val positionFailRatios: List<Float> = emptyList(),
+    /** First requested ratio at which sharpness fell below ~60% of the ratio-1.0 baseline. */
+    val qualityCollapseRatio: Float? = null,
+    val perResolution: Map<String, ResolutionZoomMap> = emptyMap(),
+    val steps: Map<String, CalibrationStep> = emptyMap(),
+)
+
+@Serializable
+data class ResultDeviceIdentity(
+    val manufacturer: String,
+    val model: String,
+    val device: String,
+    val appVersionName: String,
 )
 
 /**
@@ -90,11 +143,6 @@ data class CameraCalibration(
 data class CalibrationResult(
     val runId: String,
     val runAtMs: Long,
+    val deviceIdentity: ResultDeviceIdentity,
     val cameras: Map<String, CameraCalibration>,
 )
-
-/** The two steps every camera is swept through, in order. */
-enum class CalibrationStepId(val wire: String) {
-    CROP_REGION("crop-region"),
-    ZOOM_QUALITY("zoom-quality"),
-}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // Sentinels specific to the calibration routes.
@@ -16,30 +17,98 @@ var (
 	// already in progress.
 	ErrCalibrationRunning = errors.New("calibration already running")
 
+	// ErrPhoneRecording is POST /api/calibration/start's 409 when the phone is
+	// in RECORD mode - the camera is busy and recording has to be explicitly
+	// stopped (POST /api/mode standby) first.
+	ErrPhoneRecording = errors.New("phone is recording; stop it before calibrating")
+
 	// ErrNoCalibrationResult is GET /api/calibration/result's 404: this phone
 	// has never completed a calibration. Per HANDOFF-controller-ux.md this is
 	// a normal "nothing to ingest yet", not a failure.
 	ErrNoCalibrationResult = errors.New("phone has no completed calibration result")
 )
 
-// CalibrationStepResult is the controller-relevant slice of one step's result
-// — it only ever summarises "N/M checks", so the individual check list from
-// phone-http-api.md is intentionally not decoded here.
+// ---- Rich zoom-probe result (mirrors phone-app calibration/CalibrationModels.kt) ----
+
+type RectNorm struct {
+	L float64 `json:"l"`
+	T float64 `json:"t"`
+	R float64 `json:"r"`
+	B float64 `json:"b"`
+}
+
+type FloatRange2 struct {
+	Lo float64 `json:"lo"`
+	Hi float64 `json:"hi"`
+}
+
+// ZoomSample: one requested zoom and what the HAL actually did with it.
+type ZoomSample struct {
+	RequestedRatio         float64   `json:"requestedRatio"`
+	ReportedRatio          *float64  `json:"reportedRatio"`
+	RatioHonored           bool      `json:"ratioHonored"`
+	RequestedCropNorm      RectNorm  `json:"requestedCropNorm"`
+	EffectiveCropNorm      RectNorm  `json:"effectiveCropNorm"`
+	PositionRequestedNorm  *RectNorm `json:"positionRequestedNorm"`
+	PositionReportedNorm   *RectNorm `json:"positionReportedNorm"`
+	PositionHonored        *bool     `json:"positionHonored"`
+	ActivePhysicalID       *string   `json:"activePhysicalId"`
+	LensFocalLengthMm      *float64  `json:"lensFocalLengthMm"`
+	Sharpness              float64   `json:"sharpness"`
+	SharpnessRelToBaseline float64   `json:"sharpnessRelToBaseline"`
+}
+
+type ResolutionZoomMap struct {
+	Width   int          `json:"width"`
+	Height  int          `json:"height"`
+	Samples []ZoomSample `json:"samples"`
+}
+
+type CameraDeviceIdentity struct {
+	CameraID          string       `json:"cameraId"`
+	Facing            string       `json:"facing"`
+	FocalLengthsMm    []float64    `json:"focalLengthsMm"`
+	IsLogicalMultiCam bool         `json:"isLogicalMultiCam"`
+	PhysicalIDs       []string     `json:"physicalIds"`
+	ActiveArrayWidth  int          `json:"activeArrayWidth"`
+	ActiveArrayHeight int          `json:"activeArrayHeight"`
+	CroppingType      string       `json:"croppingType"`
+	MaxDigitalZoom    *float64     `json:"maxDigitalZoom"`
+	ZoomRatioRange    *FloatRange2 `json:"zoomRatioRange"`
+}
+
+// CalibrationStepResult keeps the "N/M checks" summary the controller shows.
 type CalibrationStepResult struct {
 	ChecksTotal  int `json:"checksTotal"`
 	ChecksPassed int `json:"checksPassed"`
 }
 
 type CalibrationCameraResult struct {
-	DeviceIdentity map[string]any                   `json:"deviceIdentity"`
-	Steps          map[string]CalibrationStepResult `json:"steps"`
+	DeviceIdentity      CameraDeviceIdentity            `json:"deviceIdentity"`
+	OpticalRange        FloatRange2                     `json:"opticalRange"`
+	DigitalRange        FloatRange2                     `json:"digitalRange"`
+	CrossoverRatio      *float64                        `json:"crossoverRatio"`
+	CrossoverMethod     string                          `json:"crossoverMethod"`
+	PositionHonored     bool                            `json:"positionHonored"`
+	PositionFailRatios  []float64                       `json:"positionFailRatios"`
+	QualityCollapseRatio *float64                       `json:"qualityCollapseRatio"`
+	PerResolution       map[string]ResolutionZoomMap    `json:"perResolution"`
+	Steps               map[string]CalibrationStepResult `json:"steps"`
+}
+
+type ResultDeviceIdentity struct {
+	Manufacturer   string `json:"manufacturer"`
+	Model          string `json:"model"`
+	Device         string `json:"device"`
+	AppVersionName string `json:"appVersionName"`
 }
 
 // CalibrationResult mirrors GET /api/calibration/result.
 type CalibrationResult struct {
-	RunID   string                             `json:"runId"`
-	RunAtMs int64                              `json:"runAtMs"`
-	Cameras map[string]CalibrationCameraResult `json:"cameras"`
+	RunID          string                            `json:"runId"`
+	RunAtMs        int64                             `json:"runAtMs"`
+	DeviceIdentity ResultDeviceIdentity              `json:"deviceIdentity"`
+	Cameras        map[string]CalibrationCameraResult `json:"cameras"`
 }
 
 // ChecksTotal / ChecksPassed sum the per-step counts across every camera —
@@ -98,7 +167,7 @@ func (c *Client) CalibrationResultRaw(ctx context.Context) (CalibrationResult, [
 		return CalibrationResult{}, nil, &HTTPError{StatusCode: resp.StatusCode, Body: string(b)}
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MiB ceiling — a result doc is a few KB
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20)) // 8 MiB ceiling — a full per-resolution zoom map
 	if err != nil {
 		return CalibrationResult{}, nil, fmt.Errorf("read calibration result: %w", err)
 	}
@@ -128,6 +197,9 @@ func (c *Client) StartCalibration(ctx context.Context) (CalibrationStartResponse
 	if err != nil {
 		var httpErr *HTTPError
 		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
+			if strings.Contains(strings.ToLower(httpErr.Body), "recording") {
+				return CalibrationStartResponse{}, ErrPhoneRecording
+			}
 			return CalibrationStartResponse{}, ErrCalibrationRunning
 		}
 		return CalibrationStartResponse{}, err
@@ -174,4 +246,13 @@ func (c *Client) CancelCalibration(ctx context.Context, runID string) error {
 	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
 	defer cancel()
 	return c.doJSON(ctx, http.MethodDelete, "/api/calibration/"+url.PathEscape(runID), nil, nil, nil)
+}
+
+// SetMode issues POST /api/mode. The controller doesn't drive this from the UI
+// (recording is stopped on the phone itself), but it's the low-level move that
+// frees the camera - used by tests and available for future flows.
+func (c *Client) SetMode(ctx context.Context, mode string) error {
+	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	defer cancel()
+	return c.doJSON(ctx, http.MethodPost, "/api/mode", nil, map[string]string{"mode": mode}, nil)
 }

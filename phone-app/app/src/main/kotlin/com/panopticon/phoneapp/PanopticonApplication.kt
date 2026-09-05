@@ -7,6 +7,7 @@ import com.panopticon.phoneapp.clips.ClipStore
 import com.panopticon.phoneapp.pairing.ControllerRegistry
 import com.panopticon.phoneapp.pairing.InviteManager
 import com.panopticon.phoneapp.state.AppConfig
+import com.panopticon.phoneapp.state.AppMode
 import com.panopticon.phoneapp.state.AppState
 
 /**
@@ -29,6 +30,20 @@ class PanopticonApplication : Application() {
         private set
     val appState = AppState()
 
+    /**
+     * Registered by [com.panopticon.phoneapp.service.PanopticonService] so the
+     * Compose UI can drive a mode change (e.g. the Calibrate screen's "Stop
+     * recording" button) through exactly the same path `POST /api/mode` uses.
+     */
+    @Volatile
+    var onModeChangeRequested: ((AppMode) -> Unit)? = null
+
+    fun requestMode(mode: AppMode) {
+        if (appState.mode.value == mode) return
+        appState.setMode(mode)
+        onModeChangeRequested?.invoke(mode)
+    }
+
     override fun onCreate() {
         super.onCreate()
         appConfig = AppConfig(this)
@@ -36,7 +51,7 @@ class PanopticonApplication : Application() {
         inviteManager = InviteManager()
         clipStore = ClipStore(this)
         clipStore.reconcile()
-        calibrationRunner = CalibrationRunner(this, CalibrationStore(this))
+        calibrationRunner = CalibrationRunner(this, CalibrationStore(this), appState)
     }
 
     companion object {

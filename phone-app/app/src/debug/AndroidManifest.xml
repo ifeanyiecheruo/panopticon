@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Debug-only. Merged into the debug variant's manifest only (src/debug), so
+      it can never reach a release build. Lets `adb` drive a calibration sweep
+      without the Compose UI, which uiautomator/screencap can't reliably touch
+      on some devices. See com.panopticon.phoneapp.debug.DebugCalibrationReceiver.
+    -->
+    <application>
+        <receiver
+            android:name=".debug.DebugCalibrationReceiver"
+            android:exported="true" />
+    </application>
+</manifest>

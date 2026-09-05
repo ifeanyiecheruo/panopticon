@@ -3,14 +3,24 @@ package com.panopticon.phoneapp.state
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-enum class AppMode { RECORD, LIVE }
+/**
+ * Top-level camera mode. RECORD is sticky and takes precedence: any other
+ * camera-using function (LIVE preview, calibration, future manual controls) is
+ * unavailable until recording is *explicitly* stopped by moving to STANDBY.
+ *
+ *  - RECORD:  motion-gated recording pipeline owns the camera.
+ *  - STANDBY: camera released, nothing running - the only state a sweep /
+ *             live preview can grab the camera from.
+ *  - LIVE:    live-preview pipeline (a stub for this slice).
+ */
+enum class AppMode { RECORD, LIVE, STANDBY }
 
 /**
- * IDLE now means "armed but not recording" (camera up, analysing frames for
- * motion, nothing being written) - the motion gate, not the old always-record
- * behaviour. RECORDING means a clip is actively being written.
+ * IDLE means "armed but not recording" (camera up, analysing frames for
+ * motion, nothing written) - the motion gate. RECORDING: a clip is actively
+ * being written. STOPPED: STANDBY mode, camera released entirely.
  */
-enum class RecordingStatus { IDLE, RECORDING, UNAVAILABLE }
+enum class RecordingStatus { IDLE, RECORDING, UNAVAILABLE, STOPPED }
 
 /**
  * In-memory, process-wide runtime state - mode, camera health, live "viewer" stub count.

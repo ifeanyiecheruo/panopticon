@@ -52,6 +52,9 @@ type fakePhone struct {
 	// "completed".
 	calRunID       string
 	calStatusPolls int
+
+	// mode: "record" (default) blocks calibration; "standby" allows it.
+	mode string
 }
 
 func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePhone) {
@@ -130,9 +133,30 @@ func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePho
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(body))
 	}))
+	mux.HandleFunc("/api/mode", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+		fp.mu.Lock()
+		defer fp.mu.Unlock()
+		if r.Method == http.MethodPost {
+			var b struct {
+				Mode string `json:"mode"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&b)
+			fp.mode = b.Mode
+		}
+		m := fp.mode
+		if m == "" {
+			m = "record"
+		}
+		writeJSON(w, map[string]string{"mode": m})
+	}))
 	mux.HandleFunc("/api/calibration/start", authed(fp, func(w http.ResponseWriter, r *http.Request) {
 		fp.mu.Lock()
 		defer fp.mu.Unlock()
+		if fp.mode == "" || fp.mode == "record" {
+			w.WriteHeader(http.StatusConflict)
+			writeJSON(w, map[string]string{"error": "stop recording on the phone before calibrating"})
+			return
+		}
 		if fp.calRunID != "" {
 			w.WriteHeader(http.StatusConflict)
 			return

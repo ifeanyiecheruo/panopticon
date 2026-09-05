@@ -96,10 +96,15 @@ access to every route below (no read-only/view-only notion).
 
 ### Mode
 
+Modes: `record` (motion-gated recording pipeline owns the camera), `standby` (camera released —
+the only state calibration / live preview can take it from), `live` (live-preview pipeline, a
+stub in this build). **`record` is sticky**: it takes precedence over every other camera-using
+feature, and you must move to `standby` *explicitly* before any of them can run.
+
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
 | GET | `/api/mode` | — | — | `{ "mode": "record" }` | Current top-level mode. |
-| POST | `/api/mode` | — | `{ "mode": "live" }` | `{ "mode": "live" }` | Switches mode (tears down the other pipeline); no-op `200` if already there. |
+| POST | `/api/mode` | — | `{ "mode": "standby" }` | `{ "mode": "standby" }` | Switches mode. `standby` and `record` are always allowed. `live` from `record` is a **`409`** (`{"error":"stop recording first: POST /api/mode {\"mode\":\"standby\"}"}`) — go via `standby`. No-op `200` if already there. |
 
 ### Cameras (selection)
 
@@ -119,17 +124,23 @@ access to every route below (no read-only/view-only notion).
 ### Calibration (device-wide)
 
 > **Implemented** in `phone-app` (`CalibrationRunner` + `CalibrationRoutes`) and consumed by
-> `controller` (`internal/calibration`). One caveat vs. this spec's intent: a check currently
-> snapshots the *declared* `CameraCharacteristics` value rather than empirically measuring it,
-> so `measured` mirrors `declared` and results always pass — see `phone-app/README.md`. The
-> route shapes, `runId` lifecycle, progress fields and persistence all match the tables below.
+> `controller` (`internal/calibration`). It's now a **real empirical zoom probe**: for every
+> camera, at every `StreamConfigurationMap` output size, it applies a geometric range of zoom
+> requests (`CONTROL_ZOOM_RATIO` on API 30+, `SCALER_CROP_REGION` on every API) and records what
+> the HAL actually did — the effective crop rect (`effectiveCropNorm`), whether the requested
+> ratio/position was honoured, which physical camera was active (optical↔digital crossover), and
+> a frame-sharpness score. Result body carries `deviceIdentity`, and per camera `opticalRange` /
+> `digitalRange` / `crossoverRatio` / `positionHonored` / `qualityCollapseRatio` /
+> `perResolution` (the full `ZoomSample` list) plus a thin `steps` summary; the exact shape is
+> `phone-app`'s `calibration/CalibrationModels.kt` ↔ `controller`'s `internal/phoneapi/calibration.go`.
+> Needs exclusive camera access, so it only runs from `standby` (see Mode).
 
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
-| POST | `/api/calibration/start` | — | `{}` | `{ "runId": "cal-8f2a1c", "status": "running", "startedAtMs": 1755270000000, "cameraIds": ["0", "2", "1"] }` | Sweeps every camera the device reports. `409` if already running. |
-| GET | `/api/calibration/status` | `runId=` | — | `{ "runId": "cal-8f2a1c", "status": "running", "currentCameraId": "2", "camerasCompleted": 1, "camerasTotal": 3, "currentStep": "zoom-quality", "stepsCompleted": 1, "stepsTotal": 2, "progressWithinStep": { "index": 4, "total": 15 } }` | Poll target; reports camera + step progress. |
+| POST | `/api/calibration/start` | — | `{}` | `{ "runId": "cal-8f2a1c", "status": "running", "startedAtMs": 1755270000000, "cameraIds": ["0", "2", "1"] }` | Sweeps every camera the device reports. `409` if already running, **`409` if the phone is in `record` mode** (`{"error":"stop recording on the phone before calibrating"}`), `422` if the device reports no cameras. |
+| GET | `/api/calibration/status` | `runId=` | — | `{ "runId": "cal-8f2a1c", "status": "running", "currentCameraId": "2", "camerasCompleted": 1, "camerasTotal": 3, "currentStep": "1920x1080", "stepsCompleted": 4, "stepsTotal": 24, "progressWithinStep": { "index": 9, "total": 14 } }` | Poll target. `currentStep` is the output size being swept; `progressWithinStep` is the zoom step. |
 | DELETE | `/api/calibration/:runId` | — | — | `{ "cancelled": true }` | Cooperative stop; completed cameras keep partial results. |
-| GET | `/api/calibration/result` | `runId=` *(optional)* | — | `{ "runAtMs": 1755270015231, "cameras": { "0": { "deviceIdentity": { "...": "..." }, "steps": { "...": "..." } }, "2": { "...": "..." } } }` | Measured-vs-declared results per camera. With `runId`, that specific run (`409` if not completed). **Without it, the phone's last persisted result** — calibration results are written to the phone's local DB, not held only in memory, so a phone that's already calibrated can serve this on every request without re-running anything, including after an app restart. `404` if this phone has never completed a calibration. |
+| GET | `/api/calibration/result` | `runId=` *(optional)* | — | *(see the note above — `runId`, `runAtMs`, `deviceIdentity`, `cameras.{id}.{opticalRange,digitalRange,crossoverRatio,positionHonored,qualityCollapseRatio,perResolution,steps}`)* | With `runId`, that specific run (`409` if not completed). **Without it, the phone's last persisted result** — written to disk, so an already-calibrated phone serves it on every request without re-running, including after an app restart. `404` if this phone has never completed a calibration. |
 
 ### Live view
 
