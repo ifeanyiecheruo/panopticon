@@ -275,7 +275,12 @@ test-phone: phone-app-local-properties ## Run phone-app JVM unit tests (./gradle
 	@command -v java >/dev/null 2>&1 || { echo "java not found on PATH - install a JDK (17 recommended)." >&2; exit 1; }
 	cd phone-app && $(GRADLEW) test
 
-test-controller: ## Run controller Go tests (go test ./...)
+test-controller: build-controller ## Run controller Go tests (go test ./...)
+	@# Depends on build-controller because main.go's `//go:embed all:frontend/dist` makes `go test
+	@# ./...`'s run of the top-level (main) package fail with "setup failed" unless frontend/dist
+	@# already exists on disk - the actual test packages under internal/ are unaffected either way,
+	@# but "go test ./..." reports a package-level FAIL (and make treats it as an overall failure)
+	@# for the main package regardless.
 	cd controller && go test ./...
 
 ## Misc
