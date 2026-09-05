@@ -7,7 +7,7 @@
 
 .PHONY: help build build-phone build-controller \
         install install-phone install-controller \
-        run-phone run-controller e2e \
+        run-phone run-controller e2e grant-phone revoke-phone \
         test test-phone test-controller \
         clean clean-phone clean-controller \
         device-info check-adb-devices \
@@ -302,20 +302,38 @@ install-controller: build-controller ## Alias for build-controller (no separate 
 
 ## Run
 
-run-phone: install-phone check-adb-devices ## Install + launch phone-app on ADB_SERIAL (or the sole connected device), granting camera/notification perms
-	@echo "==> Granting camera + notification permissions (idempotent if already granted)"
-	-"$(ADB)" $(ADB_SERIAL_FLAG) shell pm grant $(PHONE_PACKAGE) android.permission.CAMERA
-	@sdk="$$("$(ADB)" $(ADB_SERIAL_FLAG) shell getprop ro.build.version.sdk 2>/dev/null)"; \
-	if [ "$${sdk:-0}" -ge 33 ] 2>/dev/null; then \
-		"$(ADB)" $(ADB_SERIAL_FLAG) shell pm grant $(PHONE_PACKAGE) android.permission.POST_NOTIFICATIONS || true; \
-	else \
-		echo "    (skipping POST_NOTIFICATIONS grant - device is API $$sdk, that permission doesn't exist before API 33)"; \
-	fi
+run-phone: install-phone check-adb-devices ## Install + launch phone-app on ADB_SERIAL (or the sole connected device)
 	@echo "==> Launching $(PHONE_PACKAGE)"
 	"$(ADB)" $(ADB_SERIAL_FLAG) shell am start -n $(PHONE_PACKAGE)/.MainActivity
 	@echo "==> To reach the HTTP API from this machine: adb $(ADB_SERIAL_FLAG) forward tcp:8080 tcp:8080"
 	@echo "    then curl http://127.0.0.1:8080/api/device (401 without a bearer token - pair first"
 	@echo "    from the app's Connect tab, or POST /api/pair with a code generated there)."
+	@echo "==> Doesn't grant camera/notification permissions - the app requests them itself on"
+	@echo "    first launch. To pre-grant (skip that dialog) or reset back to ungranted for testing"
+	@echo "    the request/denial flow: make grant-phone / make revoke-phone."
+
+# Not a run-phone dependency - deliberately developer-invoked only, so the app's own runtime
+# permission-request flow (MainActivity.onCreate -> permissionLauncher.launch(...)) still runs on
+# a normal `make run-phone` instead of being silently bypassed. Use this to skip that dialog when
+# it's just in the way, e.g. reinstalling repeatedly while iterating on something unrelated to
+# permissions.
+grant-phone: check-adb-devices ## Grant camera/notification permissions on ADB_SERIAL (or the sole connected device)
+	"$(ADB)" $(ADB_SERIAL_FLAG) shell pm grant $(PHONE_PACKAGE) android.permission.CAMERA
+	@sdk="$$("$(ADB)" $(ADB_SERIAL_FLAG) shell getprop ro.build.version.sdk 2>/dev/null)"; \
+	if [ "$${sdk:-0}" -ge 33 ] 2>/dev/null; then \
+		"$(ADB)" $(ADB_SERIAL_FLAG) shell pm grant $(PHONE_PACKAGE) android.permission.POST_NOTIFICATIONS; \
+	else \
+		echo "    (skipping POST_NOTIFICATIONS grant - device is API $$sdk, that permission doesn't exist before API 33)"; \
+	fi
+
+revoke-phone: check-adb-devices ## Revoke camera/notification permissions on ADB_SERIAL (or the sole connected device), e.g. to re-test the app's own permission-request flow
+	"$(ADB)" $(ADB_SERIAL_FLAG) shell pm revoke $(PHONE_PACKAGE) android.permission.CAMERA
+	@sdk="$$("$(ADB)" $(ADB_SERIAL_FLAG) shell getprop ro.build.version.sdk 2>/dev/null)"; \
+	if [ "$${sdk:-0}" -ge 33 ] 2>/dev/null; then \
+		"$(ADB)" $(ADB_SERIAL_FLAG) shell pm revoke $(PHONE_PACKAGE) android.permission.POST_NOTIFICATIONS; \
+	else \
+		echo "    (skipping POST_NOTIFICATIONS revoke - device is API $$sdk, that permission doesn't exist before API 33)"; \
+	fi
 
 run-controller: build-controller ## Launch the controller binary (tray icon; keeps running in background)
 	@[ -f "$(CONTROLLER_BIN)" ] || { echo "$(CONTROLLER_BIN) not found after build - see build-controller output." >&2; exit 1; }

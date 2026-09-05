@@ -56,9 +56,14 @@ controller's - run `make help` from the repo root for the full list. From there:
 ```
 make build-phone     # ./gradlew assembleDebug
 make install-phone   # + install onto the connected device
-make run-phone       # + grant camera/notification perms + launch MainActivity
+make run-phone       # + launch MainActivity (app requests camera/notification perms itself)
 make test-phone      # ./gradlew test
 ```
+
+`run-phone` doesn't pre-grant permissions — `MainActivity` requests camera (and, on API 33+,
+notification) access itself on first launch, same as a real user would see. Use `make
+grant-phone`/`make revoke-phone` to pre-grant (skip that dialog while iterating on something
+unrelated to permissions) or reset back to ungranted (to re-test the request/denial flow).
 
 If more than one device is visible to `adb`, these fail with a list of devices and ask you to
 target one explicitly: `make install-phone ADB_SERIAL=<serial>` (see `adb devices -l`).
