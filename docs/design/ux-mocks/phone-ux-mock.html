@@ -1,0 +1,1172 @@
+<title>Panopticon Phone</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --bg:#0b1210;
+  --frame:#12312c;
+  --frame-hi:#1c4740;
+  --screen:#0d1714;
+  --surface:#132420;
+  --surface-2:#1a332c;
+  --border:#264238;
+  --border-soft:#1c332b;
+  --text:#e9f3ee;
+  --text-dim:#8fada0;
+  --text-faint:#5c7c70;
+  --accent:#4fe3c9;
+  --accent-dim:#2a6b5f;
+  --accent-ink:#04211b;
+  --rec:#ff5f56;
+  --rec-dim:#7a2b27;
+  --warn:#e8b339;
+  --page-bg:#080b0a;
+}
+:root:not([data-theme="light"]){
+  --page-bg:#050706;
+}
+:root[data-theme="light"]{
+  --page-bg:#e7ece9;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--page-bg);
+  color:var(--text);
+  font-family:"IBM Plex Sans",system-ui,sans-serif;
+  min-height:100%;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:20px;
+  padding:36px 16px 60px;
+}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;}
+
+/* ---------- Page chrome around the device ---------- */
+.stage-label{
+  display:flex;
+  align-items:baseline;
+  gap:10px;
+  color:var(--text-dim);
+}
+.stage-label .k{
+  font-family:"IBM Plex Mono",monospace;
+  font-size:11px;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--accent);
+}
+.stage-label .name{
+  font-weight:600;
+  font-size:15px;
+  color:var(--text);
+}
+.crumbs{
+  display:flex;
+  gap:6px;
+  font-family:"IBM Plex Mono",monospace;
+  font-size:11px;
+  color:var(--text-faint);
+  flex-wrap:wrap;
+  max-width:400px;
+}
+.crumbs span.sep{color:var(--border);}
+
+/* ---------- Device frame ---------- */
+.device{
+  width:392px;
+  border-radius:46px;
+  background:linear-gradient(160deg,var(--frame-hi),var(--frame) 55%);
+  padding:14px;
+  box-shadow:0 40px 80px -30px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.06);
+  position:relative;
+}
+.device::before{
+  content:"";
+  position:absolute;
+  top:26px; left:50%; transform:translateX(-50%);
+  width:10px; height:10px;
+  border-radius:50%;
+  background:#000;
+  box-shadow:0 0 0 3px rgba(255,255,255,.04);
+  z-index:5;
+}
+.screen{
+  width:100%;
+  height:770px;
+  background:var(--screen);
+  border-radius:32px;
+  overflow:hidden;
+  position:relative;
+  display:flex;
+  flex-direction:column;
+  border:1px solid #06120e;
+}
+
+/* ---------- Top bar ---------- */
+.topbar{
+  flex:0 0 auto;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:32px 12px 8px;
+  border-bottom:1px solid var(--border-soft);
+  background:var(--screen);
+}
+.iconbtn{
+  width:32px; height:32px;
+  border-radius:9px;
+  display:flex; align-items:center; justify-content:center;
+  background:transparent;
+  border:none;
+  color:var(--text-dim);
+  cursor:pointer;
+  flex:0 0 auto;
+}
+.iconbtn:hover{background:var(--surface-2); color:var(--text);}
+.iconbtn:disabled{opacity:0; pointer-events:none;}
+.iconbtn svg{width:18px;height:18px;}
+
+.rec-pill{
+  display:flex; align-items:center; gap:6px;
+  padding:5px 9px 5px 8px;
+  border-radius:999px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  cursor:pointer;
+  font-family:"IBM Plex Mono",monospace;
+  font-size:11px;
+  letter-spacing:.06em;
+  color:var(--text-dim);
+  flex:0 0 auto;
+  transition:opacity .15s;
+}
+.rec-pill .dot{
+  width:8px;height:8px;border-radius:50%;
+  background:var(--text-faint);
+}
+.rec-pill.live{color:var(--rec); border-color:var(--rec-dim); background:rgba(255,95,86,.08);}
+.rec-pill.live .dot{background:var(--rec); box-shadow:0 0 0 3px rgba(255,95,86,.18); animation:pulse 1.4s infinite;}
+.rec-pill.unavailable{color:var(--text-faint); cursor:not-allowed; opacity:.55;}
+.rec-pill.unavailable .dot{background:var(--text-faint); position:relative;}
+.rec-pill.unavailable .dot::after{
+  content:""; position:absolute; left:-2px; top:50%; width:12px; height:1.4px; background:var(--text-faint);
+  transform:translateY(-50%) rotate(45deg); transform-origin:center;
+}
+@keyframes pulse{0%,100%{opacity:1;} 50%{opacity:.35;}}
+
+.topbar-title{
+  flex:1 1 auto;
+  min-width:0;
+  font-size:13px;
+  font-weight:600;
+  color:var(--text);
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.battery{
+  display:flex; align-items:center; gap:5px;
+  flex:0 0 auto;
+  font-family:"IBM Plex Mono",monospace;
+  font-size:11px;
+  color:var(--text-dim);
+}
+.battery .cells{
+  width:26px; height:13px;
+  border:1.4px solid var(--text-faint);
+  border-radius:3px;
+  position:relative;
+  display:flex;
+  padding:1.5px;
+  gap:1.5px;
+}
+.battery .cells::after{
+  content:"";
+  position:absolute; right:-4px; top:3.5px;
+  width:2.5px; height:6px;
+  background:var(--text-faint);
+  border-radius:0 2px 2px 0;
+}
+.battery .cells i{flex:1; background:var(--accent); border-radius:1px;}
+
+/* ---------- Body: rail + content ---------- */
+.body{
+  flex:1 1 auto;
+  display:flex;
+  min-height:0;
+}
+.rail{
+  flex:0 0 58px;
+  border-right:1px solid var(--border-soft);
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  padding:10px 0;
+  gap:2px;
+  background:var(--screen);
+}
+.rail .brand{
+  width:34px;height:34px;
+  border-radius:10px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  display:flex;align-items:center;justify-content:center;
+  color:var(--accent);
+  margin-bottom:10px;
+  cursor:pointer;
+  flex:0 0 auto;
+}
+.rail .brand svg{width:17px;height:17px;}
+.rail-btn{
+  width:42px; height:42px;
+  border-radius:11px;
+  border:none;
+  background:transparent;
+  color:var(--text-faint);
+  display:flex; align-items:center; justify-content:center;
+  cursor:pointer;
+  position:relative;
+  flex:0 0 auto;
+}
+.rail-btn svg{width:19px;height:19px;}
+.rail-btn:hover{color:var(--text-dim); background:var(--surface);}
+.rail-btn.active{color:var(--accent-ink); background:var(--accent);}
+.rail-btn .tick{
+  position:absolute; left:-1px; top:50%; transform:translateY(-50%);
+  width:3px; height:18px; border-radius:0 3px 3px 0;
+  background:var(--accent);
+  display:none;
+}
+.rail-btn.active .tick{display:block;}
+
+.content{
+  flex:1 1 auto;
+  min-width:0;
+  overflow-y:auto;
+  padding:10px 12px 12px;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.content::-webkit-scrollbar{width:6px;}
+.content::-webkit-scrollbar-thumb{background:var(--border); border-radius:3px;}
+
+/* ---------- Shared bits ---------- */
+.section-title{
+  font-size:10.5px;
+  font-weight:600;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  color:var(--text-faint);
+  margin:2px 0 -6px;
+}
+.card{
+  background:var(--surface);
+  border:1px solid var(--border-soft);
+  border-radius:14px;
+  padding:8px 10px;
+}
+.field-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:6px 2px;
+  border-bottom:1px solid var(--border-soft);
+}
+.field-row:last-child{border-bottom:none;}
+.field-row .k{font-size:12.5px; color:var(--text-dim);}
+.field-row .v{
+  font-family:"IBM Plex Mono",monospace;
+  font-size:12.5px;
+  color:var(--text);
+  text-align:right;
+}
+.field-row .v.accent{color:var(--accent);}
+.badge{
+  display:inline-flex; align-items:center; gap:5px;
+  font-family:"IBM Plex Mono",monospace;
+  font-size:10.5px;
+  padding:3px 8px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  color:var(--text-dim);
+}
+.badge.ok{color:var(--accent); border-color:var(--accent-dim); background:rgba(79,227,201,.08);}
+.badge.warn{color:var(--warn); border-color:#5c4a1c; background:rgba(232,179,57,.08);}
+
+.btn{
+  font-family:"IBM Plex Sans",sans-serif;
+  font-size:13px;
+  font-weight:600;
+  padding:9px 12px;
+  border-radius:11px;
+  border:1px solid var(--border);
+  background:var(--surface-2);
+  color:var(--text);
+  cursor:pointer;
+  display:flex; align-items:center; justify-content:center; gap:8px;
+}
+.btn:hover{border-color:var(--accent-dim);}
+.btn.primary{
+  background:var(--accent);
+  color:var(--accent-ink);
+  border-color:var(--accent);
+}
+.btn.primary:hover{filter:brightness(1.06);}
+.btn svg{width:15px;height:15px;}
+
+.list-item{
+  display:flex; align-items:center; gap:10px;
+  padding:9px 10px;
+  background:var(--surface);
+  border:1px solid var(--border-soft);
+  border-radius:13px;
+}
+.list-item .avatar{
+  width:36px;height:36px;border-radius:10px;
+  background:var(--surface-2);
+  border:1px solid var(--border);
+  display:flex;align-items:center;justify-content:center;
+  color:var(--text-dim);
+  flex:0 0 auto;
+}
+.list-item .avatar svg{width:17px;height:17px;}
+.list-item .meta{flex:1; min-width:0;}
+.list-item .meta .t1{font-size:13px; font-weight:600; color:var(--text);}
+.list-item .meta .t2{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--text-faint); margin-top:2px;}
+.list-item .acts{display:flex; gap:2px; flex:0 0 auto;}
+.list-item .acts button{
+  width:30px;height:30px; border-radius:8px; border:none; background:transparent;
+  color:var(--text-faint); display:flex;align-items:center;justify-content:center; cursor:pointer;
+}
+.list-item .acts button:hover{background:var(--surface-2); color:var(--text);}
+.list-item .acts button.danger:hover{color:var(--rec); background:rgba(255,95,86,.1);}
+.list-item .acts svg{width:15px;height:15px;}
+
+/* scene render placeholder (stand-in for real camera frames) */
+.scene{
+  position:relative;
+  border-radius:14px;
+  overflow:hidden;
+  background:linear-gradient(180deg,#0c1f24 0%,#0a2c2a 55%,#081a16 100%);
+  flex:0 0 auto;
+}
+.scene .sun{
+  position:absolute; width:34px; height:34px; border-radius:50%;
+  background:radial-gradient(circle at 35% 35%, #fff6d8, var(--warn) 70%);
+  filter:blur(.2px);
+  box-shadow:0 0 24px 6px rgba(232,179,57,.35);
+}
+.scene .ridge{
+  position:absolute; left:0; right:0; bottom:0; height:62%;
+  background:#0a1a16;
+  clip-path:polygon(0% 100%,0% 55%,14% 40%,26% 58%,40% 22%,55% 50%,68% 30%,82% 52%,100% 38%,100% 100%);
+}
+.scene .ridge2{
+  position:absolute; left:0; right:0; bottom:0; height:40%;
+  background:#0e2420;
+  clip-path:polygon(0% 100%,0% 62%,20% 48%,38% 66%,58% 40%,78% 64%,100% 46%,100% 100%);
+}
+.scene .grain{position:absolute; inset:0; background:repeating-linear-gradient(0deg,rgba(255,255,255,.02) 0px,transparent 2px,transparent 4px);}
+.scene .tag{
+  position:absolute; left:9px; bottom:8px;
+  font-family:"IBM Plex Mono",monospace; font-size:9.5px; color:rgba(233,243,238,.75);
+  background:rgba(0,0,0,.35); padding:2px 6px; border-radius:5px;
+}
+.scene .motion{
+  position:absolute; right:9px; top:9px;
+  display:flex; align-items:center; gap:4px;
+  font-family:"IBM Plex Mono",monospace; font-size:9px; letter-spacing:.06em;
+  color:var(--rec); background:rgba(0,0,0,.4); padding:3px 7px; border-radius:999px;
+}
+.scene .motion i{width:5px;height:5px;border-radius:50%;background:var(--rec);}
+
+/* ---------- Preview screen: live viewport + pixel-style control bar ---------- */
+.viewport{
+  width:100%;
+  aspect-ratio:3/4;
+}
+.viewport .live-badge{
+  position:absolute; left:9px; top:9px;
+  display:flex; align-items:center; gap:5px;
+  font-family:"IBM Plex Mono",monospace; font-size:9px; letter-spacing:.08em; font-weight:600;
+  color:var(--rec); background:rgba(0,0,0,.45); padding:3px 8px; border-radius:999px;
+}
+.viewport .live-badge i{width:5px;height:5px;border-radius:50%;background:var(--rec); animation:pulse 1.4s infinite;}
+
+.ctrl-slot{
+  height:44px; position:relative;
+  background:rgba(8,18,16,.55);
+  backdrop-filter:blur(10px);
+  -webkit-backdrop-filter:blur(10px);
+  border-radius:999px;
+  touch-action:none;
+}
+/* e.g. the Focus ruler before its picker below is set to "manual" */
+.ctrl-slot.disabled{opacity:.4; filter:grayscale(1); pointer-events:none; cursor:not-allowed;}
+
+/* The ruler has no text left in it, so instead of a full-width row below the
+   viewport it floats narrow and centered directly over the live feed, with
+   the camera-cycle button as its own small translucent button in the corner.
+   Both fade away after a few seconds of no interaction to stay out of the way
+   of the shot; any tap/drag on the preview screen brings them back. */
+.viewport-wrap{position:relative;}
+.viewport-wrap .ctrl-slot.overlay, .viewport-wrap .cam-cycle-btn{transition:opacity .35s;}
+.viewport-wrap.idle .ctrl-slot.overlay, .viewport-wrap.idle .cam-cycle-btn{opacity:0; pointer-events:none;}
+.ctrl-slot.overlay{
+  position:absolute; left:50%; bottom:10px; transform:translateX(-50%);
+  width:180px; height:34px; z-index:4;
+}
+.cam-cycle-btn{
+  position:absolute; bottom:9px; right:9px; z-index:4;
+  width:28px; height:28px; border-radius:999px; border:none;
+  background:rgba(8,18,16,.55);
+  backdrop-filter:blur(10px);
+  -webkit-backdrop-filter:blur(10px);
+  color:rgba(233,243,238,.8);
+  display:flex; align-items:center; justify-content:center; cursor:pointer;
+}
+.cam-cycle-btn svg{width:14px; height:14px;}
+
+/* generic pixel-style ruler, used for every numeric adjuster on the preview screen.
+   The slider window is a fixed width; the tick strip is wider than that and
+   slides under a thumb that never moves. A directional glyph (dark/bright,
+   near/far, cool/warm) sits fixed at each end of the pill, and the tick track
+   between them fades to transparent at its own edges instead of clipping
+   hard — that fade is the only cue that more ticks exist off to that side.
+   The value bubble floats above the pill so it's never touched by the fade. */
+.ruler{position:absolute; inset:0; cursor:ew-resize;}
+.ruler-body{position:absolute; inset:0; display:flex; align-items:stretch;}
+.ruler-endicon{
+  flex:0 0 26px; display:flex; align-items:center; justify-content:center;
+  color:rgba(233,243,238,.55); z-index:2; pointer-events:none;
+}
+.ruler-endicon svg{width:12px; height:12px;}
+.ruler-track{
+  flex:1; position:relative; overflow:hidden;
+  -webkit-mask-image:linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
+  mask-image:linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
+}
+.ruler .strip{position:absolute; top:0; bottom:0; left:0;}
+.ruler .tick{
+  position:absolute; top:50%; width:1px; height:6px;
+  background:rgba(233,243,238,.22); border-radius:1px; transform:translateY(-50%);
+}
+.ruler .tick.minor{width:1.3px; height:11px; background:rgba(233,243,238,.4);}
+.ruler .tick.major{width:1.6px; height:17px; background:rgba(233,243,238,.65);}
+.ruler .thumb{
+  position:absolute; left:50%; top:6px; bottom:6px; width:3px; background:var(--accent);
+  transform:translateX(-50%); border-radius:2px; pointer-events:none; z-index:3;
+}
+
+/* generic segmented control, used for categorical adjusters */
+.segctl{
+  position:absolute; inset:0; display:flex; padding:3px; gap:3px;
+}
+.segctl button{
+  flex:1; border:none; background:transparent; color:var(--text-dim);
+  font-family:"IBM Plex Mono",monospace; font-size:10.5px; padding:0; border-radius:999px; cursor:pointer;
+  text-transform:capitalize;
+}
+.segctl button.active{background:var(--accent); color:var(--accent-ink); font-weight:600;}
+
+/* drag-to-scroll, item-snapping horizontal rows (adjust bar, filmstrip, etc.) */
+.hscroll{
+  flex:0 0 auto;
+  position:relative; /* so children's offsetLeft is measured from the scroller, not some distant positioned ancestor */
+  overflow-x:auto; overflow-y:hidden;
+  cursor:grab;
+  scrollbar-width:none; -ms-overflow-style:none;
+  user-select:none; -webkit-user-select:none;
+}
+.hscroll::-webkit-scrollbar{display:none;}
+.hscroll.dragging{cursor:grabbing;}
+.hscroll-track{display:flex; gap:8px; width:max-content;}
+
+.adjust-btn{
+  flex:0 0 70px;
+  display:flex; flex-direction:column; align-items:center; gap:3px;
+  padding:6px 4px; border-radius:12px; border:1px solid var(--border-soft); background:var(--surface);
+  color:var(--text-dim); cursor:pointer;
+}
+.adjust-btn svg{width:16px;height:16px;}
+.adjust-btn span{font-size:10px; letter-spacing:.02em;}
+.adjust-btn.open{border-color:var(--accent-dim); color:var(--accent); background:rgba(79,227,201,.07);}
+
+/* gallery */
+.filmstrip .scene{flex:0 0 72px; width:72px; height:48px; cursor:pointer; opacity:.55; border:2px solid transparent;}
+.filmstrip .scene.active{opacity:1; border-color:var(--accent);}
+.scrubber{
+  display:flex; align-items:center; gap:8px;
+}
+.scrubber .track{
+  flex:1; height:4px; border-radius:2px; background:var(--border-soft); position:relative;
+}
+.scrubber .fill{position:absolute; left:0; top:0; bottom:0; border-radius:2px; background:var(--accent);}
+.scrubber .knob{
+  position:absolute; top:50%; width:12px; height:12px; border-radius:50%; background:var(--accent);
+  border:2px solid var(--screen); transform:translate(-50%,-50%);
+}
+.gallery-actions{display:flex; gap:10px;}
+.gallery-actions .btn{flex:1;}
+
+/* controllers / connect */
+.qr{
+  width:220px; height:220px; margin:0 auto; border-radius:16px; background:var(--surface);
+  border:1px solid var(--border-soft); display:flex; align-items:center; justify-content:center; padding:16px;
+}
+.code-row{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  background:var(--surface); border:1px solid var(--border-soft); border-radius:12px; padding:9px 11px;
+}
+.code-row .code{font-family:"IBM Plex Mono",monospace; font-size:15px; letter-spacing:.08em; color:var(--accent); font-weight:600;}
+.copy-btn{
+  border:none; background:var(--surface-2); color:var(--text-dim); width:32px; height:32px; border-radius:8px;
+  display:flex; align-items:center; justify-content:center; cursor:pointer;
+}
+.copy-btn svg{width:14px;height:14px;}
+.url-line{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--text-faint); word-break:break-all; line-height:1.5;}
+
+/* config / calibrate */
+.diag-row{display:flex; align-items:center; justify-content:space-between; gap:10px; padding:7px 2px; border-bottom:1px solid var(--border-soft);}
+.diag-row:last-child{border-bottom:none;}
+.diag-row .k{font-size:12.5px; color:var(--text-dim); display:flex; align-items:center; gap:8px;}
+.diag-row .k svg{width:14px;height:14px; color:var(--text-faint);}
+.diag-vals{display:flex; gap:5px;}
+.chip{
+  font-family:"IBM Plex Mono",monospace; font-size:10.5px; padding:3px 7px; border-radius:6px;
+  background:var(--surface-2); border:1px solid var(--border); color:var(--text-dim);
+}
+.chip.hi{background:rgba(79,227,201,.1); border-color:var(--accent-dim); color:var(--accent);}
+.diag-progress{display:flex; align-items:center; gap:8px; color:var(--text-faint); font-family:"IBM Plex Mono",monospace; font-size:11px;}
+.spin{width:12px;height:12px; border-radius:50%; border:2px solid var(--border); border-top-color:var(--accent); animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.input-line{
+  background:var(--surface); border:1px solid var(--border-soft); color:var(--text);
+  font-family:"IBM Plex Mono",monospace; font-size:12.5px; padding:6px 8px; border-radius:8px;
+  width:150px; text-align:right;
+}
+.input-line:focus{outline:none; border-color:var(--accent-dim);}
+.select-line{
+  background:var(--surface); border:1px solid var(--border-soft); color:var(--text);
+  font-family:"IBM Plex Mono",monospace; font-size:12px; padding:5px 7px; border-radius:8px;
+}
+</style>
+
+<div class="stage-label">
+  <span class="k">PROTOTYPE</span>
+  <span class="name">Panopticon — phone UX</span>
+</div>
+<div class="crumbs" id="crumbs"></div>
+
+<div class="device">
+  <div class="screen">
+    <div class="topbar">
+      <button class="iconbtn" id="backBtn" title="Back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <div class="rec-pill" id="recPill" title="Toggle recording (simulated motion trigger)">
+        <span class="dot"></span><span id="recLabel">STANDBY</span>
+      </div>
+      <div class="topbar-title" id="topTitle">Home</div>
+      <div class="battery"><span class="cells"><i style="flex:1.6"></i><i style="flex:0"></i></span><span id="battPct">71%</span></div>
+    </div>
+    <div class="body">
+      <div class="rail">
+        <div class="brand" id="brandHome" title="Home">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5L12 4l9 7.5"/><path d="M5.5 10v9.5a1 1 0 001 1H9.5v-6.5h5V20.5H17.5a1 1 0 001-1V10"/></svg>
+        </div>
+        <button class="rail-btn" data-nav="preview" title="Preview"><span class="tick"></span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10.5l5-3v9l-5-3"/></svg>
+        </button>
+        <button class="rail-btn" data-nav="gallery" title="Gallery"><span class="tick"></span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5M16 4v5"/></svg>
+        </button>
+        <button class="rail-btn" data-nav="controllers" title="Controllers"><span class="tick"></span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+        </button>
+        <button class="rail-btn" data-nav="config" title="Configuration"><span class="tick"></span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1-1.6 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1h.1a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>
+        </button>
+      </div>
+      <div class="content" id="content"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (s,el=document) => el.querySelector(s);
+const $$ = (s,el=document) => [...el.querySelectorAll(s)];
+const clamp = (v,min,max) => Math.min(max, Math.max(min, v));
+
+const CONTROLLERS = [
+  {name:'Desktop', kind:'desktop', pubkey:'4F2C 9AE1 7B03 D66E', added:'Aug 12'},
+  {name:'Home Server', kind:'server', pubkey:'A81D 5C4F E290 11B7', added:'Jul 30'},
+];
+
+const CLIPS = [
+  {t:'8:05 AM', d:'Sept 4', len:'0:34', motion:'porch · person', fav:true, tone:'day'},
+  {t:'7:41 AM', d:'Sept 4', len:'0:12', motion:'driveway · vehicle', tone:'day'},
+  {t:'11:58 PM', d:'Sept 3', len:'0:22', motion:'porch · animal', tone:'night'},
+  {t:'6:03 PM', d:'Sept 3', len:'0:47', motion:'porch · person', tone:'dusk'},
+  {t:'2:14 PM', d:'Sept 3', len:'0:19', motion:'driveway · vehicle', tone:'day'},
+  {t:'10:32 PM', d:'Sept 2', len:'0:28', motion:'porch · person', tone:'night'},
+];
+
+const CAMERAS = ['Rear · wide', 'Rear · ultrawide', 'Front'];
+
+// Every quick-adjust on the preview screen. 'ruler' = drag-to-scrub pixel-style
+// slider, 'segment' = tap-to-pick segmented control. Rulers carry endIcons —
+// the opposite-polarity glyphs (dark/bright, near/far, cool/warm) anchored at
+// the two ends of the fixed-width slider.
+const ADJUSTERS = {
+  zoom:{type:'ruler', icon:'zoom', label:'Zoom', min:0.5, max:8, tickStep:0.5, majorStep:1, microStep:0.1, pxPerUnit:34,
+    endIcons:['zoomOut','zoomIn'],
+    format:v=>(Number.isInteger(v)?v:v.toFixed(1))+'×', tickLabel:v=>Math.round(v)+'×'},
+  focus:{type:'ruler', icon:'focus', label:'Focus', min:0, max:100, tickStep:10, majorStep:25, microStep:2, pxPerUnit:2.6,
+    endIcons:['focusNear','focusFar'],
+    picker:{key:'focusMode', options:['continuous','manual','macro']}, // slider only does anything once this is 'manual'
+    format:v=>v>=99?'∞':Math.round(v)+'%', tickLabel:v=>v>=99?'∞':Math.round(v)},
+  scene:{type:'segment', icon:'scene', label:'Scene', options:['auto','outdoor','indoor','night']},
+  brightness:{type:'ruler', icon:'sun', label:'Brightness', min:-2, max:2, tickStep:0.5, majorStep:1, microStep:0.1, pxPerUnit:55,
+    endIcons:['moon','sun'],
+    format:v=>(v>=0?'+':'')+v.toFixed(1)+' EV', tickLabel:v=>(v>=0?'+':'')+Math.round(v)},
+  shadows:{type:'ruler', icon:'drop', label:'Shadows', min:0, max:100, tickStep:10, majorStep:25, microStep:2, pxPerUnit:2.6,
+    endIcons:['shadowLow','shadowHigh'],
+    format:v=>Math.round(v)+'%', tickLabel:v=>Math.round(v)},
+  wb:{type:'ruler', icon:'contrast', label:'White bal.', min:2700, max:7500, tickStep:200, majorStep:1000, microStep:40, pxPerUnit:0.065,
+    endIcons:['wbCool','wbWarm'],
+    format:v=>Math.round(v)+'K', tickLabel:v=>Math.round(v/1000)+'K'},
+};
+const ADJUST_ORDER = ['zoom','focus','scene','brightness','shadows','wb'];
+
+let state = {
+  recording:false,
+  clip:0,
+  openAdjust:'zoom',
+  values:{ zoom:1, focus:100, focusMode:'continuous', scene:'auto', brightness:0.3, shadows:18, wb:5600 },
+  cameraIdx:0,
+};
+let history = ['home'];
+const CAMERA_BUSY_SCREENS = ['preview','gallery','calibrate'];
+let idleFadeTimer = null;
+
+function icon(name){
+  const map = {
+    monitor:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
+    server:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="7" rx="1.5"/><rect x="4" y="14" width="16" height="7" rx="1.5"/><path d="M8 6.5h.01M8 17.5h.01"/></svg>',
+    gear:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1-1.6 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1h.1a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>',
+    trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2m2 0l-1 14a1 1 0 01-1 1H7a1 1 0 01-1-1L5 6"/></svg>',
+    star:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3 6.5 7 1-5.2 5 1.3 7L12 18l-6.1 3.5 1.3-7L2 9.5l7-1z"/></svg>',
+    starFill:'<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2l3 6.5 7 1-5.2 5 1.3 7L12 18l-6.1 3.5 1.3-7L2 9.5l7-1z"/></svg>',
+    cycle:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2.5l4 4-4 4"/><path d="M3 12.5v-2a4 4 0 014-4h14"/><path d="M7 21.5l-4-4 4-4"/><path d="M21 11.5v2a4 4 0 01-4 4H3"/></svg>',
+    scene:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18l5-6 4 4 3-4 6 6"/><circle cx="8" cy="7" r="2"/></svg>',
+    sun:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+    contrast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18z" fill="currentColor" stroke="none"/></svg>',
+    drop:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3s6 6.5 6 10.5a6 6 0 01-12 0C6 9.5 12 3 12 3z"/></svg>',
+    pulse:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2 7 4-14 2 7h6"/></svg>',
+    zoom:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M9 11h4M11 9v4"/></svg>',
+    exposure:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>',
+    focus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M3 8V5a2 2 0 012-2h3M16 3h3a2 2 0 012 2v3M21 16v3a2 2 0 01-2 2h-3M8 21H5a2 2 0 01-2-2v-3"/></svg>',
+    copy:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 01-1-1V4a1 1 0 011-1h10a1 1 0 011 1v1"/></svg>',
+    plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>',
+    zoomOut:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M21 21l-4.8-4.8M8 10.5h5"/></svg>',
+    zoomIn:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M21 21l-4.8-4.8M10.5 8v5M8 10.5h5"/></svg>',
+    focusNear:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V6a2 2 0 012-2h3M15 4h3a2 2 0 012 2v3M20 15v3a2 2 0 01-2 2h-3M9 20H6a2 2 0 01-2-2v-3"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/></svg>',
+    focusFar:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V6a2 2 0 012-2h3M15 4h3a2 2 0 012 2v3M20 15v3a2 2 0 01-2 2h-3M9 20H6a2 2 0 01-2-2v-3"/><path d="M6 15l3.5-4.5 2.5 3 2-2.5L18 15" stroke-width="1.8"/></svg>',
+    moon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1110 3.2 6.8 6.8 0 0020 14.5z" fill="currentColor" stroke="none"/></svg>',
+    shadowLow:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7.5" fill="currentColor" stroke="none"/></svg>',
+    shadowHigh:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7.5"/><path d="M12 4.5v15M4.5 12h15" stroke-width="1.2" opacity=".5"/></svg>',
+    wbCool:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2v20M4.5 6l15 12M19.5 6l-15 12M2 12h20"/></svg>',
+    wbWarm:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5" fill="currentColor" stroke="none"/><path d="M12 2v2.5M12 19.5V22M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2 12h2.5M19.5 12H22M4.2 19.8L6 18M18 6l1.8-1.8"/></svg>',
+  };
+  return map[name] || '';
+}
+
+function scene(tone, opts={}){
+  const tones = {
+    day:{sky:['#12313a','#0f3e3a','#0a2018'], sun:1},
+    dusk:{sky:['#2a1f2e','#3a2430','#12181a'], sun:1},
+    night:{sky:['#050a0c','#081412','#050a08'], sun:0},
+  };
+  const t = tones[tone] || tones.day;
+  return `<div class="scene" style="background:linear-gradient(180deg,${t.sky[0]} 0%, ${t.sky[1]} 55%, ${t.sky[2]} 100%); ${opts.style||''}">
+    ${t.sun ? `<div class="sun" style="top:14%; left:16%;"></div>` : ''}
+    <div class="ridge2"></div>
+    <div class="ridge"></div>
+    <div class="grain"></div>
+    ${opts.badge ? `<div class="live-badge"><i></i>LIVE</div>` : ''}
+    ${opts.tag ? `<div class="tag">${opts.tag}</div>` : ''}
+    ${opts.motion ? `<div class="motion"><i></i>${opts.motion}</div>` : ''}
+  </div>`;
+}
+
+/* ---------- generic ruler (drag-to-scrub) ----------
+   Fixed-width visible window: the tick strip is wider than the window and
+   slides under a thumb that never moves. Ticks that scroll past the edge of
+   the window fade out (mask-image) rather than clip hard, and a directional
+   glyph sits fixed at each end of the pill (dark/bright, near/far, cool/warm)
+   to say what dragging that way does. */
+function renderRuler(key){
+  const a = ADJUSTERS[key];
+  let ticks = '';
+  // three tiers, like a physical ruler: major (labeled-in-spirit) stops,
+  // minor stops in between, and fine "millimeter" ticks filling the rest.
+  const step = a.microStep || a.tickStep;
+  const first = Math.ceil(a.min / step) * step;
+  for(let v = first; v <= a.max + 1e-6; v += step){
+    const isMajor = Math.abs(v - Math.round(v / a.majorStep) * a.majorStep) < step / 2;
+    const isMinor = !isMajor && Math.abs(v - Math.round(v / a.tickStep) * a.tickStep) < step / 2;
+    const cls = isMajor ? 'major' : isMinor ? 'minor' : 'micro';
+    const left = v * a.pxPerUnit;
+    ticks += `<div class="tick ${cls}" style="left:${left}px;"></div>`;
+  }
+  const [leftIcon, rightIcon] = a.endIcons || [];
+  return `<div class="ruler" data-key="${key}">
+    <div class="ruler-body">
+      ${leftIcon ? `<div class="ruler-endicon">${icon(leftIcon)}</div>` : ''}
+      <div class="ruler-track">
+        <div class="strip" id="rulerStrip">${ticks}</div>
+      </div>
+      ${rightIcon ? `<div class="ruler-endicon">${icon(rightIcon)}</div>` : ''}
+      <div class="thumb"></div>
+    </div>
+  </div>`;
+}
+
+// A segmented picker always writes into a specific state key (data-pickerkey) —
+// for a plain 'segment' adjuster (Scene) that's its own key; for a 'ruler'
+// adjuster with a companion picker (Focus's Continuous/Manual/Macro) it's the
+// picker's own key, distinct from the ruler's numeric value.
+function renderSegment(key){
+  const a = ADJUSTERS[key];
+  return `<div class="segctl">${a.options.map(o=>`<button data-opt="${o}" data-pickerkey="${key}" class="${state.values[key]===o?'active':''}">${o}</button>`).join('')}</div>`;
+}
+function renderPicker(picker){
+  return `<div class="segctl">${picker.options.map(o=>`<button data-opt="${o}" data-pickerkey="${picker.key}" class="${state.values[picker.key]===o?'active':''}">${o}</button>`).join('')}</div>`;
+}
+
+function renderAdjuster(key){
+  return ADJUSTERS[key].type === 'segment' ? renderSegment(key) : renderRuler(key);
+}
+
+const screens = {
+  home(){
+    return `
+      <div class="section-title">This device</div>
+      <div class="card">
+        <div class="field-row"><span class="k">Name</span><span class="v">Porch Cam</span></div>
+        <div class="field-row"><span class="k">Manufacturer</span><span class="v">Google</span></div>
+        <div class="field-row"><span class="k">Model</span><span class="v">Pixel 6</span></div>
+        <div class="field-row"><span class="k">IP address</span><span class="v">192.168.1.87</span></div>
+        <div class="field-row"><span class="k">Status</span><span class="v"><span class="badge ok">● watching</span></span></div>
+      </div>
+      <div class="section-title">Storage — ring buffer</div>
+      <div class="card">
+        <div class="field-row"><span class="k">Recordings</span><span class="v accent">128 clips</span></div>
+        <div class="field-row"><span class="k">Used</span><span class="v">11.4 GB / 32 GB cap</span></div>
+        <div style="height:6px; background:var(--border-soft); border-radius:3px; overflow:hidden; margin-top:2px;">
+          <div style="width:36%; height:100%; background:var(--accent);"></div>
+        </div>
+        <div class="field-row" style="border-top:1px solid var(--border-soft); margin-top:10px; padding-top:12px;"><span class="k">Oldest clip evicts at</span><span class="v">~14 days</span></div>
+      </div>
+      <div class="section-title">Fleet</div>
+      <div class="card">
+        <div class="field-row"><span class="k">Controllers</span><span class="v accent">2 paired</span></div>
+      </div>
+    `;
+  },
+  preview(){
+    const open = state.openAdjust;
+    // A slider only renders when the current mode actually has a numeric
+    // parameter (a ruler), and that ruler isn't disabled (Focus before its
+    // picker is set to "manual"). Otherwise there's nothing to show above —
+    // no zoom fallback, no greyed-out slider taking up space for nothing.
+    const cfg = ADJUSTERS[open];
+    const isRuler = cfg.type === 'ruler';
+    const rulerDisabled = open === 'focus' && state.values.focusMode !== 'manual';
+    const showSlider = isRuler && !rulerDisabled;
+    const belowSeg = !isRuler ? renderAdjuster(open) : (cfg.picker ? renderPicker(cfg.picker) : '');
+    return `
+      <div class="viewport-wrap">
+        ${scene('day', {badge:true, tag:`${CAMERAS[state.cameraIdx]} · 1080p30`, motion:'motion · porch', style:'aspect-ratio:3/4;'})}
+        <button class="cam-cycle-btn" id="cycleCamBtn" title="Cycle camera">${icon('cycle')}</button>
+        ${showSlider ? `<div class="ctrl-slot overlay" id="ctrlSlot">${renderAdjuster(open)}</div>` : ''}
+      </div>
+      <div class="hscroll" id="adjustScroll">
+        <div class="hscroll-track">
+          ${ADJUST_ORDER.map(key=>`
+            <button class="adjust-btn ${open===key?'open':''}" data-adjust="${key}">
+              ${icon(ADJUSTERS[key].icon)}<span>${ADJUSTERS[key].label}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+      ${belowSeg ? `<div class="ctrl-slot" id="ctrlSlotSeg">${belowSeg}</div>` : ''}
+      <div class="card">
+        <div class="field-row"><span class="k">Resolution</span>
+          <select class="select-line"><option>1920×1080</option><option>1280×720</option><option>3840×2160</option></select>
+        </div>
+        <div class="field-row"><span class="k">Frame rate</span>
+          <select class="select-line"><option>30 fps</option><option>24 fps</option><option>15 fps</option></select>
+        </div>
+      </div>
+    `;
+  },
+  gallery(){
+    const c = CLIPS[state.clip];
+    return `
+      <div class="section-title">${c.d} · ${c.t}</div>
+      ${scene(c.tone, {style:'aspect-ratio:9/12;', tag:c.len, motion:c.motion})}
+      <div class="scrubber">
+        <span class="mono" style="font-size:10.5px; color:var(--text-faint);">0:00</span>
+        <div class="track"><div class="fill" style="width:38%"></div><div class="knob" style="left:38%"></div></div>
+        <span class="mono" style="font-size:10.5px; color:var(--text-faint);">${c.len}</span>
+      </div>
+      <div class="section-title">Recent clips</div>
+      <div class="hscroll" id="filmScroll">
+        <div class="hscroll-track filmstrip">
+          ${CLIPS.map((cl,i)=>`<div class="scene ${i===state.clip?'active':''}" data-clip="${i}" style="width:72px;height:48px;">${cl.fav?`<div style="position:absolute; top:5px; right:5px; color:var(--warn);">${icon('starFill')}</div>`:''}</div>`).join('')}
+        </div>
+      </div>
+      <div class="gallery-actions">
+        <div class="btn" id="favBtn">${icon(c.fav?'starFill':'star')} Favorite</div>
+        <div class="btn" id="trashBtn" style="color:var(--rec);">${icon('trash')} Delete</div>
+      </div>
+    `;
+  },
+  controllers(){
+    return `
+      <div class="btn primary" id="connectBtn">${icon('plus')} Generate invite link</div>
+      <div class="section-title">Paired controllers</div>
+      ${CONTROLLERS.map((c,i)=>`
+        <div class="list-item">
+          <div class="avatar">${icon(c.kind)}</div>
+          <div class="meta">
+            <div class="t1">${c.name}</div>
+            <div class="t2">${c.pubkey} · added ${c.added}</div>
+          </div>
+          <div class="acts">
+            <button title="Configure">${icon('gear')}</button>
+            <button class="danger" title="Revoke" data-revoke="${i}">${icon('trash')}</button>
+          </div>
+        </div>
+      `).join('')}
+    `;
+  },
+  connect(){
+    return `
+      <div class="section-title">Scan to pair a controller</div>
+      <div class="qr">${qrSvg()}</div>
+      <div class="section-title">Or enter manually</div>
+      <div class="code-row">
+        <span class="code">XYZF-EBDO-ORMS</span>
+        <button class="copy-btn" title="Copy code">${icon('copy')}</button>
+      </div>
+      <div class="card">
+        <div class="url-line">https://192.168.1.87/api/connect?invite=XYZF-EBDO-ORMS</div>
+      </div>
+    `;
+  },
+  config(){
+    return `
+      <div class="section-title">Identity</div>
+      <div class="card">
+        <div class="field-row"><span class="k">Name</span><input class="input-line" value="Porch Cam"></div>
+      </div>
+      <div class="section-title">Motion &amp; storage</div>
+      <div class="card">
+        <div class="field-row"><span class="k">Sensitivity</span><span class="v">Medium</span></div>
+        <div class="field-row"><span class="k">Ring buffer cap</span><span class="v">32 GB</span></div>
+      </div>
+      <div class="btn" id="calibrateBtn">${icon('pulse')} Calibration</div>
+    `;
+  },
+  calibrate(){
+    return `
+      <div class="section-title">Empirically tested — this device</div>
+      <div class="card">
+        <div class="diag-row"><span class="k">${icon('zoom')} Zoom</span>
+          <div class="diag-vals"><span class="chip hi">0.5×</span><span class="chip hi">1×</span><span class="chip hi">2×</span><span class="chip">4×</span></div>
+        </div>
+        <div class="diag-row"><span class="k">${icon('exposure')} Exposure</span>
+          <div class="diag-vals"><span class="chip hi">−2 EV</span><span class="chip hi">0 EV</span><span class="chip hi">+2 EV</span></div>
+        </div>
+        <div class="diag-row"><span class="k">${icon('focus')} Focus</span>
+          <div class="diag-vals"><span class="chip hi">Continuous</span><span class="chip hi">Manual</span><span class="chip">Macro</span></div>
+        </div>
+        <div class="diag-row"><span class="k">${icon('monitor')} Max resolution</span>
+          <div class="diag-vals"><span class="chip hi">1080p30</span></div>
+        </div>
+      </div>
+      <div class="section-title">Currently probing</div>
+      <div class="card">
+        <div class="diag-progress"><span class="spin"></span> Sustained 4K encode — 41%…</div>
+      </div>
+      <div class="btn" id="rerunBtn">${icon('pulse')} Re-run full calibration pass</div>
+    `;
+  },
+};
+
+function qrSvg(){
+  const n = 21, cell = 100/n;
+  const modules = [];
+  let seed = 42;
+  const rand = () => { seed = (seed*1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  for(let y=0;y<n;y++){ const row=[]; for(let x=0;x<n;x++) row.push(rand()<0.46?1:0); modules.push(row); }
+  function finder(gx,gy){
+    for(let y=0;y<7;y++) for(let x=0;x<7;x++){
+      const border = x===0||x===6||y===0||y===6;
+      const inner = x>=2&&x<=4&&y>=2&&y<=4;
+      modules[gy+y][gx+x] = (border||inner) ? 1 : 0;
+    }
+  }
+  finder(0,0); finder(n-7,0); finder(0,n-7);
+  let rects='';
+  for(let y=0;y<n;y++) for(let x=0;x<n;x++) if(modules[y][x]) rects += `<rect x="${x*cell}" y="${y*cell}" width="${cell}" height="${cell}"/>`;
+  return `<svg viewBox="0 0 100 100" width="100%" height="100%"><rect width="100" height="100" fill="var(--screen)"/><g fill="var(--accent)">${rects}</g></svg>`;
+}
+
+const TITLES = {home:'Home', preview:'Live preview', gallery:'Gallery', controllers:'Controllers', connect:'Connect', config:'Configuration', calibrate:'Calibrate'};
+const RAIL_FOR = {preview:'preview', gallery:'gallery', controllers:'controllers', connect:'controllers', config:'config', calibrate:'config', home:null};
+
+function render(){
+  const name = history[history.length-1];
+  $('#content').innerHTML = screens[name]();
+  $('#topTitle').textContent = TITLES[name];
+  $('#backBtn').disabled = history.length <= 1;
+  $$('.rail-btn').forEach(b => b.classList.toggle('active', b.dataset.nav === RAIL_FOR[name]));
+  syncRecPill();
+  wireContent(name);
+}
+
+function navigate(name){
+  if(history[history.length-1] === name) return;
+  history.push(name);
+  render();
+  updateCrumbs();
+}
+function goBack(){
+  if(history.length>1){ history.pop(); render(); updateCrumbs(); }
+}
+function updateCrumbs(){
+  $('#crumbs').innerHTML = history.map((h,i)=> (i? '<span class="sep">/</span>':'') + `<span>${TITLES[h]}</span>`).join('');
+}
+
+/* The overlay ruler + cycle button fade out after 5s of no interaction so
+   they occlude as little of the shot as possible, and reappear on any tap. */
+function armIdleFade(){
+  clearTimeout(idleFadeTimer);
+  const wrap = $('.viewport-wrap');
+  if(!wrap) return;
+  wrap.classList.remove('idle');
+  idleFadeTimer = setTimeout(() => {
+    const w = $('.viewport-wrap');
+    if(w) w.classList.add('idle');
+  }, 5000);
+}
+
+function wireContent(name){
+  if(name==='preview'){
+    const scroller = $('#adjustScroll');
+    makeHScroll(scroller);
+    padEndsForCentering(scroller);
+    $$('.adjust-btn', scroller).forEach(b => b.onclick = () => {
+      state.openAdjust = b.dataset.adjust;
+      render();
+    });
+    centerItemInScroller(scroller, $(`.adjust-btn[data-adjust="${state.openAdjust}"]`, scroller));
+    const cyc = $('#cycleCamBtn');
+    if(cyc) cyc.onclick = () => { state.cameraIdx = (state.cameraIdx+1) % CAMERAS.length; render(); };
+    const open = state.openAdjust;
+    const cfg = ADJUSTERS[open];
+    const isRuler = cfg.type === 'ruler';
+    const rulerDisabled = open === 'focus' && state.values.focusMode !== 'manual';
+    if(isRuler && !rulerDisabled) wireRuler(open); // only wired when the slider is actually rendered
+    if(!isRuler || cfg.picker) wireSegment(); // the slot below: command-list modes, or a ruler's companion picker
+    armIdleFade();
+    $('#content').onpointerdown = armIdleFade;
+  } else {
+    clearTimeout(idleFadeTimer);
+    $('#content').onpointerdown = null;
+  }
+  if(name==='gallery'){
+    const scroller = $('#filmScroll');
+    makeHScroll(scroller);
+    padEndsForCentering(scroller);
+    $$('[data-clip]', scroller).forEach(el => el.onclick = () => {
+      state.clip = +el.dataset.clip;
+      render();
+    });
+    centerItemInScroller(scroller, $(`[data-clip="${state.clip}"]`, scroller));
+    const fav = $('#favBtn'); if(fav) fav.onclick = () => { CLIPS[state.clip].fav = !CLIPS[state.clip].fav; render(); };
+  }
+  if(name==='controllers'){
+    const cb = $('#connectBtn'); if(cb) cb.onclick = () => navigate('connect');
+  }
+  if(name==='config'){
+    const cal = $('#calibrateBtn'); if(cal) cal.onclick = () => navigate('calibrate');
+  }
+}
+
+/* ---------- drag-to-scroll + item-snap for any .hscroll row ----------
+   Pointer capture on the scroller (needed so drags keep tracking outside
+   its bounds) retargets the browser's synthesized click to the scroller
+   itself, so a plain tap on a child button/item would otherwise never
+   fire its onclick. We detect "no drag happened" ourselves and replay the
+   tap with a real .click() on the element that was actually pressed. */
+function makeHScroll(el){
+  if(!el) return;
+  let isDown = false, moved = false, startX = 0, startScroll = 0, downTarget = null;
+
+  el.onpointerdown = (e) => {
+    isDown = true; moved = false; startX = e.clientX; startScroll = el.scrollLeft;
+    downTarget = e.target.closest('button, [data-clip]');
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('dragging');
+  };
+  el.onpointermove = (e) => {
+    if(!isDown) return;
+    const dx = e.clientX - startX;
+    if(Math.abs(dx) > 3) moved = true;
+    el.scrollLeft = startScroll - dx;
+  };
+  el.onpointerup = (e) => {
+    if(!isDown) return;
+    isDown = false;
+    el.classList.remove('dragging');
+    try{ el.releasePointerCapture(e.pointerId); }catch(err){}
+    if(moved){
+      snapToNearestItem(el);
+    } else if(downTarget){
+      downTarget.click();
+    }
+    downTarget = null;
+  };
+  el.onpointercancel = () => { isDown = false; el.classList.remove('dragging'); downTarget = null; };
+}
+
+/* Valid snap stops for a per-item horizontal scroller: one stop per item
+   (flush-left, so stepping is one item at a time), except any stop that
+   would leave the FIRST or LAST item only partially visible is dropped —
+   those two must always be fully in view or fully out of view, never
+   peeking. A trailing/leading item peeking mid-scroll is fine and is in
+   fact how we signal "there's more" — it just can never be the outer edge. */
+function computeSnapStops(el){
+  const track = el.firstElementChild;
+  const items = track ? [...track.children] : [];
+  const clientWidth = el.clientWidth;
+  const maxScroll = Math.max(0, el.scrollWidth - clientWidth);
+  if(items.length === 0) return [0];
+
+  const first = items[0];
+  const firstRight = first.offsetLeft + first.offsetWidth;
+  const last = items[items.length - 1];
+  const lastLeft = last.offsetLeft;
+  const lastRight = lastLeft + last.offsetWidth;
+
+  let stops = items.map(it => clamp(it.offsetLeft, 0, maxScroll));
+  stops = stops.filter(s => {
+    const visibleLeft = s, visibleRight = s + clientWidth;
+    const cutsFirst = visibleLeft > 0 && visibleLeft < firstRight;
+    const cutsLast = visibleRight > lastLeft && visibleRight < lastRight;
+    return !cutsFirst && !cutsLast;
+  });
+  stops.push(0, maxScroll); // the two ends are always valid stops
+
+  return [...new Set(stops.map(s => Math.round(s)))].sort((a,b) => a-b);
+}
+
+function snapToNearestItem(el){
+  const stops = computeSnapStops(el);
+  let best = stops[0], bestDist = Infinity;
+  for(const s of stops){
+    const dist = Math.abs(s - el.scrollLeft);
+    if(dist < bestDist){ bestDist = dist; best = s; }
+  }
+  el.scrollTo({left: best, behavior:'smooth'});
+}
+
+/* Scroll-into-view for a tapped item means centered, not just visible — even
+   for the first or last item. That's only reachable if there's empty track
+   space on the outside of them to scroll into, so pad the track by half a
+   viewport (minus half an item) on each end before measuring anything. */
+function padEndsForCentering(el){
+  const track = el.firstElementChild;
+  const item = track && track.firstElementChild;
+  if(!track || !item) return;
+  const pad = Math.max(0, (el.clientWidth - item.offsetWidth) / 2);
+  track.style.paddingLeft = track.style.paddingRight = pad + 'px';
+}
+
+function centerItemInScroller(el, item){
+  if(!el || !item) return;
+  const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+  const target = clamp(item.offsetLeft - (el.clientWidth - item.offsetWidth) / 2, 0, maxScroll);
+  el.scrollTo({left: target, behavior:'smooth'});
+}
+
+/* ---------- adjuster wiring: ruler drag (above) or segment tap (below) ---------- */
+function wireSegment(){
+  const slot = $('#ctrlSlotSeg');
+  if(!slot) return;
+  $$('[data-opt]', slot).forEach(b => b.onclick = () => { state.values[b.dataset.pickerkey] = b.dataset.opt; render(); });
+}
+
+function wireRuler(key){
+  const slot = $('#ctrlSlot');
+  if(!slot) return;
+  const a = ADJUSTERS[key];
+  let dragging = false, startX = 0, startVal = state.values[key];
+
+  function positionRuler(){
+    const track = $('.ruler-track', slot), strip = $('#rulerStrip', slot);
+    if(!track || !strip) return;
+    const center = track.offsetWidth / 2; // the fixed point the thumb sits at; ticks slide under it
+    strip.style.transform = `translateX(${center - state.values[key]*a.pxPerUnit}px)`;
+  }
+  positionRuler();
+
+  slot.onpointerdown = (e) => {
+    dragging = true; startX = e.clientX; startVal = state.values[key];
+    slot.setPointerCapture(e.pointerId);
+  };
+  slot.onpointermove = (e) => {
+    if(!dragging) return;
+    const dx = e.clientX - startX;
+    state.values[key] = clamp(startVal - dx / a.pxPerUnit, a.min, a.max);
+    positionRuler();
+  };
+  slot.onpointerup = (e) => {
+    if(dragging){ try{ slot.releasePointerCapture(e.pointerId); }catch(err){} }
+    dragging = false;
+  };
+  slot.onpointercancel = () => { dragging = false; };
+}
+
+function syncRecPill(){
+  const pill = $('#recPill');
+  const name = history[history.length-1];
+  const busy = CAMERA_BUSY_SCREENS.includes(name);
+  pill.classList.toggle('unavailable', busy);
+  pill.classList.toggle('live', !busy && state.recording);
+  $('#recLabel').textContent = busy ? 'UNAVAILABLE' : (state.recording ? 'REC' : 'STANDBY');
+}
+
+$('#backBtn').onclick = goBack;
+$('#brandHome').onclick = () => { history = ['home']; render(); updateCrumbs(); };
+$$('.rail-btn').forEach(b => b.onclick = () => navigate(b.dataset.nav));
+$('#recPill').onclick = () => {
+  const name = history[history.length-1];
+  if(CAMERA_BUSY_SCREENS.includes(name)) return;
+  state.recording = !state.recording;
+  syncRecPill();
+};
+
+render();
+updateCrumbs();
+</script>

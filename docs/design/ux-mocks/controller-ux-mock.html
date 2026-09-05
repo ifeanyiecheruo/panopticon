@@ -1,0 +1,1486 @@
+<title>Panopticon Controller</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --bg:#0b1210;
+  --frame:#12312c;
+  --screen:#0d1714;
+  --surface:#132420;
+  --surface-2:#1a332c;
+  --border:#264238;
+  --border-soft:#1c332b;
+  --text:#e9f3ee;
+  --text-dim:#8fada0;
+  --text-faint:#5c7c70;
+  --accent:#4fe3c9;
+  --accent-dim:#2a6b5f;
+  --accent-ink:#04211b;
+  --rec:#ff5f56;
+  --rec-dim:#7a2b27;
+  --warn:#e8b339;
+  --page-bg:#050706;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--page-bg);
+  color:var(--text);
+  font-family:"IBM Plex Sans",system-ui,sans-serif;
+  min-height:100%;
+}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;}
+
+.stage-label{
+  display:flex; align-items:baseline; gap:10px;
+  color:var(--text-dim);
+  padding:20px 20px 0;
+}
+.stage-label .k{
+  font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--accent);
+}
+.stage-label .name{font-weight:600; font-size:15px; color:var(--text);}
+
+/* ---------- App shell ---------- */
+.app{
+  display:flex;
+  width:min(1180px, calc(100vw - 40px));
+  height:760px;
+  margin:16px auto 40px;
+  background:var(--screen);
+  border:1px solid var(--border-soft);
+  border-radius:16px;
+  overflow:hidden;
+  box-shadow:0 40px 80px -30px rgba(0,0,0,.7);
+}
+.rail{
+  flex:0 0 200px;
+  border-right:1px solid var(--border-soft);
+  display:flex; flex-direction:column;
+  padding:16px 10px;
+  gap:2px;
+  background:var(--screen);
+}
+.rail .brand{
+  display:flex; align-items:center; gap:9px;
+  padding:6px 8px 18px;
+  color:var(--text);
+  font-weight:600; font-size:14px;
+}
+.rail .brand svg{width:18px;height:18px; color:var(--accent);}
+.rail-btn{
+  display:flex; align-items:center; gap:10px;
+  padding:9px 10px;
+  border-radius:10px;
+  border:none; background:transparent;
+  color:var(--text-dim);
+  font-family:"IBM Plex Sans",sans-serif;
+  font-size:13px; font-weight:500;
+  cursor:pointer; text-align:left;
+  position:relative;
+}
+.rail-btn svg{width:17px;height:17px; flex:0 0 auto;}
+.rail-btn:hover{background:var(--surface); color:var(--text);}
+.rail-btn.active{background:var(--surface-2); color:var(--accent);}
+.rail-spacer{flex:1;}
+.rail-foot{
+  padding:10px 10px 4px;
+  font-family:"IBM Plex Mono",monospace;
+  font-size:10.5px;
+  color:var(--text-faint);
+  border-top:1px solid var(--border-soft);
+  margin-top:6px;
+}
+
+.main{
+  flex:1 1 auto;
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  overflow-y:auto;
+}
+.header{
+  flex:0 0 auto;
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:16px;
+  padding:22px 26px 16px;
+  border-bottom:1px solid var(--border-soft);
+}
+.header h1{margin:0 0 4px; font-size:19px; font-weight:600;}
+.header .sub{
+  font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--text-faint);
+}
+.header .sub b{color:var(--accent); font-weight:600;}
+.header-actions{display:flex; gap:8px; flex:0 0 auto;}
+
+.btn{
+  font-family:"IBM Plex Sans",sans-serif;
+  font-size:12.5px; font-weight:600;
+  padding:9px 13px;
+  border-radius:10px;
+  border:1px solid var(--border);
+  background:var(--surface-2);
+  color:var(--text);
+  cursor:pointer;
+  display:flex; align-items:center; gap:7px;
+  white-space:nowrap;
+}
+.btn:hover{border-color:var(--accent-dim);}
+.btn svg{width:14px;height:14px;}
+.btn.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent);}
+.btn.primary:hover{filter:brightness(1.06);}
+.btn.ghost-rec{color:var(--rec); border-color:var(--rec-dim); background:rgba(255,95,86,.07);}
+.btn.ghost-rec:hover{border-color:var(--rec);}
+.btn:disabled{opacity:.35; cursor:not-allowed; pointer-events:none;}
+
+.body-scroll{padding:20px 26px 30px;}
+
+/* ---------- Fleet grid ---------- */
+.grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill, minmax(210px, 1fr));
+  gap:12px;
+}
+.pcard{
+  background:var(--surface);
+  border:1px solid var(--border-soft);
+  border-radius:14px;
+  padding:16px 16px 14px;
+  cursor:pointer;
+  display:flex; flex-direction:column; gap:10px;
+  transition:border-color .12s;
+}
+.pcard:hover{border-color:var(--accent-dim);}
+.pcard .top{display:flex; align-items:center; gap:10px;}
+.pcard .avatar{
+  width:38px;height:38px;border-radius:10px;
+  background:var(--surface-2); border:1px solid var(--border);
+  display:flex; align-items:center; justify-content:center;
+  color:var(--text-dim); flex:0 0 auto;
+}
+.pcard .avatar svg{width:18px;height:18px;}
+.pcard .name{font-size:14px; font-weight:600; color:var(--text); line-height:1.3; flex:1; min-width:0;}
+.batt-icon{
+  display:flex; align-items:center; gap:4px; flex:0 0 auto;
+  font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--text-dim);
+}
+.batt-icon .cells{
+  width:20px; height:10px; border:1.3px solid var(--text-faint); border-radius:2.5px;
+  position:relative; display:flex; padding:1.2px; gap:1.2px;
+}
+.batt-icon .cells::after{
+  content:""; position:absolute; right:-3.5px; top:2.5px; width:2px; height:4px;
+  background:var(--text-faint); border-radius:0 1.5px 1.5px 0;
+}
+.batt-icon .cells i{flex:1; background:var(--text-dim); border-radius:.5px;}
+.batt-icon.low .cells i{background:var(--warn);}
+.batt-icon.low .cells{border-color:var(--warn);}
+.batt-icon.low .cells::after{background:var(--warn);}
+.status{
+  display:inline-flex; align-items:center; gap:6px;
+  font-family:"IBM Plex Mono",monospace;
+  font-size:10.5px; letter-spacing:.05em;
+  padding:4px 9px 4px 7px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  color:var(--text-dim);
+  width:fit-content;
+}
+.status .dot{width:7px;height:7px;border-radius:50%; background:var(--text-faint); flex:0 0 auto;}
+.status.recording{color:var(--rec); border-color:var(--rec-dim); background:rgba(255,95,86,.08);}
+.status.recording .dot{background:var(--rec); box-shadow:0 0 0 3px rgba(255,95,86,.18); animation:pulse 1.4s infinite;}
+.status.standby{color:var(--text-dim); border-color:var(--border);}
+.status.standby .dot{background:var(--text-faint);}
+.status.unreachable{color:var(--warn); border-color:#5c4a1c; background:rgba(232,179,57,.08);}
+.status.unreachable .dot{background:var(--warn); position:relative;}
+.status.unreachable .dot::after{
+  content:""; position:absolute; left:-2.5px; top:50%; width:12px; height:1.4px; background:var(--warn);
+  transform:translateY(-50%) rotate(45deg); transform-origin:center;
+}
+@keyframes pulse{0%,100%{opacity:1;} 50%{opacity:.35;}}
+
+.pcard.is-unreachable{opacity:.7;}
+
+/* ---------- Phone detail (placeholder-level) ---------- */
+.detail-header{display:flex; align-items:center; gap:14px; margin-bottom:18px;}
+.detail-header .avatar{
+  width:52px;height:52px;border-radius:13px;
+  background:var(--surface-2); border:1px solid var(--border);
+  display:flex; align-items:center; justify-content:center; color:var(--text-dim);
+}
+.detail-header .avatar svg{width:24px;height:24px;}
+.detail-header h2{margin:0 0 4px; font-size:17px;}
+.detail-header .sub{font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--text-faint); display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+
+.card{
+  background:var(--surface); border:1px solid var(--border-soft); border-radius:14px;
+  padding:8px 14px; margin-bottom:12px;
+}
+.field-row{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:9px 2px; border-bottom:1px solid var(--border-soft);
+}
+.field-row:last-child{border-bottom:none;}
+.field-row .k{font-size:12.5px; color:var(--text-dim);}
+.field-row .v{font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--text); text-align:right;}
+.section-title{
+  font-size:10.5px; font-weight:600; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--text-faint); margin:0 0 8px;
+}
+.placeholder-note{
+  font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--text-faint);
+  border:1px dashed var(--border); border-radius:12px; padding:16px; text-align:center;
+}
+.back-link{
+  display:inline-flex; align-items:center; gap:6px; margin-bottom:14px;
+  color:var(--text-dim); font-size:12.5px; cursor:pointer; background:none; border:none;
+  font-family:"IBM Plex Sans",sans-serif; padding:0;
+}
+.back-link:hover{color:var(--accent);}
+.back-link svg{width:14px;height:14px;}
+
+/* ---------- Gallery: chip row ---------- */
+.chip-row{display:flex; gap:6px; flex-wrap:wrap; padding:14px 26px 0;}
+.chip-filter{
+  font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.03em;
+  padding:6px 12px; border-radius:999px; border:1px solid var(--border);
+  background:var(--surface); color:var(--text-dim); cursor:pointer;
+}
+.chip-filter:hover{border-color:var(--accent-dim); color:var(--text);}
+.chip-filter.active{background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:600;}
+
+/* ---------- Gallery: master-detail layout ---------- */
+.gallery-layout{display:flex; gap:18px; align-items:flex-start; padding:16px 26px 30px;}
+.viewer-pane{flex:0 0 380px; position:sticky; top:0;}
+.vscene{
+  position:relative; width:100%; aspect-ratio:3/4; border-radius:14px; overflow:hidden;
+}
+.vscene .sun{position:absolute; width:34px; height:34px; border-radius:50%;
+  background:radial-gradient(circle at 35% 35%, #fff6d8, var(--warn) 70%);
+  box-shadow:0 0 24px 6px rgba(232,179,57,.35); top:12%; left:14%;}
+.vscene .ridge{position:absolute; left:0; right:0; bottom:0; height:55%; background:#0a1a16;
+  clip-path:polygon(0% 100%,0% 55%,14% 40%,26% 58%,40% 22%,55% 50%,68% 30%,82% 52%,100% 38%,100% 100%);}
+.vscene .tag{
+  position:absolute; left:10px; bottom:10px;
+  font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:rgba(233,243,238,.85);
+  background:rgba(0,0,0,.4); padding:3px 8px; border-radius:6px;
+}
+.vscene .motion{
+  position:absolute; right:10px; top:10px; display:flex; align-items:center; gap:5px;
+  font-family:"IBM Plex Mono",monospace; font-size:9.5px; letter-spacing:.05em;
+  color:var(--rec); background:rgba(0,0,0,.45); padding:4px 8px; border-radius:999px;
+}
+.vscene .motion i{width:5px;height:5px;border-radius:50%;background:var(--rec);}
+.vscene .playhint{
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  background:rgba(0,0,0,.18); cursor:pointer;
+}
+.vscene .playhint svg{width:44px;height:44px; color:rgba(233,243,238,.9); filter:drop-shadow(0 2px 8px rgba(0,0,0,.5));}
+.vscene .trash-btn{
+  position:absolute; right:9px; bottom:9px; z-index:4;
+  width:32px; height:32px; border-radius:999px; border:none;
+  background:rgba(8,18,16,.55);
+  backdrop-filter:blur(10px);
+  -webkit-backdrop-filter:blur(10px);
+  color:rgba(233,243,238,.85);
+  display:flex; align-items:center; justify-content:center; cursor:pointer;
+}
+.vscene .trash-btn:hover{color:var(--rec); background:rgba(122,43,39,.55);}
+.vscene .trash-btn svg{width:15px; height:15px;}
+.vscene .vscene-fabs{
+  position:absolute; right:9px; bottom:9px; z-index:4; display:flex; gap:6px;
+}
+.fab-btn{
+  width:32px; height:32px; border-radius:999px; border:none;
+  background:rgba(8,18,16,.55);
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  color:rgba(233,243,238,.85);
+  display:flex; align-items:center; justify-content:center; cursor:pointer;
+}
+.fab-btn svg{width:15px; height:15px;}
+.fab-btn:hover{color:var(--accent); background:rgba(42,107,95,.55);}
+.fab-btn.danger:hover{color:var(--rec); background:rgba(122,43,39,.55);}
+.viewer-meta{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:12px;}
+.viewer-meta .who{font-size:13.5px; font-weight:600; color:var(--text);}
+.viewer-meta .when{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--text-faint); margin-top:2px;}
+.scrubber{display:flex; align-items:center; gap:9px; margin-top:12px;}
+.scrubber .playbtn{
+  flex:0 0 auto; width:30px; height:30px; border-radius:50%; border:1px solid var(--border);
+  background:var(--surface-2); color:var(--text); display:flex; align-items:center; justify-content:center; cursor:pointer;
+}
+.scrubber .playbtn svg{width:13px;height:13px;}
+.scrubber .track{flex:1; height:4px; border-radius:2px; background:var(--border-soft); position:relative; cursor:pointer;}
+.scrubber .fill{position:absolute; left:0; top:0; bottom:0; border-radius:2px; background:var(--accent);}
+.scrubber .knob{position:absolute; top:50%; width:11px; height:11px; border-radius:50%; background:var(--accent); border:2px solid var(--screen); transform:translate(-50%,-50%); pointer-events:none;}
+.scrubber .t{font-family:"IBM Plex Mono",monospace; font-size:10px; color:var(--text-faint); flex:0 0 auto;}
+
+.clip-list-pane{flex:1 1 auto; min-width:0;}
+.day-group{margin-bottom:18px;}
+.day-head{
+  font-family:"IBM Plex Mono",monospace; font-size:10.5px; font-weight:600; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--text-faint); margin:0 0 8px;
+}
+.clip-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(120px,1fr)); gap:8px;}
+.ctile{
+  position:relative; aspect-ratio:4/3; border-radius:10px; overflow:hidden; cursor:pointer;
+  border:2px solid transparent;
+}
+.ctile.active{border-color:var(--accent);}
+.ctile .cphone{
+  position:absolute; left:6px; top:6px; font-family:"IBM Plex Mono",monospace; font-size:8.5px;
+  color:rgba(233,243,238,.85); background:rgba(0,0,0,.4); padding:2px 6px; border-radius:5px;
+  max-width:calc(100% - 12px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.ctile .ctime{
+  position:absolute; left:6px; bottom:6px; font-family:"IBM Plex Mono",monospace; font-size:9px;
+  color:rgba(233,243,238,.9); background:rgba(0,0,0,.4); padding:2px 6px; border-radius:5px;
+}
+.ctile .clen{
+  position:absolute; right:6px; bottom:6px; font-family:"IBM Plex Mono",monospace; font-size:9px;
+  color:rgba(233,243,238,.75); background:rgba(0,0,0,.4); padding:2px 6px; border-radius:5px;
+}
+
+/* ---------- Phone detail: Live preview (mirrors phone's Preview screen) ---------- */
+.live-panel{display:flex; gap:20px; align-items:flex-start;}
+.live-viewport-col{flex:0 0 300px;}
+.live-controls-col{flex:1 1 auto; min-width:0; padding-top:2px;}
+.vscene .live-badge{
+  position:absolute; left:9px; top:9px; display:flex; align-items:center; gap:5px;
+  font-family:"IBM Plex Mono",monospace; font-size:9px; letter-spacing:.08em; font-weight:600;
+  color:var(--rec); background:rgba(0,0,0,.45); padding:3px 8px; border-radius:999px;
+}
+.vscene .live-badge i{width:5px;height:5px;border-radius:50%;background:var(--rec); animation:pulse 1.4s infinite;}
+.viewport-wrap{position:relative;}
+.ctrl-slot{
+  height:44px; position:relative;
+  background:rgba(8,18,16,.55);
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  border-radius:999px; touch-action:none;
+}
+.ctrl-slot.disabled{opacity:.4; filter:grayscale(1); pointer-events:none; cursor:not-allowed;}
+.ctrl-slot.overlay{
+  position:absolute; left:50%; bottom:10px; transform:translateX(-50%);
+  width:220px; height:34px; z-index:4;
+}
+.cam-cycle-btn{
+  position:absolute; bottom:9px; right:9px; z-index:4;
+  width:28px; height:28px; border-radius:999px; border:none;
+  background:rgba(8,18,16,.55);
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  color:rgba(233,243,238,.8);
+  display:flex; align-items:center; justify-content:center; cursor:pointer;
+}
+.cam-cycle-btn svg{width:14px;height:14px;}
+.ruler{position:absolute; inset:0; cursor:ew-resize;}
+.ruler-body{position:absolute; inset:0; display:flex; align-items:stretch;}
+.ruler-endicon{flex:0 0 26px; display:flex; align-items:center; justify-content:center; color:rgba(233,243,238,.55); z-index:2; pointer-events:none;}
+.ruler-endicon svg{width:12px; height:12px;}
+.ruler-track{
+  flex:1; position:relative; overflow:hidden;
+  -webkit-mask-image:linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
+  mask-image:linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
+}
+.ruler .strip{position:absolute; top:0; bottom:0; left:0;}
+.ruler .tick{position:absolute; top:50%; width:1px; height:6px; background:rgba(233,243,238,.22); border-radius:1px; transform:translateY(-50%);}
+.ruler .tick.minor{width:1.3px; height:11px; background:rgba(233,243,238,.4);}
+.ruler .tick.major{width:1.6px; height:17px; background:rgba(233,243,238,.65);}
+.ruler .thumb{
+  position:absolute; left:50%; top:6px; bottom:6px; width:3px; background:var(--accent);
+  transform:translateX(-50%); border-radius:2px; pointer-events:none; z-index:3;
+}
+.segctl{position:absolute; inset:0; display:flex; padding:3px; gap:3px;}
+.segctl button{
+  flex:1; border:none; background:transparent; color:var(--text-dim);
+  font-family:"IBM Plex Mono",monospace; font-size:10.5px; padding:0; border-radius:999px; cursor:pointer;
+  text-transform:capitalize;
+}
+.segctl button.active{background:var(--accent); color:var(--accent-ink); font-weight:600;}
+.hscroll{flex:0 0 auto; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; -ms-overflow-style:none;}
+.hscroll::-webkit-scrollbar{display:none;}
+.hscroll-track{display:flex; gap:8px;}
+.adjust-btn{
+  flex:0 0 76px;
+  display:flex; flex-direction:column; align-items:center; gap:3px;
+  padding:7px 4px; border-radius:12px; border:1px solid var(--border-soft); background:var(--surface);
+  color:var(--text-dim); cursor:pointer;
+}
+.adjust-btn svg{width:16px;height:16px;}
+.adjust-btn span{font-size:10px; letter-spacing:.02em;}
+.adjust-btn.open{border-color:var(--accent-dim); color:var(--accent); background:rgba(79,227,201,.07);}
+
+.start-live-box{
+  border:1px dashed var(--border); border-radius:14px; padding:22px; text-align:center;
+}
+.start-live-box p{margin:0 0 12px; font-size:12.5px; color:var(--text-dim);}
+.confirm-box{
+  border:1px solid #5c4a1c; background:rgba(232,179,57,.08); border-radius:14px; padding:16px;
+}
+.confirm-box.danger{border-color:var(--rec-dim); background:rgba(255,95,86,.08);}
+.confirm-box p{margin:0 0 12px; font-size:12.5px; color:var(--text);}
+.confirm-actions{display:flex; gap:8px;}
+
+.input-line{
+  background:var(--surface); border:1px solid var(--border-soft); color:var(--text);
+  font-family:"IBM Plex Mono",monospace; font-size:12.5px; padding:6px 8px; border-radius:8px;
+  width:170px; text-align:right;
+}
+.input-line:focus{outline:none; border-color:var(--accent-dim);}
+.select-line{
+  background:var(--surface); border:1px solid var(--border-soft); color:var(--text);
+  font-family:"IBM Plex Mono",monospace; font-size:12px; padding:5px 7px; border-radius:8px;
+}
+
+/* ---------- Add phone ---------- */
+.add-phone-wrap{max-width:420px; margin:0 auto; padding:36px 26px;}
+.method-card{background:var(--surface); border:1px solid var(--border-soft); border-radius:16px; padding:24px;}
+.link-btn{
+  display:block; margin:16px auto 0; background:none; border:none; color:var(--accent);
+  font-size:12px; cursor:pointer; font-family:"IBM Plex Sans",sans-serif; text-align:center; width:100%;
+}
+.link-btn:hover{text-decoration:underline;}
+.error-text{color:var(--rec); font-size:11.5px; margin:8px 0 0;}
+.field-hint{color:var(--text-faint); font-size:11px; margin:8px 0 0;}
+.qr-viewfinder{
+  position:relative; width:100%; max-width:220px; aspect-ratio:1; margin:0 auto 16px;
+  border:2px dashed var(--border); border-radius:16px;
+  display:flex; align-items:center; justify-content:center;
+  color:var(--text-faint); font-size:11px; font-family:"IBM Plex Mono",monospace; text-align:center; padding:16px;
+  overflow:hidden;
+}
+.qr-viewfinder.scanning{border-color:var(--accent-dim); border-style:solid;}
+.scan-line{
+  position:absolute; left:6%; right:6%; top:8%; height:2px; background:var(--accent);
+  box-shadow:0 0 8px 1px rgba(79,227,201,.6);
+  animation:scanmove 1.4s ease-in-out infinite;
+}
+@keyframes scanmove{0%{top:8%;} 50%{top:88%;} 100%{top:8%;}}
+.spin{
+  width:14px; height:14px; border-radius:50%; border:2px solid var(--border-soft);
+  border-top-color:var(--accent); animation:spin .8s linear infinite; flex:0 0 auto;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+.connecting-row{display:flex; align-items:center; gap:10px; justify-content:center; color:var(--text-dim); font-size:12.5px; padding:22px 0;}
+.success-card{text-align:center;}
+.success-card .avatar{
+  width:52px; height:52px; border-radius:14px; background:var(--surface-2); border:1px solid var(--border);
+  display:flex; align-items:center; justify-content:center; color:var(--accent); margin:0 auto 12px;
+}
+.success-card .avatar svg{width:24px;height:24px;}
+.success-card h3{margin:0 0 4px; font-size:15px;}
+.success-card .sub{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--text-faint); margin:0 0 18px;}
+.success-actions{display:flex; gap:8px;}
+.success-actions .btn{flex:1;}
+</style>
+
+<div class="stage-label">
+  <span class="k">PROTOTYPE</span>
+  <span class="name">Panopticon — controller UX (Fleet)</span>
+</div>
+
+<div class="app">
+  <div class="rail">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5L12 4l9 7.5"/><path d="M5.5 10v9.5a1 1 0 001 1H9.5v-6.5h5V20.5H17.5a1 1 0 001-1V10"/></svg>
+      Panopticon
+    </div>
+    <button class="rail-btn" data-nav="fleet">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="3" y="15" width="7" height="7" rx="1.5"/><rect x="14" y="15" width="7" height="7" rx="1.5"/></svg>
+      Fleet
+    </button>
+    <button class="rail-btn" data-nav="gallery">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5M16 4v5"/></svg>
+      Gallery
+    </button>
+    <button class="rail-btn" data-nav="trash">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2m2 0l-1 14a1 1 0 01-1 1H7a1 1 0 01-1-1L5 6"/></svg>
+      Trash
+    </button>
+    <button class="rail-btn" data-nav="add">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+      Add phone
+    </button>
+    <div class="rail-spacer"></div>
+    <div class="rail-foot">v0.1 · tray running</div>
+  </div>
+  <div class="main" id="main"></div>
+</div>
+
+<script>
+const $ = (s,el=document) => el.querySelector(s);
+const $$ = (s,el=document) => [...el.querySelectorAll(s)];
+
+// status: 'recording' | 'standby' | 'unreachable' — the single at-a-glance
+// value shown on the Fleet card. unreachable is a status value, not a
+// separate error layered on top of recording/standby.
+const PHONES = [
+  {id:'p1', name:'Porch Cam',    status:'recording',   diskGB:14.2, battery:71, manufacturer:'Google', model:'Pixel 6',   sync:'up-to-date'},
+  {id:'p2', name:'Garage Cam',   status:'recording',   diskGB:9.6,  battery:88, manufacturer:'Google', model:'Pixel 9a',  sync:'syncing'},
+  {id:'p3', name:'Backyard Cam', status:'standby',     diskGB:6.4,  battery:54, manufacturer:'Google', model:'Pixel 6',   sync:'up-to-date'},
+  {id:'p4', name:'Driveway Cam', status:'unreachable', diskGB:12.4, battery:null, manufacturer:'Google', model:'Pixel 6a', sync:'unreachable'},
+];
+
+// Calibration is a shared resource keyed by manufacturer+model, not stored
+// per-phone: Backyard Cam is also a "Google Pixel 6" like Porch Cam, so it
+// reuses Porch Cam's entry and never needs to run its own sweep. Driveway
+// Cam's "Google Pixel 6a" has no entry yet, so it shows "Calibration needed".
+const CALIBRATION_DB = {
+  'Google Pixel 6': {done:14, total:14, sourcePhoneId:'p1'},
+  'Google Pixel 9a': {done:9, total:14, sourcePhoneId:'p2'},
+};
+function calibKey(p){ return `${p.manufacturer} ${p.model}`; }
+
+const clamp = (v,min,max) => Math.min(max, Math.max(min, v));
+const CAMERAS = ['Rear · wide', 'Rear · ultrawide', 'Front'];
+
+function icon(name){
+  const map = {
+    phone:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg>',
+    play:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M10 8.5l6 3.5-6 3.5z" fill="currentColor" stroke="none"/></svg>',
+    stop:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" stroke="none"/></svg>',
+    back:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+    playFill:'<svg viewBox="0 0 24 24" fill="none" stroke="none"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>',
+    pauseFill:'<svg viewBox="0 0 24 24" fill="none" stroke="none"><rect x="6" y="5" width="4.5" height="14" rx="1" fill="currentColor"/><rect x="13.5" y="5" width="4.5" height="14" rx="1" fill="currentColor"/></svg>',
+    trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2m2 0l-1 14a1 1 0 01-1 1H7a1 1 0 01-1-1L5 6"/></svg>',
+    cycle:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2.5l4 4-4 4"/><path d="M3 12.5v-2a4 4 0 014-4h14"/><path d="M7 21.5l-4-4 4-4"/><path d="M21 11.5v2a4 4 0 01-4 4H3"/></svg>',
+    zoom:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M9 11h4M11 9v4"/></svg>',
+    focus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M3 8V5a2 2 0 012-2h3M16 3h3a2 2 0 012 2v3M21 16v3a2 2 0 01-2 2h-3M8 21H5a2 2 0 01-2-2v-3"/></svg>',
+    scene:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18l5-6 4 4 3-4 6 6"/><circle cx="8" cy="7" r="2"/></svg>',
+    sun:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+    drop:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3s6 6.5 6 10.5a6 6 0 01-12 0C6 9.5 12 3 12 3z"/></svg>',
+    contrast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18z" fill="currentColor" stroke="none"/></svg>',
+    zoomOut:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M21 21l-4.8-4.8M8 10.5h5"/></svg>',
+    zoomIn:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M21 21l-4.8-4.8M10.5 8v5M8 10.5h5"/></svg>',
+    focusNear:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V6a2 2 0 012-2h3M15 4h3a2 2 0 012 2v3M20 15v3a2 2 0 01-2 2h-3M9 20H6a2 2 0 01-2-2v-3"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/></svg>',
+    focusFar:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V6a2 2 0 012-2h3M15 4h3a2 2 0 012 2v3M20 15v3a2 2 0 01-2 2h-3M9 20H6a2 2 0 01-2-2v-3"/><path d="M6 15l3.5-4.5 2.5 3 2-2.5L18 15" stroke-width="1.8"/></svg>',
+    moon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1110 3.2 6.8 6.8 0 0020 14.5z" fill="currentColor" stroke="none"/></svg>',
+    shadowLow:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7.5" fill="currentColor" stroke="none"/></svg>',
+    shadowHigh:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7.5"/><path d="M12 4.5v15M4.5 12h15" stroke-width="1.2" opacity=".5"/></svg>',
+    wbCool:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2v20M4.5 6l15 12M19.5 6l-15 12M2 12h20"/></svg>',
+    wbWarm:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5" fill="currentColor" stroke="none"/><path d="M12 2v2.5M12 19.5V22M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2 12h2.5M19.5 12H22M4.2 19.8L6 18M18 6l1.8-1.8"/></svg>',
+    pulse:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2 7 4-14 2 7h6"/></svg>',
+    restore:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v6h6"/><path d="M3.5 13a8.5 8.5 0 108-10.4"/></svg>',
+    scan:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V6a2 2 0 012-2h2M16 4h2a2 2 0 012 2v2M20 16v2a2 2 0 01-2 2h-2M8 20H6a2 2 0 01-2-2v-2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>',
+  };
+  return map[name] || '';
+}
+
+/* ---------- Gallery data ---------- */
+const CLIPS = [
+  {id:'c1', phoneId:'p1', phoneName:'Porch Cam',    day:'Sept 4', time:'8:05 AM',  lenSec:34, motion:'porch · person',    tone:'day',   status:'active'},
+  {id:'c2', phoneId:'p2', phoneName:'Garage Cam',   day:'Sept 4', time:'7:41 AM',  lenSec:12, motion:'driveway · vehicle', tone:'day',  status:'active'},
+  {id:'c3', phoneId:'p3', phoneName:'Backyard Cam', day:'Sept 4', time:'6:52 AM',  lenSec:21, motion:'yard · animal',     tone:'day',   status:'active'},
+  {id:'c4', phoneId:'p4', phoneName:'Driveway Cam', day:'Sept 4', time:'5:30 AM',  lenSec:8,  motion:'driveway · vehicle', tone:'dusk', status:'trashed'},
+  {id:'c5', phoneId:'p1', phoneName:'Porch Cam',    day:'Sept 3', time:'11:58 PM', lenSec:22, motion:'porch · animal',    tone:'night', status:'active'},
+  {id:'c6', phoneId:'p2', phoneName:'Garage Cam',   day:'Sept 3', time:'6:03 PM',  lenSec:47, motion:'garage · person',   tone:'dusk',  status:'trashed'},
+  {id:'c7', phoneId:'p1', phoneName:'Porch Cam',    day:'Sept 3', time:'2:14 PM',  lenSec:19, motion:'porch · vehicle',   tone:'day',   status:'active'},
+  {id:'c8', phoneId:'p3', phoneName:'Backyard Cam', day:'Sept 3', time:'10:32 AM', lenSec:28, motion:'yard · person',     tone:'day',   status:'active'},
+];
+
+function fmtLen(sec){ return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'); }
+
+const gstate = {
+  filterPhone:'all',
+  selectedClipId:'c1',
+  playing:false,
+  progress:0,
+  timer:null,
+};
+
+function galleryClips(){
+  return CLIPS.filter(c => c.status==='active' && (gstate.filterPhone==='all' || c.phoneId===gstate.filterPhone));
+}
+function galleryDays(list){
+  const days = [];
+  list.forEach(c => { if(!days.includes(c.day)) days.push(c.day); });
+  return days.map(d => ({day:d, clips:list.filter(c=>c.day===d)}));
+}
+function currentClip(){
+  return CLIPS.find(c => c.id === gstate.selectedClipId) || galleryClips()[0];
+}
+
+function stopTimer(){
+  clearInterval(gstate.timer);
+  gstate.timer = null;
+}
+function startTimer(){
+  stopTimer();
+  const stepMs = 60;
+  gstate.timer = setInterval(() => {
+    const c = currentClip();
+    if(!c) return stopTimer();
+    const durationMs = c.lenSec * 150; // simulated playback speed, not real-time
+    gstate.progress = Math.min(100, gstate.progress + (stepMs/durationMs)*100);
+    updateScrubberOnly();
+    if(gstate.progress >= 100) advanceClip();
+  }, stepMs);
+}
+function togglePlay(){
+  gstate.playing = !gstate.playing;
+  if(gstate.playing) startTimer(); else stopTimer();
+  renderGallery();
+}
+function selectClip(id, opts={}){
+  gstate.selectedClipId = id;
+  gstate.progress = 0;
+  if(opts.keepPlaying === false){ gstate.playing = false; stopTimer(); }
+  else if(gstate.playing){ startTimer(); }
+  renderGallery();
+}
+function advanceClip(){
+  const list = galleryClips();
+  const idx = list.findIndex(c => c.id === gstate.selectedClipId);
+  const next = list[idx+1];
+  if(next){
+    selectClip(next.id, {keepPlaying:true});
+  } else {
+    stopTimer();
+    gstate.playing = false;
+    gstate.progress = 100;
+    renderGallery();
+  }
+}
+function trashClip(id){
+  // active -> trashed only, per the Trash/purge/tombstone model: the clip
+  // stays on disk (restorable) and simply drops out of the Gallery's
+  // active-only filter, rather than being removed here.
+  const list = galleryClips();
+  const idx = list.findIndex(c => c.id === id);
+  const c = CLIPS.find(x => x.id === id);
+  if(c) c.status = 'trashed';
+  if(gstate.selectedClipId === id){
+    const list2 = galleryClips();
+    const fallback = list2[idx] || list2[idx-1];
+    stopTimer(); gstate.playing = false; gstate.progress = 0;
+    gstate.selectedClipId = fallback ? fallback.id : null;
+  }
+  renderGallery();
+}
+function seekTo(pane, evt){
+  const rect = pane.getBoundingClientRect();
+  const pct = Math.min(100, Math.max(0, ((evt.clientX-rect.left)/rect.width)*100));
+  gstate.progress = pct;
+  updateScrubberOnly();
+}
+function updateScrubberOnly(){
+  const fill = $('#scrubFill'); const knob = $('#scrubKnob'); const tnow = $('#scrubNow');
+  if(!fill) return;
+  fill.style.width = gstate.progress+'%';
+  knob.style.left = gstate.progress+'%';
+  const c = currentClip();
+  if(c) tnow.textContent = fmtLen(Math.round(c.lenSec * gstate.progress/100));
+}
+
+/* ---------- Trash: same viewer+scrubber pattern as Gallery, but no
+   autoplay-on-end (you're triaging restore/delete decisions, not watching a
+   feed), and no phone filter (Trash wasn't specified as filterable). ---------- */
+const tstate = { selectedClipId:null, playing:false, progress:0, timer:null, confirmingEmpty:false };
+
+function trashedClips(){ return CLIPS.filter(c => c.status === 'trashed'); }
+function currentTrashClip(){ return trashedClips().find(c => c.id === tstate.selectedClipId) || trashedClips()[0]; }
+
+function stopTrashTimer(){ clearInterval(tstate.timer); tstate.timer = null; }
+function startTrashTimer(){
+  stopTrashTimer();
+  const stepMs = 60;
+  tstate.timer = setInterval(() => {
+    const c = currentTrashClip();
+    if(!c) return stopTrashTimer();
+    const durationMs = c.lenSec * 150;
+    tstate.progress = Math.min(100, tstate.progress + (stepMs/durationMs)*100);
+    updateTrashScrubberOnly();
+    if(tstate.progress >= 100){ stopTrashTimer(); tstate.playing = false; renderTrash(); } // stop, don't auto-advance
+  }, stepMs);
+}
+function toggleTrashPlay(){
+  tstate.playing = !tstate.playing;
+  if(tstate.playing) startTrashTimer(); else stopTrashTimer();
+  renderTrash();
+}
+function selectTrashClip(id){
+  tstate.selectedClipId = id;
+  tstate.progress = 0;
+  tstate.playing = false;
+  stopTrashTimer();
+  renderTrash();
+}
+function seekTrashTo(pane, evt){
+  const rect = pane.getBoundingClientRect();
+  const pct = Math.min(100, Math.max(0, ((evt.clientX-rect.left)/rect.width)*100));
+  tstate.progress = pct;
+  updateTrashScrubberOnly();
+}
+function updateTrashScrubberOnly(){
+  const fill = $('#tScrubFill'); const knob = $('#tScrubKnob'); const tnow = $('#tScrubNow');
+  if(!fill) return;
+  fill.style.width = tstate.progress+'%';
+  knob.style.left = tstate.progress+'%';
+  const c = currentTrashClip();
+  if(c) tnow.textContent = fmtLen(Math.round(c.lenSec * tstate.progress/100));
+}
+function fallbackTrashSelection(removedId){
+  if(tstate.selectedClipId !== removedId) return;
+  stopTrashTimer(); tstate.playing = false; tstate.progress = 0;
+  const first = trashedClips()[0];
+  tstate.selectedClipId = first ? first.id : null;
+}
+function restoreClip(id){
+  const c = CLIPS.find(x => x.id === id);
+  if(c) c.status = 'active';
+  fallbackTrashSelection(id);
+  renderTrash();
+}
+function deleteClipPermanently(id){
+  // trashed -> purged: for this mock, the file/thumbnail are simply gone —
+  // no tombstone bookkeeping to visualize here.
+  const i = CLIPS.findIndex(c => c.id === id);
+  if(i > -1) CLIPS.splice(i, 1);
+  fallbackTrashSelection(id);
+  renderTrash();
+}
+function emptyTrash(){
+  trashedClips().map(c => c.id).forEach(id => {
+    const i = CLIPS.findIndex(c => c.id === id);
+    if(i > -1) CLIPS.splice(i, 1);
+  });
+  tstate.confirmingEmpty = false;
+  stopTrashTimer(); tstate.playing = false; tstate.progress = 0; tstate.selectedClipId = null;
+  renderTrash();
+}
+
+/* ---------- Add phone: paste (primary) / scan QR (secondary) ----------
+   Both entry methods feed the same fake pairing pipeline (attemptPair) —
+   the point being demonstrated is that either produces the exact same
+   POST /api/pair outcome, not that they're different underlying flows. */
+let addState = { mode:'paste', address:'', code:'', connecting:false, scanning:false, error:'', pairedPhone:null };
+function freshAddState(){ addState = { mode:'paste', address:'', code:'', connecting:false, scanning:false, error:'', pairedPhone:null }; }
+function resetAddPhone(){ freshAddState(); render(); }
+
+// A bare invite code has no address in it — POST /api/pair is a request TO
+// the phone's own server, so pairing needs somewhere to send it. The full
+// invite URL carries both, which is what this recovers when someone pastes
+// one into either field instead of copying the short code by hand.
+function parseInviteUrl(raw){
+  let str = raw.trim();
+  if(!str || !/invite=/i.test(str)) return null;
+  if(!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(str)) str = 'http://' + str;
+  try{
+    const u = new URL(str);
+    const invite = u.searchParams.get('invite');
+    if(!invite) return null;
+    return { address: u.hostname, code: invite };
+  }catch(e){ return null; }
+}
+function tryAutofillFromPaste(raw){
+  const parsed = parseInviteUrl(raw);
+  if(!parsed) return false;
+  addState.address = parsed.address;
+  addState.code = parsed.code;
+  return true;
+}
+
+function attemptPair(address, code){
+  addState.address = address;
+  addState.code = code;
+  addState.error = '';
+  addState.connecting = true;
+  render();
+  setTimeout(() => {
+    addState.connecting = false;
+    // "fail" in either field is this mock's hook for the two distinct
+    // failure modes a real controller would hit: the address never
+    // answering vs. POST /api/pair itself rejecting the code.
+    if(/fail/i.test(address)){
+      addState.error = `Could not reach ${address} on the network.`;
+      render();
+      return;
+    }
+    if(/fail/i.test(code)){
+      addState.error = 'Invalid or expired invite code.';
+      render();
+      return;
+    }
+    // Deliberately "Google Pixel 6" — same manufacturer+model as Porch Cam,
+    // so this newly paired phone immediately shows reused calibration data
+    // instead of "Calibration needed" the moment you open its Phone detail.
+    const newPhone = {
+      id: 'p' + (PHONES.length + 1), name: 'Side Yard Cam', status: 'standby',
+      diskGB: 0, battery: 96, manufacturer: 'Google', model: 'Pixel 6', sync: 'syncing',
+    };
+    PHONES.push(newPhone);
+    addState.pairedPhone = newPhone;
+    render();
+  }, 1100);
+}
+function submitPair(){
+  const address = ($('#addressInput')?.value || '').trim();
+  const code = ($('#codeInput')?.value || '').trim();
+  if(!address && !code){ addState.error = "Enter the phone's address and invite code."; render(); return; }
+  if(!address){ addState.error = "Enter the phone's IP address or hostname — the invite code alone isn't enough to find it on the network."; render(); return; }
+  if(!code){ addState.error = 'Enter the invite code shown on the phone.'; render(); return; }
+  attemptPair(address, code);
+}
+function startQrScan(){
+  addState.error = '';
+  addState.scanning = true;
+  render();
+  setTimeout(() => {
+    addState.scanning = false;
+    // A scanned QR yields both pieces at once — no address/code split to worry about.
+    attemptPair('192.168.1.94', 'qr-scanned-code');
+  }, 1400);
+}
+
+function battIcon(pct){
+  if(pct === null || pct === undefined) return '';
+  const fillFrac = Math.max(0.06, pct/100);
+  return `<div class="batt-icon ${pct<=20?'low':''}" title="${pct}% battery">
+    <span class="cells"><i style="flex:${fillFrac}"></i><i style="flex:${1-fillFrac}; background:transparent;"></i></span>
+    <span>${pct}%</span>
+  </div>`;
+}
+
+/* ---------- Live preview: adjusters (ported from the phone mock's Preview
+   screen, same generic ruler/segment components, same one-at-a-time
+   switcher interaction — deliberate consistency, not a desktop redesign) ---------- */
+const ADJUSTERS = {
+  zoom:{type:'ruler', icon:'zoom', label:'Zoom', min:0.5, max:8, tickStep:0.5, majorStep:1, microStep:0.1, pxPerUnit:34,
+    endIcons:['zoomOut','zoomIn']},
+  focus:{type:'ruler', icon:'focus', label:'Focus', min:0, max:100, tickStep:10, majorStep:25, microStep:2, pxPerUnit:2.6,
+    endIcons:['focusNear','focusFar'],
+    picker:{key:'focusMode', options:['continuous','manual','macro']}},
+  scene:{type:'segment', icon:'scene', label:'Scene', options:['auto','outdoor','indoor','night']},
+  brightness:{type:'ruler', icon:'sun', label:'Brightness', min:-2, max:2, tickStep:0.5, majorStep:1, microStep:0.1, pxPerUnit:55,
+    endIcons:['moon','sun']},
+  shadows:{type:'ruler', icon:'drop', label:'Shadows', min:0, max:100, tickStep:10, majorStep:25, microStep:2, pxPerUnit:2.6,
+    endIcons:['shadowLow','shadowHigh']},
+  wb:{type:'ruler', icon:'contrast', label:'White bal.', min:2700, max:7500, tickStep:200, majorStep:1000, microStep:40, pxPerUnit:0.065,
+    endIcons:['wbCool','wbWarm']},
+};
+const ADJUST_ORDER = ['zoom','focus','scene','brightness','shadows','wb'];
+
+let liveState = {
+  phoneId:null, started:false, confirming:false, open:'zoom', cameraIdx:0,
+  values:{ zoom:1, focus:100, focusMode:'continuous', scene:'auto', brightness:0.3, shadows:18, wb:5600 },
+};
+
+function resetLiveState(phoneId){
+  liveState = { phoneId, started:false, confirming:false, open:'zoom', cameraIdx:0,
+    values:{ zoom:1, focus:100, focusMode:'continuous', scene:'auto', brightness:0.3, shadows:18, wb:5600 } };
+}
+
+function renderRuler(key){
+  const a = ADJUSTERS[key];
+  let ticks = '';
+  const step = a.microStep || a.tickStep;
+  const first = Math.ceil(a.min / step) * step;
+  for(let v = first; v <= a.max + 1e-6; v += step){
+    const isMajor = Math.abs(v - Math.round(v / a.majorStep) * a.majorStep) < step / 2;
+    const isMinor = !isMajor && Math.abs(v - Math.round(v / a.tickStep) * a.tickStep) < step / 2;
+    const cls = isMajor ? 'major' : isMinor ? 'minor' : 'micro';
+    const left = v * a.pxPerUnit;
+    ticks += `<div class="tick ${cls}" style="left:${left}px;"></div>`;
+  }
+  const [leftIcon, rightIcon] = a.endIcons || [];
+  return `<div class="ruler" data-key="${key}">
+    <div class="ruler-body">
+      ${leftIcon ? `<div class="ruler-endicon">${icon(leftIcon)}</div>` : ''}
+      <div class="ruler-track">
+        <div class="strip" id="dRulerStrip">${ticks}</div>
+      </div>
+      ${rightIcon ? `<div class="ruler-endicon">${icon(rightIcon)}</div>` : ''}
+      <div class="thumb"></div>
+    </div>
+  </div>`;
+}
+function renderSegment(key){
+  const a = ADJUSTERS[key];
+  return `<div class="segctl">${a.options.map(o=>`<button data-opt="${o}" data-pickerkey="${key}" class="${liveState.values[key]===o?'active':''}">${o}</button>`).join('')}</div>`;
+}
+function renderPicker(picker){
+  return `<div class="segctl">${picker.options.map(o=>`<button data-opt="${o}" data-pickerkey="${picker.key}" class="${liveState.values[picker.key]===o?'active':''}">${o}</button>`).join('')}</div>`;
+}
+function renderAdjuster(key){
+  return ADJUSTERS[key].type === 'segment' ? renderSegment(key) : renderRuler(key);
+}
+
+function wireRuler(key){
+  const slot = $('#dCtrlSlot');
+  if(!slot) return;
+  const a = ADJUSTERS[key];
+  let dragging = false, startX = 0, startVal = liveState.values[key];
+  function positionRuler(){
+    const track = $('.ruler-track', slot), strip = $('#dRulerStrip', slot);
+    if(!track || !strip) return;
+    const center = track.offsetWidth / 2;
+    strip.style.transform = `translateX(${center - liveState.values[key]*a.pxPerUnit}px)`;
+  }
+  positionRuler();
+  slot.onpointerdown = (e) => { dragging = true; startX = e.clientX; startVal = liveState.values[key]; slot.setPointerCapture(e.pointerId); };
+  slot.onpointermove = (e) => {
+    if(!dragging) return;
+    const dx = e.clientX - startX;
+    liveState.values[key] = clamp(startVal - dx / a.pxPerUnit, a.min, a.max);
+    positionRuler();
+  };
+  slot.onpointerup = (e) => { if(dragging){ try{ slot.releasePointerCapture(e.pointerId); }catch(err){} } dragging = false; };
+  slot.onpointercancel = () => { dragging = false; };
+}
+function wireSegment(){
+  const slot = $('#dCtrlSlotSeg');
+  if(!slot) return;
+  $$('[data-opt]', slot).forEach(b => b.onclick = () => { liveState.values[b.dataset.pickerkey] = b.dataset.opt; render(); });
+}
+
+function startLivePreview(p, force){
+  if(p.status === 'unreachable') return;
+  if(p.status === 'recording' && !force){ liveState.confirming = true; render(); return; }
+  const wasRecording = p.status === 'recording';
+  liveState.started = true;
+  liveState.confirming = false;
+  if(wasRecording) p.status = 'standby'; // live preview tears down the recording pipeline
+  render();
+}
+function cancelStartLive(){ liveState.confirming = false; render(); }
+function stopLivePreview(){ liveState.started = false; render(); }
+
+let calibTimer = null;
+function recalibrate(p){
+  if(p.status === 'unreachable') return;
+  clearInterval(calibTimer);
+  const key = calibKey(p);
+  // Re-run always overwrites this manufacturer+model's entry outright —
+  // last-completed-run wins, no merge with whatever was cached before.
+  CALIBRATION_DB[key] = {done:0, total:14, sourcePhoneId:p.id};
+  render();
+  calibTimer = setInterval(() => {
+    const rec = CALIBRATION_DB[key];
+    rec.done++;
+    if(rec.done >= rec.total){ rec.done = rec.total; clearInterval(calibTimer); }
+    render();
+  }, 220);
+}
+
+function statusLabel(s){
+  return {recording:'Recording', standby:'Standby', unreachable:'Unreachable'}[s];
+}
+function syncLabel(s){
+  return {'up-to-date':'Up to date', syncing:'Syncing…', unreachable:'Unreachable'}[s];
+}
+
+let route = {screen:'fleet', phoneId:null};
+
+function totalDiskGB(){
+  return PHONES.reduce((sum,p)=>sum+p.diskGB, 0).toFixed(1);
+}
+
+function bulkArm(){
+  const targets = PHONES.filter(p => p.status !== 'recording' && p.status !== 'unreachable');
+  targets.forEach(p => p.status = 'recording');
+  render();
+}
+function bulkStandDown(){
+  const targets = PHONES.filter(p => p.status === 'recording');
+  targets.forEach(p => p.status = 'standby');
+  render();
+}
+
+const screens = {
+  fleet(){
+    const notRecordingCount = PHONES.filter(p=>p.status!=='recording' && p.status!=='unreachable').length;
+    const recordingCount = PHONES.filter(p=>p.status==='recording').length;
+    return `
+      <div class="header">
+        <div>
+          <h1>Fleet</h1>
+          <div class="sub"><b>${totalDiskGB()} GB</b> across ${PHONES.length} phones</div>
+        </div>
+        <div class="header-actions">
+          <button class="btn primary" id="bulkArmBtn" ${notRecordingCount===0?'disabled':''}>
+            ${icon('play')} Arm all (${notRecordingCount})
+          </button>
+          <button class="btn ghost-rec" id="bulkStandBtn" ${recordingCount===0?'disabled':''}>
+            ${icon('stop')} Stand down all (${recordingCount})
+          </button>
+        </div>
+      </div>
+      <div class="body-scroll">
+        <div class="grid">
+          ${PHONES.map(p => `
+            <div class="pcard ${p.status==='unreachable'?'is-unreachable':''}" data-phone="${p.id}">
+              <div class="top">
+                <div class="avatar">${icon('phone')}</div>
+                <div class="name">${p.name}</div>
+                ${battIcon(p.battery)}
+              </div>
+              <div class="status ${p.status}"><span class="dot"></span>${statusLabel(p.status)}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  },
+  detail(){
+    const p = PHONES.find(x=>x.id===route.phoneId);
+    return `
+      <div class="header">
+        <div>
+          <div class="detail-header" style="margin-bottom:0;">
+            <div class="avatar">${icon('phone')}</div>
+            <div>
+              <h2>${p.name}</h2>
+              <div class="sub">
+                <span class="status ${p.status}"><span class="dot"></span>${statusLabel(p.status)}</span>
+                <span>·</span>
+                <span>sync: ${syncLabel(p.sync)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="btn" id="renameBtn">Rename</button>
+          <button class="btn ghost-rec" id="unpairBtn">Unpair</button>
+        </div>
+      </div>
+      <div class="body-scroll">
+        <button class="back-link" id="backToFleet">${icon('back')} Back to Fleet</button>
+        <div class="section-title">Device</div>
+        <div class="card">
+          <div class="field-row"><span class="k">Model</span><span class="v">${p.manufacturer} ${p.model}</span></div>
+          <div class="field-row"><span class="k">Battery</span><span class="v">${p.battery!==null?p.battery+'%':'—'}</span></div>
+          <div class="field-row"><span class="k">Disk usage</span><span class="v">${p.diskGB.toFixed(1)} GB</span></div>
+          <div class="field-row"><span class="k">Sync status</span><span class="v">${syncLabel(p.sync)}</span></div>
+        </div>
+
+        <div class="section-title">Live preview</div>
+        ${renderLiveSection(p)}
+
+        <div class="section-title" style="margin-top:14px;">Calibration</div>
+        ${renderCalibSection(p)}
+
+        <div class="section-title" style="margin-top:14px;">Configuration</div>
+        <div class="card">
+          <div class="field-row"><span class="k">Name</span><input class="input-line" value="${p.name}"></div>
+          <div class="field-row"><span class="k">Motion sensitivity</span>
+            <select class="select-line"><option>Medium</option><option>High</option><option>Low</option></select>
+          </div>
+          <div class="field-row"><span class="k">Ring buffer cap</span>
+            <select class="select-line"><option>32 GB</option><option>16 GB</option><option>64 GB</option></select>
+          </div>
+          <div class="field-row"><span class="k">Resolution</span>
+            <select class="select-line"><option>1920×1080</option><option>1280×720</option><option>3840×2160</option></select>
+          </div>
+          <div class="field-row"><span class="k">Frame rate</span>
+            <select class="select-line"><option>30 fps</option><option>24 fps</option><option>15 fps</option></select>
+          </div>
+        </div>
+      </div>
+    `;
+  },
+  placeholder(title, note){
+    return `
+      <div class="header"><div><h1>${title}</h1></div></div>
+      <div class="body-scroll"><div class="placeholder-note">${note}</div></div>
+    `;
+  },
+  gallery(){
+    const all = galleryClips();
+    const groups = galleryDays(all);
+    const c = currentClip();
+    const activeCount = CLIPS.filter(cl => cl.status === 'active').length;
+    return `
+      <div class="header">
+        <div>
+          <h1>Gallery</h1>
+          <div class="sub"><b>${activeCount} clips</b> across ${PHONES.length} phones</div>
+        </div>
+      </div>
+      <div class="chip-row">
+        <button class="chip-filter ${gstate.filterPhone==='all'?'active':''}" data-filter="all">All</button>
+        ${PHONES.map(p => `<button class="chip-filter ${gstate.filterPhone===p.id?'active':''}" data-filter="${p.id}">${p.name}</button>`).join('')}
+      </div>
+      <div class="gallery-layout">
+        <div class="viewer-pane">
+          ${c ? renderViewer(c) : '<div class="placeholder-note">No clips match this filter.</div>'}
+        </div>
+        <div class="clip-list-pane">
+          ${groups.length ? groups.map(g => `
+            <div class="day-group">
+              <div class="day-head">${g.day}</div>
+              <div class="clip-grid">
+                ${g.clips.map(cl => `
+                  <div class="ctile ${cl.id===gstate.selectedClipId?'active':''}" data-clip="${cl.id}" style="${toneBg(cl.tone)}">
+                    <span class="cphone">${cl.phoneName}</span>
+                    <span class="ctime">${cl.time}</span>
+                    <span class="clen">${fmtLen(cl.lenSec)}</span>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          `).join('') : '<div class="placeholder-note">No clips match this filter.</div>'}
+        </div>
+      </div>
+    `;
+  },
+  trash(){
+    const list = trashedClips();
+    const groups = galleryDays(list);
+    const c = currentTrashClip();
+    return `
+      <div class="header">
+        <div>
+          <h1>Trash</h1>
+          <div class="sub"><b>${list.length}</b> trashed clip${list.length===1?'':'s'}</div>
+        </div>
+        <div class="header-actions">
+          <button class="btn ghost-rec" id="emptyTrashBtn" ${list.length===0?'disabled':''}>${icon('trash')} Empty trash</button>
+        </div>
+      </div>
+      ${tstate.confirmingEmpty ? `
+        <div style="padding:14px 26px 0;">
+          <div class="confirm-box danger">
+            <p>Permanently delete ${list.length} clip${list.length===1?'':'s'}? This can't be undone.</p>
+            <div class="confirm-actions">
+              <button class="btn ghost-rec" id="confirmEmptyBtn">Delete permanently</button>
+              <button class="btn" id="cancelEmptyBtn">Cancel</button>
+            </div>
+          </div>
+        </div>` : ''}
+      <div class="gallery-layout">
+        <div class="viewer-pane">
+          ${c ? renderTrashViewer(c) : '<div class="placeholder-note">Trash is empty.</div>'}
+        </div>
+        <div class="clip-list-pane">
+          ${groups.length ? groups.map(g => `
+            <div class="day-group">
+              <div class="day-head">${g.day}</div>
+              <div class="clip-grid">
+                ${g.clips.map(cl => `
+                  <div class="ctile ${cl.id===tstate.selectedClipId?'active':''}" data-tclip="${cl.id}" style="${toneBg(cl.tone)}">
+                    <span class="cphone">${cl.phoneName}</span>
+                    <span class="ctime">${cl.time}</span>
+                    <span class="clen">${fmtLen(cl.lenSec)}</span>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          `).join('') : '<div class="placeholder-note">Trash is empty.</div>'}
+        </div>
+      </div>
+    `;
+  },
+  add(){
+    if(addState.pairedPhone){
+      const np = addState.pairedPhone;
+      return `
+        <div class="header"><div><h1>Add phone</h1></div></div>
+        <div class="add-phone-wrap">
+          <div class="method-card success-card">
+            <div class="avatar">${icon('phone')}</div>
+            <h3>${np.name}</h3>
+            <div class="sub">${np.manufacturer} ${np.model} · paired</div>
+            <div class="success-actions">
+              <button class="btn primary" id="goToFleetBtn">View in Fleet</button>
+              <button class="btn" id="addAnotherBtn">Add another phone</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    return `
+      <div class="header"><div><h1>Add phone</h1></div></div>
+      <div class="add-phone-wrap">
+        <div class="method-card">
+          ${addState.mode==='paste' ? renderPasteMethod() : renderQrMethod()}
+        </div>
+        ${addState.connecting ? '' : `<button class="link-btn" id="switchMethodBtn">${addState.mode==='paste' ? 'Or scan a QR code from the phone →' : '← Paste a code instead'}</button>`}
+      </div>
+    `;
+  },
+};
+
+function esc(s){ return (s||'').replace(/"/g, '&quot;'); }
+function renderPasteMethod(){
+  if(addState.connecting){
+    return `<div class="connecting-row"><span class="spin"></span> Connecting to phone…</div>`;
+  }
+  return `
+    <div class="section-title">Phone address</div>
+    <input class="input-line" id="addressInput" style="width:100%; text-align:left;" placeholder="e.g. 192.168.1.87" value="${esc(addState.address)}">
+    <div class="section-title" style="margin-top:14px;">Invite code</div>
+    <input class="input-line" id="codeInput" style="width:100%; text-align:left;" placeholder="e.g. XYZF-EBDO-ORMS" value="${esc(addState.code)}">
+    <p class="field-hint">Tip: paste the full invite URL into either field to fill in both.</p>
+    ${addState.error ? `<p class="error-text">${addState.error}</p>` : ''}
+    <button class="btn primary" id="pairBtn" style="margin-top:10px; width:100%;">${icon('plus')} Pair phone</button>
+  `;
+}
+function renderQrMethod(){
+  if(addState.connecting){
+    return `<div class="connecting-row"><span class="spin"></span> Connecting to phone…</div>`;
+  }
+  return `
+    <div class="qr-viewfinder ${addState.scanning?'scanning':''}">
+      ${addState.scanning ? '<div class="scan-line"></div>' : ''}
+      <span>${addState.scanning ? 'Scanning…' : "Point your webcam at the phone's QR code"}</span>
+    </div>
+    <p class="field-hint" style="text-align:center;">The QR carries the phone's address and invite code together — nothing to type.</p>
+    ${addState.error ? `<p class="error-text" style="text-align:center;">${addState.error}</p>` : ''}
+    <button class="btn primary" id="startScanBtn" style="width:100%;" ${addState.scanning?'disabled':''}>${icon('scan')} ${addState.scanning ? 'Scanning…' : 'Use webcam'}</button>
+  `;
+}
+
+function renderLiveSection(p){
+  if(p.status === 'unreachable'){
+    return `<div class="placeholder-note">Phone is unreachable — live preview unavailable.</div>`;
+  }
+  if(liveState.confirming){
+    return `<div class="confirm-box">
+      <p><b>${p.name}</b> is currently recording. Starting live preview will stop the recording — you'll need to re-arm it afterward.</p>
+      <div class="confirm-actions">
+        <button class="btn primary" id="confirmStartBtn">Start anyway</button>
+        <button class="btn" id="cancelStartBtn">Cancel</button>
+      </div>
+    </div>`;
+  }
+  if(!liveState.started){
+    return `<div class="start-live-box">
+      <p>Live preview is off. Starting it will interrupt this phone's current activity.</p>
+      <button class="btn primary" id="startLiveBtn">${icon('play')} Start live preview</button>
+    </div>`;
+  }
+  const open = liveState.open;
+  const cfg = ADJUSTERS[open];
+  const isRuler = cfg.type === 'ruler';
+  const rulerDisabled = open === 'focus' && liveState.values.focusMode !== 'manual';
+  const showSlider = isRuler && !rulerDisabled;
+  const belowSeg = !isRuler ? renderAdjuster(open) : (cfg.picker ? renderPicker(cfg.picker) : '');
+  return `
+    <div class="live-panel">
+      <div class="live-viewport-col">
+        <div class="viewport-wrap">
+          <div class="vscene" style="${toneBg('day')}">
+            <div class="sun"></div>
+            <div class="ridge"></div>
+            <div class="live-badge"><i></i>LIVE</div>
+            <div class="tag">${CAMERAS[liveState.cameraIdx]} · 1080p30</div>
+            <button class="cam-cycle-btn" id="cycleCamBtn" title="Cycle camera">${icon('cycle')}</button>
+            ${showSlider ? `<div class="ctrl-slot overlay" id="dCtrlSlot">${renderAdjuster(open)}</div>` : ''}
+          </div>
+        </div>
+        ${belowSeg ? `<div class="ctrl-slot" id="dCtrlSlotSeg" style="margin-top:8px;">${belowSeg}</div>` : ''}
+      </div>
+      <div class="live-controls-col">
+        <div class="hscroll" id="adjustScroll">
+          <div class="hscroll-track">
+            ${ADJUST_ORDER.map(key=>`
+              <button class="adjust-btn ${open===key?'open':''}" data-adjust="${key}">
+                ${icon(ADJUSTERS[key].icon)}<span>${ADJUSTERS[key].label}</span>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+        <button class="btn ghost-rec" id="stopLiveBtn" style="margin-top:10px;">${icon('stop')} Stop live preview</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderCalibSection(p){
+  const rec = CALIBRATION_DB[calibKey(p)];
+  if(!rec){
+    return `<div class="card">
+      <div class="field-row"><span class="k">Status</span><span class="v" style="color:var(--warn);">Calibration needed</span></div>
+      <p style="font-size:11.5px; color:var(--text-faint); margin:8px 0 12px;">
+        No calibration data yet for ${p.manufacturer} ${p.model}. Running it on this phone makes
+        it the reference for every other ${p.model} in the fleet.
+      </p>
+      <button class="btn primary" id="recalibrateBtn" ${p.status==='unreachable'?'disabled':''}>${icon('pulse')} Run calibration</button>
+    </div>`;
+  }
+  const pct = Math.round((rec.done/rec.total)*100);
+  const source = PHONES.find(x => x.id === rec.sourcePhoneId);
+  const viaNote = source && source.id !== p.id ? ` · via ${source.name}` : '';
+  return `<div class="card">
+    <div class="field-row"><span class="k">Status</span><span class="v">${rec.done}/${rec.total} checks completed${viaNote}</span></div>
+    <div style="height:6px; background:var(--border-soft); border-radius:3px; overflow:hidden; margin:2px 0 10px;">
+      <div style="width:${pct}%; height:100%; background:var(--accent);"></div>
+    </div>
+    <button class="btn" id="recalibrateBtn" ${p.status==='unreachable'?'disabled':''}>${icon('pulse')} Re-run calibration</button>
+  </div>`;
+}
+
+function toneBg(tone){
+  const tones = {
+    day:'background:linear-gradient(180deg,#12313a 0%,#0f3e3a 55%,#0a2018 100%);',
+    dusk:'background:linear-gradient(180deg,#2a1f2e 0%,#3a2430 55%,#12181a 100%);',
+    night:'background:linear-gradient(180deg,#050a0c 0%,#081412 55%,#050a08 100%);',
+  };
+  return tones[tone] || tones.day;
+}
+function renderViewer(c){
+  return `
+    <div class="vscene" id="viewerScene" style="${toneBg(c.tone)}">
+      ${c.tone==='day' ? '<div class="sun"></div>' : ''}
+      <div class="ridge"></div>
+      <div class="tag">${fmtLen(c.lenSec)}</div>
+      <div class="motion"><i></i>${c.motion}</div>
+      <div class="playhint" id="playHint">${icon(gstate.playing?'pauseFill':'playFill')}</div>
+      <button class="trash-btn" id="trashClipBtn" title="Trash">${icon('trash')}</button>
+    </div>
+    <div class="viewer-meta">
+      <div>
+        <div class="who">${c.phoneName}</div>
+        <div class="when">${c.day} · ${c.time}</div>
+      </div>
+    </div>
+    <div class="scrubber">
+      <button class="playbtn" id="playBtn">${icon(gstate.playing?'pauseFill':'playFill')}</button>
+      <span class="t" id="scrubNow">${fmtLen(Math.round(c.lenSec*gstate.progress/100))}</span>
+      <div class="track" id="scrubTrack">
+        <div class="fill" id="scrubFill" style="width:${gstate.progress}%"></div>
+        <div class="knob" id="scrubKnob" style="left:${gstate.progress}%"></div>
+      </div>
+      <span class="t">${fmtLen(c.lenSec)}</span>
+    </div>
+  `;
+}
+
+function renderTrashViewer(c){
+  return `
+    <div class="vscene" style="${toneBg(c.tone)}">
+      ${c.tone==='day' ? '<div class="sun"></div>' : ''}
+      <div class="ridge"></div>
+      <div class="tag">${fmtLen(c.lenSec)}</div>
+      <div class="motion"><i></i>${c.motion}</div>
+      <div class="playhint" id="tPlayHint">${icon(tstate.playing?'pauseFill':'playFill')}</div>
+      <div class="vscene-fabs">
+        <button class="fab-btn" id="restoreClipBtn" title="Restore">${icon('restore')}</button>
+        <button class="fab-btn danger" id="deleteClipBtn" title="Delete permanently">${icon('trash')}</button>
+      </div>
+    </div>
+    <div class="viewer-meta">
+      <div>
+        <div class="who">${c.phoneName}</div>
+        <div class="when">${c.day} · ${c.time}</div>
+      </div>
+    </div>
+    <div class="scrubber">
+      <button class="playbtn" id="tPlayBtn">${icon(tstate.playing?'pauseFill':'playFill')}</button>
+      <span class="t" id="tScrubNow">${fmtLen(Math.round(c.lenSec*tstate.progress/100))}</span>
+      <div class="track" id="tScrubTrack">
+        <div class="fill" id="tScrubFill" style="width:${tstate.progress}%"></div>
+        <div class="knob" id="tScrubKnob" style="left:${tstate.progress}%"></div>
+      </div>
+      <span class="t">${fmtLen(c.lenSec)}</span>
+    </div>
+  `;
+}
+
+function render(){
+  let html;
+  if(route.screen === 'fleet') html = screens.fleet();
+  else if(route.screen === 'detail') html = screens.detail();
+  else if(route.screen === 'gallery') html = screens.gallery();
+  else if(route.screen === 'trash') html = screens.trash();
+  else if(route.screen === 'add') html = screens.add();
+  $('#main').innerHTML = html;
+  $$('.rail-btn').forEach(b => b.classList.toggle('active',
+    b.dataset.nav === (route.screen === 'detail' ? 'fleet' : route.screen)));
+  wire();
+}
+// gallery/trash-internal state changes (play/pause/select/restore/delete)
+// re-render without touching route, so they can reuse render() directly.
+function renderGallery(){ render(); }
+function renderTrash(){ render(); }
+
+function wire(){
+  $$('.rail-btn').forEach(b => b.onclick = () => {
+    if(route.screen === 'gallery' && b.dataset.nav !== 'gallery') stopTimer();
+    if(route.screen === 'trash' && b.dataset.nav !== 'trash') stopTrashTimer();
+    if(b.dataset.nav === 'add') freshAddState(); // always start Add phone fresh
+    route = {screen:b.dataset.nav, phoneId:null};
+    render();
+  });
+  if(route.screen === 'fleet'){
+    $('#bulkArmBtn')?.addEventListener('click', bulkArm);
+    $('#bulkStandBtn')?.addEventListener('click', bulkStandDown);
+    $$('.pcard').forEach(c => c.onclick = () => {
+      if(liveState.phoneId !== c.dataset.phone) resetLiveState(c.dataset.phone);
+      route = {screen:'detail', phoneId:c.dataset.phone};
+      render();
+    });
+  }
+  if(route.screen === 'detail'){
+    const p = PHONES.find(x=>x.id===route.phoneId);
+    $('#backToFleet').onclick = () => { route = {screen:'fleet', phoneId:null}; render(); };
+    $('#startLiveBtn')?.addEventListener('click', () => startLivePreview(p));
+    $('#confirmStartBtn')?.addEventListener('click', () => startLivePreview(p, true));
+    $('#cancelStartBtn')?.addEventListener('click', cancelStartLive);
+    $('#stopLiveBtn')?.addEventListener('click', stopLivePreview);
+    $('#recalibrateBtn')?.addEventListener('click', () => recalibrate(p));
+    if(liveState.started){
+      $('#cycleCamBtn').onclick = () => { liveState.cameraIdx = (liveState.cameraIdx+1) % CAMERAS.length; render(); };
+      $$('.adjust-btn', $('#adjustScroll')).forEach(b => b.onclick = () => { liveState.open = b.dataset.adjust; render(); });
+      const open = liveState.open;
+      const cfg = ADJUSTERS[open];
+      const isRuler = cfg.type === 'ruler';
+      const rulerDisabled = open === 'focus' && liveState.values.focusMode !== 'manual';
+      if(isRuler && !rulerDisabled) wireRuler(open);
+      if(!isRuler || cfg.picker) wireSegment();
+    }
+  }
+  if(route.screen === 'gallery'){
+    $$('.chip-filter').forEach(b => b.onclick = () => {
+      gstate.filterPhone = b.dataset.filter;
+      const stillVisible = galleryClips().some(c=>c.id===gstate.selectedClipId);
+      if(!stillVisible){ stopTimer(); gstate.playing=false; gstate.progress=0; const first=galleryClips()[0]; gstate.selectedClipId = first?first.id:null; }
+      renderGallery();
+    });
+    $$('.ctile').forEach(t => t.onclick = () => selectClip(t.dataset.clip));
+    $('#playBtn')?.addEventListener('click', togglePlay);
+    $('#playHint')?.addEventListener('click', togglePlay);
+    $('#scrubTrack')?.addEventListener('click', (e) => seekTo(e.currentTarget, e));
+    $('#trashClipBtn')?.addEventListener('click', () => trashClip(gstate.selectedClipId));
+  }
+  if(route.screen === 'trash'){
+    $('#emptyTrashBtn')?.addEventListener('click', () => { tstate.confirmingEmpty = true; render(); });
+    $('#confirmEmptyBtn')?.addEventListener('click', emptyTrash);
+    $('#cancelEmptyBtn')?.addEventListener('click', () => { tstate.confirmingEmpty = false; render(); });
+    $$('[data-tclip]').forEach(t => t.onclick = () => selectTrashClip(t.dataset.tclip));
+    $('#tPlayBtn')?.addEventListener('click', toggleTrashPlay);
+    $('#tPlayHint')?.addEventListener('click', toggleTrashPlay);
+    $('#tScrubTrack')?.addEventListener('click', (e) => seekTrashTo(e.currentTarget, e));
+    $('#restoreClipBtn')?.addEventListener('click', () => restoreClip(tstate.selectedClipId));
+    $('#deleteClipBtn')?.addEventListener('click', () => deleteClipPermanently(tstate.selectedClipId));
+  }
+  if(route.screen === 'add'){
+    $('#switchMethodBtn')?.addEventListener('click', () => {
+      addState.mode = addState.mode === 'paste' ? 'qr' : 'paste';
+      addState.error = '';
+      render();
+    });
+    $('#pairBtn')?.addEventListener('click', submitPair);
+    $$('#addressInput, #codeInput').forEach(inp => {
+      inp.addEventListener('keydown', (e) => { if(e.key === 'Enter') submitPair(); });
+      // Pasting a full invite URL into either field fills both — re-render
+      // only happens if it actually parsed as one, so plain typing (which
+      // never matches "invite=...") is left completely alone.
+      inp.addEventListener('input', () => {
+        const id = inp.id;
+        if(tryAutofillFromPaste(inp.value)){
+          render();
+          const el = $('#' + id);
+          if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+        }
+      });
+    });
+    $('#startScanBtn')?.addEventListener('click', startQrScan);
+    $('#goToFleetBtn')?.addEventListener('click', () => { route = {screen:'fleet', phoneId:null}; render(); });
+    $('#addAnotherBtn')?.addEventListener('click', resetAddPhone);
+  }
+}
+
+render();
+</script>
