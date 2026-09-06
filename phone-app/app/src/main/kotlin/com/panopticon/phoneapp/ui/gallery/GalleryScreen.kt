@@ -86,14 +86,13 @@ fun GalleryScreen(app: PanopticonApplication) {
     }
 
     val shown = clips
-    val segmentCount = shown?.sumOf { it.count } ?: 0
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text(text = "Gallery", color = PanopticonColors.text, fontSize = 20.sp)
         Text(
             text = when {
                 shown == null -> "Loading…"
-                else -> "${shown.size} clip${if (shown.size == 1) "" else "s"} · $segmentCount segment${if (segmentCount == 1) "" else "s"}"
+                else -> "${shown.size} clip${if (shown.size == 1) "" else "s"}"
             },
             color = PanopticonColors.textDim,
             fontSize = 13.sp,
@@ -144,9 +143,8 @@ private fun ClipRow(clip: Clip, deleteEnabled: Boolean, onPlay: () -> Unit, onDe
     ) {
         Column {
             Text(text = timeFormat.format(Date(clip.startedAtMs)), color = PanopticonColors.text, fontSize = 15.sp)
-            val segLabel = if (clip.count == 1) "1 segment" else "${clip.count} segments"
             Text(
-                text = "${clip.durationMs / 1000}s - $segLabel - ${clip.sizeBytes / 1024} KB",
+                text = "${clip.durationMs / 1000}s - ${clip.sizeBytes / 1024} KB",
                 color = PanopticonColors.textFaint,
                 fontSize = 12.sp,
             )

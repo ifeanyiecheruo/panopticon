@@ -160,9 +160,6 @@ class SegmentStore(context: Context) {
     @Synchronized
     fun totalBytes(): Long = index().values.sumOf { it.sizeBytes }
 
-    @Synchronized
-    fun count(): Int = index().size
-
     /** Extracts (and caches) a single JPEG frame from a segment for the Gallery filmstrip. */
     fun thumbnailFor(filename: String): File? {
         val safe = sanitize(filename)

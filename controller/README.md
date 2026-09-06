@@ -132,9 +132,9 @@ rows, and the Gallery/Trash screens reading them back correctly.
   - `src/screens/` — one component per screen: `Fleet.tsx`, `PhoneDetail.tsx`,
     `Gallery.tsx`, `Trash.tsx`, `AddPhone.tsx`.
   - `src/components/` — `Shell.tsx` (the left nav rail + main slot), `ClipTiles.tsx`
-    (the day-grouped clip grid shared by Gallery and Trash, each tile a clip with a `×N`
-    segment badge), and `ClipPlayer.tsx` (a `<video>` that walks a clip's segments as a
-    playlist, advancing on `ended` and then handing off to the next clip).
+    (the day-grouped clip grid shared by Gallery and Trash, one tile per clip), and
+    `ClipPlayer.tsx` (a `<video>` that walks a clip's segments as a playlist, advancing on
+    `ended` and then handing off to the next clip).
   - `src/api.ts` — thin typed re-export of the generated Wails bindings
     (`generated/wailsjs/go/main/App` + `generated/wailsjs/go/models`) under stable names, so a
     binding-shape change only needs a fix in one place.

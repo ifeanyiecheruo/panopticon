@@ -81,11 +81,6 @@ fun HomeScreen(app: PanopticonApplication) {
                 color = PanopticonColors.text,
                 fontSize = 16.sp,
             )
-            Text(
-                text = "${app.segmentStore.count()} segments on disk",
-                color = PanopticonColors.textFaint,
-                fontSize = 12.sp,
-            )
         }
 
         InfoCard(title = "HTTP API") {

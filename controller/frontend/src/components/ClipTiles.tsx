@@ -17,7 +17,6 @@ function ClipTile({ clip: c, active, onClick }: ClipTileProps) {
       onClick={onClick}
     >
       {!c.hasThumbnail && <div className="noimg">no thumb</div>}
-      {c.segmentCount > 1 && <div className="cseg">×{c.segmentCount}</div>}
       <div className="cbar">
         <span className="cphone">{c.phoneName}</span>
         <span className="clen">{fmtDuration(c.durationMs)}</span>

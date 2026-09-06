@@ -343,7 +343,6 @@ type ClipView struct {
 	EndedAtMs    int64         `json:"endedAtMs"`
 	DurationMs   int64         `json:"durationMs"` // wall-clock span ended-started
 	SizeBytes    int64         `json:"sizeBytes"`
-	SegmentCount int           `json:"segmentCount"`
 	ThumbnailURL string        `json:"thumbnailUrl"`
 	HasThumbnail bool          `json:"hasThumbnail"`
 	Segments     []SegmentView `json:"segments"`
@@ -399,8 +398,7 @@ func (a *App) listClipsByState(phoneID string, state dbstore.ClipState) ([]ClipV
 			PhoneID: c.PhoneID, PhoneName: name, ClipID: c.ID, State: string(c.State),
 			StartedAtMs: c.StartedAtMs, EndedAtMs: c.EndedAtMs,
 			DurationMs: c.EndedAtMs - c.StartedAtMs, SizeBytes: c.SizeBytes,
-			SegmentCount: c.SegmentCount,
-			Segments:     segViews,
+			Segments: segViews,
 		}
 		// Thumbnail is the first segment's <filename>.jpg.
 		if len(segs) > 0 {

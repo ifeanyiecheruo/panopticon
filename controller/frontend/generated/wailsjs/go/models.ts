@@ -250,7 +250,6 @@ export namespace main {
 	    endedAtMs: number;
 	    durationMs: number;
 	    sizeBytes: number;
-	    segmentCount: number;
 	    thumbnailUrl: string;
 	    hasThumbnail: boolean;
 	    segments: SegmentView[];
@@ -269,7 +268,6 @@ export namespace main {
 	        this.endedAtMs = source["endedAtMs"];
 	        this.durationMs = source["durationMs"];
 	        this.sizeBytes = source["sizeBytes"];
-	        this.segmentCount = source["segmentCount"];
 	        this.thumbnailUrl = source["thumbnailUrl"];
 	        this.hasThumbnail = source["hasThumbnail"];
 	        this.segments = this.convertValues(source["segments"], SegmentView);

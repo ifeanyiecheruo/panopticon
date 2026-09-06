@@ -138,8 +138,7 @@ export function Trash({
                 <div>
                   <div className="who">{selected.phoneName}</div>
                   <div className="when">
-                    {new Date(selected.startedAtMs).toLocaleString()} · {fmtDuration(selected.durationMs)} ·{' '}
-                    {selected.segmentCount} segment{selected.segmentCount === 1 ? '' : 's'}
+                    {new Date(selected.startedAtMs).toLocaleString()} · {fmtDuration(selected.durationMs)}
                   </div>
                 </div>
               </div>
