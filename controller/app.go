@@ -27,10 +27,16 @@ type App struct {
 	dirs     appdirs.Dirs
 	syncMgr  *syncer.Manager
 	quitting bool
+
+	// livePriorMode remembers the mode a phone was in before StartLivePreview
+	// switched it to "live", so StopLivePreview can put it back. Keyed by
+	// phoneID; guarded by liveMu.
+	liveMu        sync.Mutex
+	livePriorMode map[string]string
 }
 
 func NewApp(store *dbstore.Store, dirs appdirs.Dirs, syncMgr *syncer.Manager) *App {
-	return &App{store: store, dirs: dirs, syncMgr: syncMgr}
+	return &App{store: store, dirs: dirs, syncMgr: syncMgr, livePriorMode: map[string]string{}}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -270,6 +276,82 @@ func (a *App) StartCalibration(phoneID string) CalibrationStartResult {
 	default:
 		return CalibrationStartResult{Outcome: "other", Message: err.Error()}
 	}
+}
+
+// ---- Live preview (driven from Phone detail) ----
+
+type LivePreviewResult struct {
+	OK           bool   `json:"ok"`
+	Outcome      string `json:"outcome"` // "ok" | "recording" | "unreachable" | "other"
+	PlaylistPath string `json:"playlistPath,omitempty"`
+	Message      string `json:"message,omitempty"`
+}
+
+// StartLivePreview moves one phone into live mode and starts its HLS broadcast,
+// returning the same-origin playlist path the frontend should hand to hls.js
+// (served by liveProxyHandler). Mirrors StartCalibration's contract: a phone
+// that's actively recording is left alone (Outcome "recording") - the caller's
+// UI disables the button with that reason rather than us force-stopping a
+// recording.
+func (a *App) StartLivePreview(phoneID string) LivePreviewResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return LivePreviewResult{Outcome: "other", Message: err.Error()}
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+
+	status, err := client.Status(a.ctxOrBackground())
+	if err != nil {
+		if errors.Is(err, phoneapi.ErrUnreachable) {
+			return LivePreviewResult{Outcome: "unreachable", Message: "Could not reach the phone."}
+		}
+		return LivePreviewResult{Outcome: "other", Message: err.Error()}
+	}
+	if status.Mode == "record" {
+		return LivePreviewResult{Outcome: "recording", Message: "The phone is recording. Stop recording on the phone before watching live."}
+	}
+
+	priorMode := status.Mode // "standby" or already "live"
+	if status.Mode != "live" {
+		if err := client.SetMode(a.ctxOrBackground(), "live"); err != nil {
+			if errors.Is(err, phoneapi.ErrUnreachable) {
+				return LivePreviewResult{Outcome: "unreachable", Message: "Could not reach the phone."}
+			}
+			return LivePreviewResult{Outcome: "other", Message: err.Error()}
+		}
+	}
+	if _, err := client.LiveStart(a.ctxOrBackground()); err != nil {
+		return LivePreviewResult{Outcome: "other", Message: err.Error()}
+	}
+
+	a.liveMu.Lock()
+	a.livePriorMode[phoneID] = priorMode
+	a.liveMu.Unlock()
+
+	return LivePreviewResult{OK: true, Outcome: "ok", PlaylistPath: "/live/" + phoneID + "/live.m3u8"}
+}
+
+// StopLivePreview ends the broadcast and restores the phone to the mode it was
+// in before StartLivePreview (defaulting to "record", the sticky resting mode).
+// Best-effort: a phone that's already unreachable just stops on its own via its
+// inactivity watchdog.
+func (a *App) StopLivePreview(phoneID string) error {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return err
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+
+	a.liveMu.Lock()
+	prior, ok := a.livePriorMode[phoneID]
+	delete(a.livePriorMode, phoneID)
+	a.liveMu.Unlock()
+	if !ok || prior == "" || prior == "live" {
+		prior = "record"
+	}
+
+	_ = client.LiveStop(a.ctxOrBackground())
+	return client.SetMode(a.ctxOrBackground(), prior)
 }
 
 type CalibrationProgressResult struct {

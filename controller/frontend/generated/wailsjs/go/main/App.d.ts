@@ -34,6 +34,10 @@ export function ShowWindow():Promise<void>;
 
 export function StartCalibration(arg1:string):Promise<main.CalibrationStartResult>;
 
+export function StartLivePreview(arg1:string):Promise<main.LivePreviewResult>;
+
+export function StopLivePreview(arg1:string):Promise<void>;
+
 export function TrashClip(arg1:string,arg2:string):Promise<void>;
 
 export function UnpairPhone(arg1:string,arg2:boolean):Promise<main.UnpairResult>;

@@ -3,10 +3,12 @@ package com.panopticon.phoneapp.http
 import android.content.Context
 import android.util.Log
 import com.panopticon.phoneapp.calibration.CalibrationRunner
+import com.panopticon.phoneapp.camera.LivePipeline
 import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.http.routes.calibrationRoutes
 import com.panopticon.phoneapp.http.routes.segmentRoutes
 import com.panopticon.phoneapp.http.routes.deviceRoutes
+import com.panopticon.phoneapp.http.routes.liveRoutes
 import com.panopticon.phoneapp.http.routes.modeRoutes
 import com.panopticon.phoneapp.http.routes.pairingRoutes
 import com.panopticon.phoneapp.pairing.ControllerRegistry
@@ -49,6 +51,7 @@ class PanopticonHttpServer(
     private val segmentStore: SegmentStore,
     private val calibrationRunner: CalibrationRunner,
     private val onModeChanged: (AppMode) -> Unit,
+    private val liveProvider: () -> LivePipeline?,
 ) {
     private var engine: ApplicationEngine? = null
 
@@ -125,6 +128,7 @@ class PanopticonHttpServer(
             modeRoutes(appState, onModeChanged)
             segmentRoutes(segmentStore)
             calibrationRoutes(calibrationRunner)
+            liveRoutes(liveProvider)
         }
     }
 }

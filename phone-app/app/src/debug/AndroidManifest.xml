@@ -14,5 +14,8 @@
         <receiver
             android:name=".debug.DebugGlSoakReceiver"
             android:exported="true" />
+        <receiver
+            android:name=".debug.DebugLiveReceiver"
+            android:exported="true" />
     </application>
 </manifest>

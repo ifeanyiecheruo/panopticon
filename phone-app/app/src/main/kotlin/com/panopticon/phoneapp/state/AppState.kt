@@ -44,13 +44,18 @@ class AppState {
     private val _motionActive = MutableStateFlow(false)
     val motionActive: StateFlow<Boolean> = _motionActive
 
-    // LIVE mode is a stub for this vertical slice - no real HLS pipeline, just a flag flip so
-    // POST /api/mode round-trips correctly for controller integration testing.
+    // Set by PanopticonService from LivePipeline's broadcasting state (0 = armed-idle or not in
+    // LIVE mode, 1 = broadcasting). Surfaced on /api/status.
     private val _liveViewers = MutableStateFlow(0)
     val liveViewers: StateFlow<Int> = _liveViewers
 
     fun setMode(mode: AppMode) {
         _mode.value = mode
+    }
+
+    /** 0 or 1 for this slice - LIVE mode has at most one logical viewer (the controller). */
+    fun setLiveViewers(count: Int) {
+        _liveViewers.value = count
     }
 
     fun setRecordingStatus(status: RecordingStatus) {

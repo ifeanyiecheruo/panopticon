@@ -3,6 +3,7 @@ package com.panopticon.phoneapp
 import android.app.Application
 import com.panopticon.phoneapp.calibration.CalibrationRunner
 import com.panopticon.phoneapp.calibration.CalibrationStore
+import com.panopticon.phoneapp.camera.LivePipeline
 import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.pairing.ControllerRegistry
 import com.panopticon.phoneapp.pairing.InviteManager
@@ -37,6 +38,14 @@ class PanopticonApplication : Application() {
      */
     @Volatile
     var onModeChangeRequested: ((AppMode) -> Unit)? = null
+
+    /**
+     * The LIVE-mode camera pipeline, or null whenever the phone isn't in LIVE mode.
+     * [com.panopticon.phoneapp.service.PanopticonService] creates it on the switch into LIVE and
+     * releases it on the way out; the HTTP live routes read it through here.
+     */
+    @Volatile
+    var livePipeline: LivePipeline? = null
 
     fun requestMode(mode: AppMode) {
         if (appState.mode.value == mode) return

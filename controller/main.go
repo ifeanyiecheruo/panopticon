@@ -80,10 +80,17 @@ func main() {
 	// so the Gallery's <video>/<img> tags can load synced files directly,
 	// alongside the embedded frontend/dist assets.
 	archiveHandler := http.StripPrefix("/archive/", http.FileServer(http.Dir(dirs.ArchiveDir)))
+	// Live HLS preview is proxied phone->controller->webview so the bearer
+	// token stays server-side (see liveproxy.go).
+	liveHandler := liveProxyHandler(store)
 	middleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(r.URL.Path, "/archive/") {
 				archiveHandler.ServeHTTP(w, r)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/live/") {
+				liveHandler.ServeHTTP(w, r)
 				return
 			}
 			next.ServeHTTP(w, r)

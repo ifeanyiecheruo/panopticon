@@ -66,6 +66,14 @@ export function StartCalibration(arg1) {
   return window['go']['main']['App']['StartCalibration'](arg1);
 }
 
+export function StartLivePreview(arg1) {
+  return window['go']['main']['App']['StartLivePreview'](arg1);
+}
+
+export function StopLivePreview(arg1) {
+  return window['go']['main']['App']['StopLivePreview'](arg1);
+}
+
 export function TrashClip(arg1, arg2) {
   return window['go']['main']['App']['TrashClip'](arg1, arg2);
 }

@@ -28,9 +28,11 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   handle.
 - **HTTP API** - implements a subset of `phone-http-api.md`: pairing (`POST`/`DELETE /api/pair`),
   device identity/status/config (`/api/device`, `/api/build-info`, `/api/status`, `/api/config`),
-  mode (`/api/mode` - `live` is a stub), segment sync (`/api/segments`, `.../file`, `.../thumbnail`,
-  `DELETE .../:filename`), and device-wide calibration (`POST /api/calibration/start`,
-  `GET /api/calibration/status`, `DELETE /api/calibration/:runId`, `GET /api/calibration/result`).
+  mode (`/api/mode`), segment sync (`/api/segments`, `.../file`, `.../thumbnail`,
+  `DELETE .../:filename`), live view (`POST /api/live/start`, `DELETE /api/live/stop`,
+  `GET /live/live.m3u8`, `GET /live/live-<n>.ts`), and device-wide calibration
+  (`POST /api/calibration/start`, `GET /api/calibration/status`, `DELETE /api/calibration/:runId`,
+  `GET /api/calibration/result`).
   Every route except `POST /api/pair` requires `Authorization: Bearer <token>`.
 - **Calibration** - `CalibrationRunner` runs a real **empirical zoom probe**: for every camera,
   at every `StreamConfigurationMap` output size, it applies a geometric range of zoom requests
@@ -43,10 +45,13 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   `positionHonored` / `positionMetadataLiedRatios` / `qualityCollapseRatio`. Cancellable,
   resilient to a weak HAL dropping the device mid-sweep, last result persisted to disk. See
   `calibration/ZoomMath.kt` for the pure geometry/metric helpers.
-- **Mode** - `record` (motion-gated pipeline), `standby` (camera released), `live` (stub).
-  `record` is sticky: calibration and live preview only run from `standby`, which must be
-  entered explicitly (`POST /api/mode {"mode":"standby"}` or the Calibrate screen's "Stop
-  recording").
+- **Mode** - `record` (motion-gated pipeline), `standby` (camera released), `live` (plain-HLS
+  live preview - `camera/LivePipeline.kt` + `LiveHlsRelay.kt` + hand-rolled `camera/ts/TsMuxer.kt`,
+  since `MediaMuxer` can't emit `.ts`). `record` is sticky: calibration and live preview only run
+  from `standby`, which must be entered explicitly (`POST /api/mode {"mode":"standby"}` or the
+  Calibrate screen's "Stop recording"). `live` is single-stream (camera straight into the encoder
+  surface, no GL) and arms idle - `POST /api/live/start` begins broadcasting, a 15s inactivity
+  watchdog stops it.
 - **Compose UI** - Home (device identity, storage, recording status), Connect (generate an
   invite code + show this phone's LAN address), Gallery (list clips - contiguous segments grouped
   by time gap - play the run via the system video viewer, delete a whole clip), Calibrate (stop recording → run/re-run a sweep, live progress, per-camera
@@ -61,9 +66,14 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   small global shifts), and slow scene drift. The per-sensitivity thresholds in the code are
   starting points chosen by reasoning, **not measured against the Pixel 6 in real lighting** -
   that tuning (and any move to a real background-subtraction model) is follow-up work.
-- **`live` mode is a stub.** `POST /api/mode {"mode":"live"}` flips the mode flag and tears down
-  the recording pipeline (RECORD/LIVE stay mutually exclusive, per the architecture doc) but
-  there's no real HLS encoder/relay behind it.
+- **Live view is plain HLS, not LL-HLS.** ~1s `.ts` segments (keyframes pinned by
+  `KEY_I_FRAME_INTERVAL=1` + an explicit sync-frame timer), a 16-deep window (~16s DVR),
+  `#EXT-X-START:-4`; ~4–6s glass-to-glass. The deep window + the controller's hls.js config +
+  stall watchdog are what keep it from spiralling into permanent rebuffering (see
+  `docs/QUIRKS.md`). RECORD/LIVE stay mutually exclusive (one camera-using pipeline at a time -
+  deliberate, low-end phones don't multi-task encode well). LL-HLS stays carried-forward.
+  `/live/*` is served behind the normal bearer token (the prototype's scoped GET-only token is
+  deferred - the controller proxies live server-side).
 - **No audio track** - video only, avoids `RECORD_AUDIO` permission entirely.
 - **Calibration sweep is long and rare.** Every output size × every camera × ~14 zoom steps,
   with a fresh `CameraDevice` per resolution (some HALs disconnect the device on plain session
@@ -77,10 +87,11 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   softening from ~2.8× vs. a declared 7× max. **BLU G5** (API 28, legacy path): ratio/crop
   honouring clean; its 2.0× max is too small to judge position. See `docs/QUIRKS.md`.
 - **Debug-only `adb` triggers.** `src/debug/…/DebugCalibrationReceiver` drives a calibration
-  sweep and `src/debug/…/DebugGlSoakReceiver` runs the standalone `GlSoakTest` GL/encoder soak
-  (both declared in `src/debug/AndroidManifest.xml`, never in release) via
-  `adb shell am broadcast -n com.panopticon.phoneapp/.debug.<Receiver>` on devices whose Compose
-  UI uiautomator/screencap can't touch.
+  sweep, `src/debug/…/DebugGlSoakReceiver` runs the standalone `GlSoakTest` GL/encoder soak, and
+  `src/debug/…/DebugLiveReceiver` runs a live-broadcast probe (enters `live`, broadcasts, dumps
+  `.ts` segments + a PASS/FAIL verdict). All declared only in `src/debug/AndroidManifest.xml`,
+  never in release; fire with `adb shell am broadcast -n com.panopticon.phoneapp/.debug.<Receiver>`
+  on devices whose Compose UI uiautomator/screencap can't touch.
 - **One capture session for the life of the pipeline.** The camera stream, the GL thread, and
   the encoder stay up whether or not motion is present; only the `MediaMuxer` opens and closes.
   Segment rotation is gapless (`start[k+1] == start[k] + dur[k]`, ~1ms on the Pixel 6 / ~8ms on
@@ -103,12 +114,13 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 
 ## Explicitly out of scope for this slice (not started)
 
-Live HLS view (`/live/...`, `/api/live/...`), digital zoom / manual Camera2 controls
-(`/api/camera/...`), multi-camera switching (`/api/cameras`), the Controllers/Configuration
-screens, QR-code invite display (code/URL are shown as plain text, which is enough for manual
-entry). Calibration (routes, empirical zoom probe, Calibrate screen) is implemented; the
+Digital zoom / manual Camera2 controls (`/api/camera/...`), multi-camera switching
+(`/api/cameras`), the Controllers/Configuration screens, QR-code invite display (code/URL are
+shown as plain text, which is enough for manual entry). Live view is implemented as **plain
+HLS** — LL-HLS, adaptive bitrate, live resolution changes and a scoped `/live/*` token are all
+deferred. Calibration (routes, empirical zoom probe, Calibrate screen) is implemented; the
 controller-side zoom-rect picker that consumes the effective-rect data is deferred (it's tied
-to Live preview, which doesn't exist yet).
+to a manual-controls UI that doesn't exist yet).
 
 ## Build / install / run
 

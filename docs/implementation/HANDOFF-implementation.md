@@ -95,6 +95,37 @@ already lives elsewhere and would drift.
   move to a real background-subtraction model) is the follow-up. Pre-roll is wired (the pre-roll
   ring in `CameraGlPipeline`).
 
+- **Live HLS view — plain HLS (both sides).** `live` mode is no longer a stub. **phone-app:** a
+  dedicated `camera/LivePipeline.kt` runs a *single* camera stream straight into a `MediaCodec`
+  encoder input surface (no GL — live does no motion analysis, so the BLU G5 two-stream problem
+  doesn't arise), drained to `camera/LiveHlsRelay.kt` which produces a rolling **plain-HLS**
+  playlist (whole ~1s `.ts` segments, 16-deep window ≈ 16s DVR, `#EXT-X-START:-4`) + `live-<n>.ts`
+  files in cache. Keyframes are pinned to ~1s by `KEY_I_FRAME_INTERVAL=1` **plus** an explicit
+  `REQUEST_SYNC_FRAME` timer (the hint alone isn't tight enough on this camera→encoder-surface
+  path). `MediaMuxer` can't emit MPEG-TS, so the muxer is hand-rolled: `camera/ts/TsMuxer.kt`,
+  ported verbatim from the prototype, with `TsMuxerTest` guarding the 188-byte-packet invariant.
+  Entering `live` arms the pipeline idle (camera warm, nothing encoding); `POST /api/live/start`
+  begins broadcasting; a 15s no-`GET` watchdog returns it to armed-idle. `http/routes/LiveRoutes.kt`
+  serves `/api/live/start|stop` + `/live/live.m3u8` + `/live/live-<n>.ts`, all behind the normal
+  bearer token. RECORD and LIVE stay mutually exclusive (deliberate — low-end phones don't
+  multi-task encoders well). **controller:** `liveproxy.go` proxies `/live/<phoneID>/*` from the
+  phone with the stored token (hls.js in the webview fetches same-origin, token stays
+  server-side); `App.StartLivePreview`/`StopLivePreview` move the phone into/out of `live` and
+  remember the prior mode; `frontend/src/components/LivePreview.tsx` is an hls.js `<video>` in
+  Phone detail with a Watch/Stop button (disabled + reason while the phone records, mirroring
+  calibration). `LivePreview.tsx` also carries real hls.js live config + a stall watchdog
+  (`hls.startLoad()` + seek-to-`liveSyncPosition` on stalled progress / buffer-stall / fatal
+  network error) — the minimal subset of the prototype's hls.js workarounds that plain HLS needs
+  to not spiral into permanent rebuffering. `hls.js` (1.7.2, Apache-2.0) is **vendored** under
+  `controller/frontend/src/vendor/hlsjs/` (full + minified ESM + `.d.ts` + LICENSE + update
+  steps), not an npm dependency — the frontend build does no registry fetch for it.
+  **Verified end to end:** the `DebugLiveReceiver` probe confirmed valid `mpegts`/`h264` output
+  on both devices; then through a real `wails dev` controller (hls.js in the webview) the Pixel 6
+  played 2.5+ min continuously (~50 segments, zero 404s, no stalls) and the BLU produced regular
+  ~0.96s segments at real time. **Deferred:** LL-HLS + the rest of its hls.js latency workarounds
+  (catalogued in `docs/QUIRKS.md`), adaptive bitrate, live resolution changes, a scoped `/live/*`
+  token.
+
 ## Where things live
 
 Single git repo (`panopticon/`, monorepo — see "Explicit decisions" below), plain linear
@@ -121,11 +152,14 @@ section) but none of its code was reused.
 
 - **phone-app**: `PanopticonService` (foreground service) runs `CameraGlPipeline` (Camera2 →
   one `SurfaceTexture` → GPU fan-out to motion analysis + a continuous `MediaCodec` encoder →
-  motion-gated `MediaMuxer` with pre-roll), plus an embedded Ktor HTTP server implementing the
-  pairing/device/status/config/mode/**segments** subset of `phone-http-api.md`. Compose UI: Home,
-  Connect, Gallery. See `phone-app/README.md` for the full "what's here" / "what's deferred" breakdown.
+  motion-gated `MediaMuxer` with pre-roll) in `record` mode, or `LivePipeline` (single stream →
+  encoder → hand-rolled MPEG-TS → plain-HLS relay) in `live` mode, plus an embedded Ktor HTTP
+  server implementing the pairing/device/status/config/mode/**segments**/**live** subset of
+  `phone-http-api.md`. Compose UI: Home, Connect, Gallery. See `phone-app/README.md` for the full
+  "what's here" / "what's deferred" breakdown.
 - **controller**: Go/Wails tray app with embedded SQLite (sqlc+goose managed, see below),
-  pairing (Add-phone), a background sync loop, Fleet/Phone-detail/Gallery/Trash screens in
+  pairing (Add-phone), a background sync loop, plain-HLS live preview (a `/live/<phoneID>/*`
+  proxy + an hls.js `<video>` in Phone detail), Fleet/Phone-detail/Gallery/Trash screens in
   TypeScript+JSX on Preact. See `controller/README.md` for the same breakdown.
 - **Cross-verified together**, not just independently: the controller has actually paired with
   the real Pixel 6, synced real clips from it, and self-unpaired — this is real interop, not two
@@ -178,11 +212,10 @@ candidates for "the next slice":
 - ~~**Calibration.**~~ **Implemented** (both sides), including the real empirical zoom probe —
   see "Slices added since the initial handoff" above. What remains: the Pixel 6 verification run
   and the controller-side zoom-rect picker UI.
-- **Live HLS view.** phone-app's `POST /api/mode {"mode":"live"}` is a stub (flips the mode flag,
-  no real encoder/relay); controller has no live-preview UI. `ARCHITECTURE.md`-equivalent design
-  detail for this doesn't exist yet in this project's own docs (the *old prototype* did build a
-  full LL-HLS pipeline — see `panopticon-prototype/QUIRKS.md`'s HLS-related entries before
-  re-deriving those lessons from scratch).
+- ~~**Live HLS view.**~~ **Implemented as plain HLS** (both sides) — see "Slices added since the
+  initial handoff" below. Deferred within it: LL-HLS (`EXT-X-PART`/parts + the hls.js latency
+  workarounds the prototype paid for, catalogued in `docs/QUIRKS.md`), adaptive bitrate, live
+  resolution changes, a scoped `/live/*` token, and a sustained on-device verification run.
 - **Manual Camera2 controls / digital zoom.** `/api/camera/*` routes don't exist on phone-app;
   controller's Phone-detail has no adjuster UI. The old prototype's `QUIRKS.md` has extensive,
   hard-won findings here (`SCALER_CROP_REGION` not honoring position, digital zoom quality
@@ -235,9 +268,19 @@ is done — see above.)
 
 ## Suggested next steps
 
-No hard ordering. **Calibration** and **motion-gated recording** are both done as slices
-(above); their remaining pieces are noted there.
-Live HLS view is almost certainly the largest single piece of remaining work (real-time muxing,
-adaptive bitrate, hls.js integration on the controller frontend) — worth its own dedicated design
-pass before implementation, mining the old prototype's `ARCHITECTURE.md`/`QUIRKS.md` for the
-concurrency and HAL-quirk lessons it already paid for.
+No hard ordering. **Calibration**, **motion-gated recording**, and **live HLS view** are all
+done as slices (above); their remaining pieces are noted there.
+
+Largest remaining pieces:
+- **Manual Camera2 controls / digital zoom** (`/api/camera/*`, plus the controller-side zoom-rect
+  picker that consumes `calibration.EffectiveRect`) — re-verify the prototype's
+  `SCALER_CROP_REGION`/digital-zoom quirks against real hardware first.
+- **LL-HLS upgrade for live view** if the plain-HLS latency (~6–10s) proves too high — the
+  prototype's `EXT-X-PART` machinery and its hls.js latency workarounds are catalogued in
+  `docs/QUIRKS.md`'s carried-forward section, ready to adopt.
+- **Multi-camera** (`/api/cameras*`) and the eviction-probe/tombstone-cleanup loop.
+
+Still open on shipped slices: on-device motion-threshold tuning (Pixel 6). Live view is verified
+end to end (phone → `liveproxy.go` → hls.js in a real `wails dev` webview) on the Pixel 6 and
+BLU G5; an LL-HLS upgrade (for lower than the current ~4–6s latency) stays deferred with its
+recipe in `docs/QUIRKS.md`.

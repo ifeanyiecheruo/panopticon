@@ -11,6 +11,7 @@ import {
 } from '../api';
 import { fmtBytes, statusLabel } from '../lib/format';
 import { BackIcon, GalleryIcon } from '../lib/icons';
+import { LivePreview } from '../components/LivePreview';
 
 interface PhoneDetailProps {
   phoneId: string;
@@ -152,8 +153,8 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
   const p = detail.phone;
   const cal = detail.calibration;
   const running = runId !== null;
-  // Calibration (and, later, live preview) need exclusive camera access, which
-  // the phone only gives up when recording is explicitly stopped on the phone.
+  // Calibration and live preview both need exclusive camera access, which the
+  // phone only gives up when recording is explicitly stopped on the phone.
   const phoneRecording = detail.status?.mode === 'record';
 
   return (
@@ -183,9 +184,12 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
       </div>
 
       <div className="deferred-note">
-        Live preview / adjusters are out of scope for this vertical slice. Showing raw{' '}
-        <span className="mono">GET /api/status</span> + <span className="mono">GET /api/config</span> below instead.
+        Manual camera adjusters are still out of scope for this vertical slice. Raw{' '}
+        <span className="mono">GET /api/status</span> + <span className="mono">GET /api/config</span> are shown below.
       </div>
+
+      <div className="section-title">Live preview</div>
+      <LivePreview phoneId={phoneId} phoneRecording={phoneRecording} />
 
       <div className="section-title">Sync</div>
       <div className="card">
@@ -246,8 +250,8 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
 
         {phoneRecording && (
           <div className="calib-sub" style={{ marginTop: '8px' }}>
-            Recording — calibration and live preview are unavailable until recording is stopped on
-            the phone's own screen.
+            Recording — calibration is unavailable until recording is stopped on the phone's own
+            screen.
           </div>
         )}
 

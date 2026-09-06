@@ -100,9 +100,10 @@ access to every route below (no read-only/view-only notion).
 ### Mode
 
 Modes: `record` (motion-gated recording pipeline owns the camera), `standby` (camera released —
-the only state calibration / live preview can take it from), `live` (live-preview pipeline, a
-stub in this build). **`record` is sticky**: it takes precedence over every other camera-using
-feature, and you must move to `standby` *explicitly* before any of them can run.
+the only state calibration / live preview can take it from), `live` (live-preview pipeline —
+implemented as **plain HLS**; see Live view below). **`record` is sticky**: it takes precedence
+over every other camera-using feature, and you must move to `standby` *explicitly* before any of
+them can run.
 
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
@@ -147,12 +148,23 @@ feature, and you must move to `standby` *explicitly* before any of them can run.
 
 ### Live view
 
+**Implemented as plain HLS** (whole ~1s `.ts` segments, 16-segment sliding window,
+`#EXT-X-VERSION:3`, `#EXT-X-START:TIME-OFFSET=-4`), not LL-HLS. Glass-to-glass latency ≈ 4–6s.
+The phone runs a dedicated single-stream `camera → MediaCodec → TsMuxer` pipeline
+(`phone-app`'s `camera/LivePipeline.kt` + `LiveHlsRelay.kt`); `MediaMuxer` can't emit MPEG-TS so
+the muxer is hand-rolled (`camera/ts/TsMuxer.kt`). Entering `live` mode arms the pipeline
+(camera warm, nothing encoding); `POST /api/live/start` begins broadcasting; a 15s no-request
+inactivity watchdog returns it to armed-idle. `/live/*` is behind the normal bearer token — the
+prototype's separate GET-only scoped token is deferred (the controller proxies these
+server-side). A deep DVR window + hls.js live config + a client stall watchdog are what make
+plain HLS hold up (see `docs/QUIRKS.md`); the LL-HLS upgrade stays carried-forward.
+
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
-| POST | `/api/live/start` | — | `{}` | `{ "started": true, "viewerCount": 1 }` | Idempotently starts the live HLS encoder; `409` in `record` mode. |
+| POST | `/api/live/start` | — | `{}` | `{ "started": true, "viewerCount": 1 }` | Idempotently begins broadcasting; `409` unless the phone is in `live` mode (`503` if the camera can't arm). |
 | DELETE | `/api/live/stop` | — | — | `{ "stopped": true, "viewerCount": 0 }` | Explicit stop (usually unnecessary — 15s inactivity watchdog handles it). |
-| GET | `/live/live.m3u8` | — | — | *(binary `application/vnd.apple.mpegurl`)* | Rolling HLS playlist. `404` before start, `409` in `record` mode. |
-| GET | `/live/live-<n>.ts` | — | — | *(binary `video/mp2t`)* | One HLS segment. |
+| GET | `/live/live.m3u8` | — | — | *(text `application/vnd.apple.mpegurl`)* | Rolling HLS playlist. `404` before broadcasting starts, `409` when not in `live` mode. |
+| GET | `/live/live-<n>.ts` | — | — | *(binary `video/mp2t`)* | One HLS segment; `404` once it's rolled out of the window. |
 
 ### Segments (sync)
 

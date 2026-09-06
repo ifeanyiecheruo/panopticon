@@ -15,9 +15,11 @@ import com.panopticon.phoneapp.MainActivity
 import com.panopticon.phoneapp.PanopticonApplication
 import com.panopticon.phoneapp.R
 import com.panopticon.phoneapp.camera.CameraGlPipeline
+import com.panopticon.phoneapp.camera.LivePipeline
 import com.panopticon.phoneapp.http.PanopticonHttpServer
 import com.panopticon.phoneapp.state.AppMode
 import com.panopticon.phoneapp.state.RecordingStatus
+import java.io.File
 
 private const val TAG = "PanopticonService"
 private const val NOTIFICATION_CHANNEL_ID = "panopticon_recording"
@@ -70,6 +72,7 @@ class PanopticonService : Service() {
                     segmentStore = app.segmentStore,
                     calibrationRunner = app.calibrationRunner,
                     onModeChanged = ::handleModeChanged,
+                    liveProvider = { app.livePipeline },
                 )
                 server.start()
                 httpServer = server
@@ -86,26 +89,46 @@ class PanopticonService : Service() {
     private fun handleModeChanged(mode: AppMode) {
         when (mode) {
             AppMode.RECORD -> {
+                stopLivePipeline()
                 if (cameraPipeline == null) startCameraPipeline()
             }
             AppMode.LIVE -> {
-                // Stub for this slice: RECORD/LIVE stay mutually exclusive (per the architecture
-                // doc), so tear down the recording pipeline. No real live encoder/relay exists
-                // yet - out of scope here.
+                // RECORD and LIVE are mutually exclusive - tear the recording pipeline down and
+                // bring up the live one (armed-idle; POST /api/live/start begins broadcasting).
                 cameraPipeline?.release()
                 cameraPipeline = null
                 app.appState.setMotionActive(false)
                 app.appState.setRecordingStatus(RecordingStatus.IDLE)
+                startLivePipeline()
             }
             AppMode.STANDBY -> {
-                // Explicit stop: fully release the camera so a calibration sweep
-                // (or, later, live preview) can take it.
+                // Explicit stop: fully release the camera so a calibration sweep can take it.
                 cameraPipeline?.release()
                 cameraPipeline = null
+                stopLivePipeline()
                 app.appState.setMotionActive(false)
                 app.appState.setRecordingStatus(RecordingStatus.STOPPED)
             }
         }
+    }
+
+    private fun startLivePipeline() {
+        if (app.livePipeline != null) return
+        app.appState.setLiveViewers(0)
+        app.livePipeline = LivePipeline(
+            context = applicationContext,
+            liveDir = File(applicationContext.cacheDir, "live"),
+            onHealthChanged = { healthy -> app.appState.setCameraHealthy(healthy) },
+            onBroadcastingChanged = { broadcasting ->
+                app.appState.setLiveViewers(if (broadcasting) 1 else 0)
+            },
+        ).also { it.start() }
+    }
+
+    private fun stopLivePipeline() {
+        app.livePipeline?.release()
+        app.livePipeline = null
+        app.appState.setLiveViewers(0)
     }
 
     private fun startCameraPipeline() {
@@ -146,6 +169,7 @@ class PanopticonService : Service() {
         app.onModeChangeRequested = null
         cameraPipeline?.release()
         cameraPipeline = null
+        stopLivePipeline()
         httpServer?.stop()
         httpServer = null
         super.onDestroy()

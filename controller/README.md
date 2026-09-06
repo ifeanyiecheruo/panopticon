@@ -8,8 +8,8 @@ This is a **vertical slice**, not the full app — see "What's deferred" below. 
 end to end: project scaffold, tray presence, embedded SQLite state, the Add-phone pairing
 flow, a Fleet screen, a background sync loop, a Gallery/Trash, the manufacturer+model
 calibration store (opportunistic ingest on pair / Phone-detail open, plus a Phone-detail
-re-run), and unpair / force-unpair. It does not implement live camera preview or the
-eviction-probe loop.
+re-run), plain-HLS **live preview**, and unpair / force-unpair. It does not implement manual
+camera adjusters or the eviction-probe loop.
 
 Reference docs (read-only, live in the parent `panopticon` repo):
 - `../docs/implementation/phone-http-api.md` — the phone-side HTTP contract this controller
@@ -69,7 +69,13 @@ rows, and the Gallery/Trash screens reading them back correctly.
 ## Architecture
 
 - `main.go` / `app.go` — Wails entrypoint and the `App` struct whose exported methods are
-  bound to the frontend (`window.go.main.App.*`).
+  bound to the frontend (`window.go.main.App.*`). `StartLivePreview`/`StopLivePreview` move a
+  phone into/out of `live` mode and start/stop its HLS broadcast (a phone that's recording is
+  left alone, `outcome:"recording"`, same as calibration).
+- `liveproxy.go` — a handler on the Wails asset-server middleware (alongside `/archive/`) that
+  proxies `GET /live/<phoneID>/live.m3u8` and `.../live-<n>.ts` from the phone with the stored
+  bearer token, so hls.js in the webview fetches live same-origin (token stays server-side, no
+  CORS/mixed-content). Playlist segment URIs are relative, so no rewriting.
 - `internal/dbstore` — SQLite schema + typed queries (`modernc.org/sqlite`, a pure-Go driver
   — no CGO/gcc toolchain needed, same reasoning as the old prototype's `node:sqlite` choice).
   Tables: `identity` (controller's own Ed25519 keypair), `phones` (paired phones + bearer
@@ -133,9 +139,14 @@ rows, and the Gallery/Trash screens reading them back correctly.
   - `src/screens/` — one component per screen: `Fleet.tsx`, `PhoneDetail.tsx`,
     `Gallery.tsx`, `Trash.tsx`, `AddPhone.tsx`.
   - `src/components/` — `Shell.tsx` (the left nav rail + main slot), `ClipTiles.tsx`
-    (the day-grouped clip grid shared by Gallery and Trash, one tile per clip), and
+    (the day-grouped clip grid shared by Gallery and Trash, one tile per clip),
     `ClipPlayer.tsx` (a `<video>` that walks a clip's segments as a playlist, advancing on
-    `ended` and then handing off to the next clip).
+    `ended` and then handing off to the next clip), and `LivePreview.tsx` (the Phone-detail
+    live view — [hls.js](https://github.com/video-dev/hls.js) against the local proxy with
+    live-tuned config + a stall watchdog, a Watch/Stop button, `StartLivePreview`/
+    `StopLivePreview` bound calls, teardown on unmount).
+  - `src/vendor/hlsjs/` — hls.js 1.7.2 (Apache-2.0) vendored as built ESM (full + minified) +
+    `.d.ts`, **not** an npm dependency; see its `README.md` for how to update.
   - `src/api.ts` — thin typed re-export of the generated Wails bindings
     (`generated/wailsjs/go/main/App` + `generated/wailsjs/go/models`) under stable names, so a
     binding-shape change only needs a fix in one place.
@@ -153,14 +164,15 @@ rows, and the Gallery/Trash screens reading them back correctly.
 Per the task's explicit scope cut — these are real gaps versus the full handoff doc, not
 oversights:
 
-- **Live preview / adjusters, and the zoom-rect picker.** Phone detail shows raw
-  `GET /api/status` + `GET /api/config` JSON for preview/adjusters. Calibration *is* wired —
-  Phone detail has a real Calibration section (manufacturer+model lookup, per-camera
-  optical/digital/crossover/position/quality readout, and a Run/Re-run action, disabled with a
-  reason while the phone is recording since calibration needs the camera). What's deferred is
-  the UI that lets a user draw a zoom rect and see the "effective rect" overlay — the data and
-  `calibration.EffectiveRect` helper are in place, but the overlay hangs off Live preview,
-  which doesn't exist yet.
+- **Manual camera adjusters, and the zoom-rect picker.** Phone detail shows raw
+  `GET /api/status` + `GET /api/config` JSON for adjusters. Live preview *is* wired (plain-HLS
+  `<video>` via `LivePreview.tsx` + `liveproxy.go`), and calibration *is* wired (manufacturer+model
+  lookup, per-camera optical/digital/crossover/position/quality readout, Run/Re-run, disabled
+  with a reason while the phone is recording). What's deferred is the UI that lets a user draw a
+  zoom rect and see the "effective rect" overlay — the data and `calibration.EffectiveRect`
+  helper are in place, but the overlay hangs off a manual-controls surface that doesn't exist
+  yet. LL-HLS, adaptive bitrate and a scoped live token are also deferred (see
+  `docs/QUIRKS.md`).
 - **Eviction-probe loop.** The handoff doc's tombstone-cleanup mechanism (probing
   `/api/segments/:filename/file` on a purged clip's segments until a 404 confirms the phone's
   ring buffer evicted them, then dropping the DB rows) is not implemented. `DeleteClipPermanently`

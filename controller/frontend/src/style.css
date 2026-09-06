@@ -225,6 +225,11 @@ body{
   border:1px dashed var(--border); border-radius:12px; padding:14px; margin-bottom:16px;
 }
 
+/* Live preview section (Phone detail). */
+.live-row{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:2px 2px 10px;}
+.live-video{width:100%; border-radius:10px; background:#000; aspect-ratio:16/9; display:block;}
+.live-video[hidden]{display:none;}
+
 /* Calibration section (Phone detail). Summary only — the per-check breakdown
    lives on the phone app's own Calibrate screen, per HANDOFF-controller-ux.md. */
 .calib-row{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 2px;}

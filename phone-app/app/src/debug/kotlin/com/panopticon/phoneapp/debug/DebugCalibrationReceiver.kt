@@ -9,13 +9,14 @@ import com.panopticon.phoneapp.calibration.CalibrationRunner
 import com.panopticon.phoneapp.state.AppMode
 
 /**
- * Debug-build-only `adb` hook for driving a calibration sweep on a device
- * whose Compose UI can't be reached by uiautomator/screencap.
+ * Debug-build-only `adb` hook for driving mode changes / a calibration sweep / a fresh pairing
+ * invite on a device whose Compose UI can't be reached by uiautomator/screencap.
  *
  *   adb shell am broadcast -a com.panopticon.phoneapp.DEBUG_STANDBY
  *   adb shell am broadcast -a com.panopticon.phoneapp.DEBUG_CALIBRATE
  *   adb shell am broadcast -a com.panopticon.phoneapp.DEBUG_CAL_STATUS
  *   adb shell am broadcast -a com.panopticon.phoneapp.DEBUG_RECORD
+ *   adb shell am broadcast -a com.panopticon.phoneapp.DEBUG_INVITE   # logs a pairing code
  *
  * Never shipped: declared only in src/debug/AndroidManifest.xml.
  */
@@ -46,6 +47,10 @@ class DebugCalibrationReceiver : BroadcastReceiver() {
             }
             "com.panopticon.phoneapp.DEBUG_CAL_STATUS" ->
                 Log.i(TAG, "status: ${app.calibrationRunner.status(null)}")
+            "com.panopticon.phoneapp.DEBUG_INVITE" -> {
+                val invite = app.inviteManager.createInvite()
+                Log.i(TAG, "INVITE code=${invite.code} expiresAtMs=${invite.expiresAtMs}")
+            }
         }
     }
 

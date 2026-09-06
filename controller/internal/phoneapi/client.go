@@ -28,6 +28,7 @@ const (
 	metadataTimeout  = 10 * time.Second
 	fileTimeout      = 60 * time.Second
 	thumbnailTimeout = 20 * time.Second
+	liveTimeout      = 15 * time.Second
 )
 
 // Sentinel errors a caller can distinguish with errors.Is. HTTPError (below)
@@ -300,6 +301,61 @@ func (c *Client) Config(ctx context.Context) (Config, error) {
 	var out Config
 	err := c.doJSON(ctx, http.MethodGet, "/api/config", nil, nil, &out)
 	return out, err
+}
+
+// ---- Live view (plain HLS) ----
+//
+// SetMode (POST /api/mode) lives in calibration.go. StartLivePreview uses it to
+// move a standby phone into "live"; "live" from "record" is a 409 there,
+// surfaced as an *HTTPError.
+
+// LiveStartResponse is POST /api/live/start's body.
+type LiveStartResponse struct {
+	Started     bool `json:"started"`
+	ViewerCount int  `json:"viewerCount"`
+}
+
+// LiveStart idempotently begins broadcasting. 409 (not in live mode) surfaces
+// as an *HTTPError.
+func (c *Client) LiveStart(ctx context.Context) (LiveStartResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, liveTimeout)
+	defer cancel()
+	var out LiveStartResponse
+	err := c.doJSON(ctx, http.MethodPost, "/api/live/start", nil, struct{}{}, &out)
+	return out, err
+}
+
+// LiveStop returns the phone's live pipeline to armed-idle. Best-effort — a
+// non-2xx is returned but callers generally ignore it (the phone's own
+// inactivity watchdog is the real stop).
+func (c *Client) LiveStop(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, liveTimeout)
+	defer cancel()
+	return c.doJSON(ctx, http.MethodDelete, "/api/live/stop", nil, nil, nil)
+}
+
+// LivePlaylist fetches the current GET /live/live.m3u8 body. A 404 (live not
+// started yet) surfaces as an *HTTPError with StatusCode 404 so the proxy can
+// pass it straight through.
+func (c *Client) LivePlaylist(ctx context.Context) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, liveTimeout)
+	defer cancel()
+	resp, err := c.request(ctx, http.MethodGet, "/live/live.m3u8", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: string(b)}
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+// LiveSegment streams one GET /live/live-<n>.ts. The caller owns the returned
+// ReadCloser and MUST close it (it wraps a per-request context timeout).
+func (c *Client) LiveSegment(ctx context.Context, name string) (io.ReadCloser, error) {
+	return c.downloadBinary(ctx, "/live/"+url.PathEscape(name), liveTimeout)
 }
 
 // ---- Segments (sync) ----

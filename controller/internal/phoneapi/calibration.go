@@ -251,9 +251,9 @@ func (c *Client) CancelCalibration(ctx context.Context, runID string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/calibration/"+url.PathEscape(runID), nil, nil, nil)
 }
 
-// SetMode issues POST /api/mode. The controller doesn't drive this from the UI
-// (recording is stopped on the phone itself), but it's the low-level move that
-// frees the camera - used by tests and available for future flows.
+// SetMode issues POST /api/mode ("record" | "standby" | "live"). Used by tests,
+// and by the App's live-preview flow to move a standby phone into "live" and
+// back. Recording is still only ever stopped on the phone itself.
 func (c *Client) SetMode(ctx context.Context, mode string) error {
 	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
 	defer cancel()

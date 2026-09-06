@@ -291,6 +291,24 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class LivePreviewResult {
+	    ok: boolean;
+	    outcome: string;
+	    playlistPath?: string;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LivePreviewResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.outcome = source["outcome"];
+	        this.playlistPath = source["playlistPath"];
+	        this.message = source["message"];
+	    }
+	}
 	export class ParsedInvite {
 	    address: string;
 	    code: string;
