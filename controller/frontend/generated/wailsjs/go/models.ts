@@ -223,19 +223,37 @@ export namespace main {
 	        this.message = source["message"];
 	    }
 	}
+	export class SegmentView {
+	    filename: string;
+	    videoUrl: string;
+	    durationMs: number;
+	    createdAtMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SegmentView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filename = source["filename"];
+	        this.videoUrl = source["videoUrl"];
+	        this.durationMs = source["durationMs"];
+	        this.createdAtMs = source["createdAtMs"];
+	    }
+	}
 	export class ClipView {
 	    phoneId: string;
 	    phoneName: string;
-	    filename: string;
+	    clipId: string;
 	    state: string;
-	    createdAtMs: number;
+	    startedAtMs: number;
+	    endedAtMs: number;
 	    durationMs: number;
 	    sizeBytes: number;
-	    width: number;
-	    height: number;
-	    videoUrl: string;
+	    segmentCount: number;
 	    thumbnailUrl: string;
 	    hasThumbnail: boolean;
+	    segments: SegmentView[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ClipView(source);
@@ -245,17 +263,35 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.phoneId = source["phoneId"];
 	        this.phoneName = source["phoneName"];
-	        this.filename = source["filename"];
+	        this.clipId = source["clipId"];
 	        this.state = source["state"];
-	        this.createdAtMs = source["createdAtMs"];
+	        this.startedAtMs = source["startedAtMs"];
+	        this.endedAtMs = source["endedAtMs"];
 	        this.durationMs = source["durationMs"];
 	        this.sizeBytes = source["sizeBytes"];
-	        this.width = source["width"];
-	        this.height = source["height"];
-	        this.videoUrl = source["videoUrl"];
+	        this.segmentCount = source["segmentCount"];
 	        this.thumbnailUrl = source["thumbnailUrl"];
 	        this.hasThumbnail = source["hasThumbnail"];
+	        this.segments = this.convertValues(source["segments"], SegmentView);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class ParsedInvite {
 	    address: string;
@@ -313,6 +349,7 @@ export namespace main {
 		    return a;
 		}
 	}
+	
 	
 	export class UnpairResult {
 	    ok: boolean;

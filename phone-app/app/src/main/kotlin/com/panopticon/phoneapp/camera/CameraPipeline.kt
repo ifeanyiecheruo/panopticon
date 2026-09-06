@@ -45,27 +45,27 @@ private const val PHASE_POLL_MS = 100L
  * whose verdict drives [RecordingPhaseController]. While ARMED the session
  * carries only the analysis surface and nothing is written; the first frame
  * with motion flips to RECORDING, which reconfigures the session to add a
- * `MediaRecorder` surface and starts rotating ~10s H.264 clips. Recording is
+ * `MediaRecorder` surface and starts rotating ~10s H.264 segments. Recording is
  * held for a trailer window after motion last stopped, then it disarms.
  *
  * Simplifications still in force for this slice (documented, not accidental):
  *  - **Frame-difference motion only** - no background model / CV library. See
  *    [MotionDetector]; thresholds are un-tuned starting points.
- *  - **No pre-roll.** A clip starts at motion-detection time - `MediaRecorder`
+ *  - **No pre-roll.** A segment starts at motion-detection time - `MediaRecorder`
  *    can't back-date a buffer. Pre-roll is tied to the future
  *    `MediaCodec`+`MediaMuxer` switch.
  *  - **Full `CameraCaptureSession` teardown+recreate** on every ARMED<->RECORDING
- *    transition and every clip rotation, rather than an in-place surface swap.
+ *    transition and every segment rotation, rather than an in-place surface swap.
  *    Simpler to reason about; doubles as a session-reconfigure stress test.
  *  - **No audio track** - video only, avoids `RECORD_AUDIO` entirely.
  */
 class CameraPipeline(
     private val context: Context,
-    private val clipsDir: File,
+    private val segmentsDir: File,
     private val appConfig: AppConfig,
     private val rotationIntervalMs: Long = 10_000L,
     private val trailerMs: Long = 5_000L,
-    private val onClipFinished: (file: File, createdAtMs: Long, durationMs: Long, width: Int, height: Int) -> Unit,
+    private val onSegmentFinished: (file: File, createdAtMs: Long, durationMs: Long, width: Int, height: Int) -> Unit,
     private val onHealthChanged: (Boolean) -> Unit,
     private val onPhaseChanged: (recording: Boolean) -> Unit = {},
     private val onMotionChanged: (motion: Boolean) -> Unit = {},
@@ -179,7 +179,7 @@ class CameraPipeline(
         }
     }
 
-    // ---- RECORDING: analysis + recorder session, rotating clips ----
+    // ---- RECORDING: analysis + recorder session, rotating segments ----
 
     private suspend fun runRecordingPhase() {
         onPhaseChanged(true)
@@ -284,7 +284,7 @@ class CameraPipeline(
 
     /**
      * Builds a fresh MediaRecorder + capture session ([analysisReader] +
-     * recorder surfaces) for the next clip file. Keeps the old prototype's
+     * recorder surfaces) for the next segment file. Keeps the old prototype's
      * confirmed-quirk workaround: configure -> wait 500ms -> check for an async
      * failure before trusting the session and calling `recorder.start()`.
      * Retries up to 3x with a fresh recorder+session each attempt.
@@ -369,7 +369,7 @@ class CameraPipeline(
     }
 
     private fun buildRecorder(): MediaRecorder {
-        val file = File(clipsDir, clipFileName())
+        val file = File(segmentsDir, segmentFileName())
         currentFile = file
         val size = recordingSize
         @Suppress("DEPRECATION")
@@ -388,9 +388,11 @@ class CameraPipeline(
         return recorder
     }
 
-    private fun clipFileName(): String {
+    private fun segmentFileName(): String {
         val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(java.util.Date())
         val suffix = (Math.random() * 0xffff).toInt().toString(16).padStart(4, '0')
+        // On-disk name keeps the historical "clip_" prefix: reconcile() scans by
+        // .mp4 extension, not prefix, and there's no reason to churn it.
         return "clip_${ts}_$suffix.mp4"
     }
 
@@ -422,7 +424,7 @@ class CameraPipeline(
         }
         val durationMs = System.currentTimeMillis() - startedAt
         logKeyframeCadence(file)
-        onClipFinished(file, startedAt, durationMs, recordingSize.width, recordingSize.height)
+        onSegmentFinished(file, startedAt, durationMs, recordingSize.width, recordingSize.height)
     }
 
     private fun closeSessionAndDevice() {
@@ -493,7 +495,7 @@ class CameraPipeline(
                 val deltasMs = keyframeTimesUs.zipWithNext { a, b -> (b - a) / 1000 }
                 Log.i(TAG, "keyframe cadence for ${file.name}: ${deltasMs.size} intervals, deltas(ms)=$deltasMs")
             } else {
-                Log.i(TAG, "keyframe cadence for ${file.name}: only ${keyframeTimesUs.size} keyframe(s) in this clip")
+                Log.i(TAG, "keyframe cadence for ${file.name}: only ${keyframeTimesUs.size} keyframe(s) in this segment")
             }
         } catch (e: Exception) {
             Log.w(TAG, "keyframe cadence probe failed for ${file.name}", e)

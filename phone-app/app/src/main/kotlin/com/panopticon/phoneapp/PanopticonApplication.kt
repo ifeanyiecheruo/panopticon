@@ -3,7 +3,7 @@ package com.panopticon.phoneapp
 import android.app.Application
 import com.panopticon.phoneapp.calibration.CalibrationRunner
 import com.panopticon.phoneapp.calibration.CalibrationStore
-import com.panopticon.phoneapp.clips.ClipStore
+import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.pairing.ControllerRegistry
 import com.panopticon.phoneapp.pairing.InviteManager
 import com.panopticon.phoneapp.state.AppConfig
@@ -24,7 +24,7 @@ class PanopticonApplication : Application() {
         private set
     lateinit var inviteManager: InviteManager
         private set
-    lateinit var clipStore: ClipStore
+    lateinit var segmentStore: SegmentStore
         private set
     lateinit var calibrationRunner: CalibrationRunner
         private set
@@ -49,8 +49,8 @@ class PanopticonApplication : Application() {
         appConfig = AppConfig(this)
         controllerRegistry = ControllerRegistry(this)
         inviteManager = InviteManager()
-        clipStore = ClipStore(this)
-        clipStore.reconcile()
+        segmentStore = SegmentStore(this)
+        segmentStore.reconcile()
         calibrationRunner = CalibrationRunner(this, CalibrationStore(this), appState)
     }
 

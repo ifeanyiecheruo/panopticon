@@ -6,7 +6,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.StatFs
 import com.panopticon.phoneapp.BuildConfig
-import com.panopticon.phoneapp.clips.ClipStore
+import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.state.AppConfig
 import com.panopticon.phoneapp.state.AppState
 import com.panopticon.phoneapp.state.RecordingStatus
@@ -59,7 +59,7 @@ fun Route.deviceRoutes(
     androidContext: Context,
     appConfig: AppConfig,
     appState: AppState,
-    clipStore: ClipStore,
+    segmentStore: SegmentStore,
 ) {
     // Authenticated by the global installAuth() intercept.
     run {
@@ -97,7 +97,7 @@ fun Route.deviceRoutes(
                     status = status,
                     cameraHealthy = appState.cameraHealthy.value,
                     liveViewers = appState.liveViewers.value,
-                    storageUsedBytes = clipStore.totalBytes(),
+                    storageUsedBytes = segmentStore.totalBytes(),
                     storageCapBytes = cfg.storageCapBytes,
                     batteryPercent = batteryPercent,
                     charging = charging,

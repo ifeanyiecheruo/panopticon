@@ -1,30 +1,41 @@
--- name: UpsertClip :exec
-INSERT INTO clips (phone_id, filename, state, local_path, thumbnail_path, created_at_ms, duration_ms, size_bytes, width, height)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(phone_id, filename) DO NOTHING;
+-- name: InsertClip :exec
+INSERT INTO clips (id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
--- name: ClipExists :one
-SELECT COUNT(1) FROM clips WHERE phone_id = ? AND filename = ?;
+-- name: GetOpenClip :one
+SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms
+FROM clips
+WHERE phone_id = ? AND state = 'active'
+ORDER BY ended_at_ms DESC LIMIT 1;
+
+-- name: ExtendClip :exec
+UPDATE clips
+SET ended_at_ms = ?, segment_count = segment_count + 1, size_bytes = size_bytes + ?
+WHERE id = ?;
 
 -- name: GetClip :one
-SELECT phone_id, filename, state, local_path, thumbnail_path, created_at_ms, duration_ms, size_bytes, width, height
-FROM clips WHERE phone_id = ? AND filename = ?;
+SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms
+FROM clips WHERE phone_id = ? AND id = ?;
 
--- name: SetClipState :exec
-UPDATE clips SET state = ? WHERE phone_id = ? AND filename = ?;
-
--- sqlc.arg(phone_id) = "" means every phone, sqlc.arg(state) = "" means
--- every state - the sentinel-OR trick keeps this one static query doing
--- the work of what would otherwise be up to four hand-built variants.
+-- sqlc.arg(phone_id) = "" means every phone, sqlc.arg(state) = "" means every
+-- state - the sentinel-OR trick keeps this one static query doing what would
+-- otherwise be several hand-built variants.
 -- name: ListClips :many
-SELECT phone_id, filename, state, local_path, thumbnail_path, created_at_ms, duration_ms, size_bytes, width, height
+SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms
 FROM clips
 WHERE (CAST(sqlc.arg(phone_id) AS TEXT) = '' OR phone_id = sqlc.arg(phone_id))
   AND (CAST(sqlc.arg(state) AS TEXT) = '' OR state = sqlc.arg(state))
-ORDER BY created_at_ms DESC;
+ORDER BY started_at_ms DESC;
 
--- sqlc.arg(phone_id) = "" means every phone; see ListClips above.
+-- name: SetClipState :exec
+UPDATE clips SET state = ? WHERE phone_id = ? AND id = ?;
+
+-- sqlc.arg(phone_id) = "" means every phone. Disk usage is the on-disk bytes of
+-- segments belonging to non-purged clips (purged clips have had their files
+-- removed).
 -- name: DiskUsageBytes :one
-SELECT CAST(COALESCE(SUM(size_bytes), 0) AS INTEGER) FROM clips
-WHERE state IN ('active', 'trashed')
-  AND (CAST(sqlc.arg(phone_id) AS TEXT) = '' OR phone_id = sqlc.arg(phone_id));
+SELECT CAST(COALESCE(SUM(s.size_bytes), 0) AS INTEGER)
+FROM segments s
+JOIN clips c ON c.id = s.clip_id
+WHERE c.state IN ('active', 'trashed')
+  AND (CAST(sqlc.arg(phone_id) AS TEXT) = '' OR c.phone_id = sqlc.arg(phone_id));

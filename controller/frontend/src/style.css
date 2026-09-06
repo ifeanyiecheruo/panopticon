@@ -187,6 +187,11 @@ body{
 }
 .ctile .cbar{display:flex; justify-content:space-between; width:100%; align-items:flex-end;}
 .ctile .noimg{width:100%; height:100%; display:flex; align-items:center; justify-content:center; color:var(--text-faint); font-size:10px;}
+.ctile .cseg{
+  position:absolute; top:0; right:0; margin:6px;
+  font-family:"Consolas",monospace; font-size:8.5px; font-weight:600; color:rgba(233,243,238,.95);
+  background:rgba(0,0,0,.55); padding:2px 6px; border-radius:5px;
+}
 
 .add-phone-wrap{max-width:420px; margin:0 auto; padding:36px 26px;}
 .method-card{background:var(--surface); border:1px solid var(--border-soft); border-radius:16px; padding:24px;}

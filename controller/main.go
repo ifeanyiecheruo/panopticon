@@ -62,7 +62,7 @@ func main() {
 		fatalf("load/create controller identity: %v", err)
 	}
 
-	syncMgr := syncer.NewManager(store, dirs, syncPollInterval)
+	syncMgr := syncer.NewManager(store, dirs, syncPollInterval, dbstore.GroupingGapMs)
 	syncMgr.Start()
 	defer syncMgr.Stop()
 

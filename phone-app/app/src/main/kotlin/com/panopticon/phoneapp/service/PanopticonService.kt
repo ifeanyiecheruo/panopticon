@@ -67,7 +67,7 @@ class PanopticonService : Service() {
                     invites = app.inviteManager,
                     appConfig = app.appConfig,
                     appState = app.appState,
-                    clipStore = app.clipStore,
+                    segmentStore = app.segmentStore,
                     calibrationRunner = app.calibrationRunner,
                     onModeChanged = ::handleModeChanged,
                 )
@@ -110,16 +110,16 @@ class PanopticonService : Service() {
 
     private fun startCameraPipeline() {
         // Starts ARMED (analysing for motion), not RECORDING - the motion gate
-        // decides when a clip is actually written.
+        // decides when a segment is actually written.
         app.appState.setRecordingStatus(RecordingStatus.IDLE)
         app.appState.setMotionActive(false)
         cameraPipeline = CameraPipeline(
             context = applicationContext,
-            clipsDir = app.clipStore.clipsDir,
+            segmentsDir = app.segmentStore.segmentsDir,
             appConfig = app.appConfig,
-            onClipFinished = { file, createdAtMs, durationMs, width, height ->
-                app.clipStore.addClip(file, createdAtMs, durationMs, width, height)
-                Log.i(TAG, "clip finished: ${file.name} (${durationMs}ms, ${width}x$height, ${file.length()} bytes)")
+            onSegmentFinished = { file, createdAtMs, durationMs, width, height ->
+                app.segmentStore.addSegment(file, createdAtMs, durationMs, width, height)
+                Log.i(TAG, "segment finished: ${file.name} (${durationMs}ms, ${width}x$height, ${file.length()} bytes)")
             },
             onHealthChanged = { healthy ->
                 app.appState.setCameraHealthy(healthy)

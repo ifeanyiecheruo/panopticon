@@ -22,11 +22,19 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 
 	"panopticon-controller/internal/dbstore/queries"
 
 	_ "modernc.org/sqlite"
 )
+
+// GroupingGapMs is the max gap (segment.createdAtMs - previous.endMs) for two
+// segments to count as one contiguous clip. Loose for now because the current
+// recording pipeline drops ~1-2s on every ~10s segment rotation; drops to
+// ~500 once gapless rotation (setNextOutputFile) lands. The syncer and the
+// one-time backfill both use this.
+const GroupingGapMs int64 = 3000
 
 // Store wraps the SQLite connection and provides typed accessors. All
 // methods are safe for concurrent use (database/sql pools connections
@@ -57,7 +65,18 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	return &Store{db: db, q: queries.New(db)}, nil
+	store := &Store{db: db, q: queries.New(db)}
+
+	// One-time backfill after the 002 migration: group the copied-over
+	// per-file rows into clips. No-op once every segment has a clip.
+	if made, err := store.RegroupUnassignedSegments(GroupingGapMs); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("regroup segments into clips: %w", err)
+	} else if made > 0 {
+		log.Printf("dbstore: grouped unassigned segments into %d clip(s)", made)
+	}
+
+	return store, nil
 }
 
 func (s *Store) Close() error {

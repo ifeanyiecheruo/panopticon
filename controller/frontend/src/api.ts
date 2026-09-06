@@ -28,6 +28,7 @@ import type { main, phoneapi, calibration } from '../generated/wailsjs/go/models
 export type PhoneView = main.PhoneView;
 export type AddPhoneResult = main.AddPhoneResult;
 export type ClipView = main.ClipView;
+export type SegmentView = main.SegmentView;
 export type ParsedInvite = main.ParsedInvite;
 export type PhoneDetailView = main.PhoneDetailView;
 export type PhoneApiConfig = phoneapi.Config;

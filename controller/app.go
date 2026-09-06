@@ -321,20 +321,32 @@ func (a *App) CancelCalibration(phoneID, runID string) error {
 }
 
 // ---- Gallery / Trash ----
+//
+// The UX says "clip" but a clip is a group: one gallery item per contiguous
+// run of segments (see internal/dbstore + internal/syncer). ClipView carries
+// the aggregate span/size plus the ordered Segments the player walks end to
+// end; SegmentView is one file within it.
+
+type SegmentView struct {
+	Filename    string `json:"filename"`
+	VideoURL    string `json:"videoUrl"`
+	DurationMs  int64  `json:"durationMs"`
+	CreatedAtMs int64  `json:"createdAtMs"`
+}
 
 type ClipView struct {
-	PhoneID       string `json:"phoneId"`
-	PhoneName     string `json:"phoneName"`
-	Filename      string `json:"filename"`
-	State         string `json:"state"`
-	CreatedAtMs   int64  `json:"createdAtMs"`
-	DurationMs    int64  `json:"durationMs"`
-	SizeBytes     int64  `json:"sizeBytes"`
-	Width         int    `json:"width"`
-	Height        int    `json:"height"`
-	VideoURL      string `json:"videoUrl"`
-	ThumbnailURL  string `json:"thumbnailUrl"`
-	HasThumbnail  bool   `json:"hasThumbnail"`
+	PhoneID      string        `json:"phoneId"`
+	PhoneName    string        `json:"phoneName"`
+	ClipID       string        `json:"clipId"`
+	State        string        `json:"state"`
+	StartedAtMs  int64         `json:"startedAtMs"`
+	EndedAtMs    int64         `json:"endedAtMs"`
+	DurationMs   int64         `json:"durationMs"` // wall-clock span ended-started
+	SizeBytes    int64         `json:"sizeBytes"`
+	SegmentCount int           `json:"segmentCount"`
+	ThumbnailURL string        `json:"thumbnailUrl"`
+	HasThumbnail bool          `json:"hasThumbnail"`
+	Segments     []SegmentView `json:"segments"`
 }
 
 // ListClips returns active clips for the aggregate Gallery, optionally
@@ -368,14 +380,34 @@ func (a *App) listClipsByState(phoneID string, state dbstore.ClipState) ([]ClipV
 			}
 			names[c.PhoneID] = name
 		}
-		out[i] = ClipView{
-			PhoneID: c.PhoneID, PhoneName: name, Filename: c.Filename, State: string(c.State),
-			CreatedAtMs: c.CreatedAtMs, DurationMs: c.DurationMs, SizeBytes: c.SizeBytes,
-			Width: c.Width, Height: c.Height,
-			VideoURL:     archiveURL(c.PhoneID, c.Filename),
-			ThumbnailURL: archiveURL(c.PhoneID, c.Filename+".jpg"),
-			HasThumbnail: c.ThumbnailPath != "",
+
+		segs, err := a.store.ListSegmentsForClip(c.ID)
+		if err != nil {
+			return nil, err
 		}
+		segViews := make([]SegmentView, len(segs))
+		for j, s := range segs {
+			segViews[j] = SegmentView{
+				Filename:    s.Filename,
+				VideoURL:    archiveURL(c.PhoneID, s.Filename),
+				DurationMs:  s.DurationMs,
+				CreatedAtMs: s.CreatedAtMs,
+			}
+		}
+
+		cv := ClipView{
+			PhoneID: c.PhoneID, PhoneName: name, ClipID: c.ID, State: string(c.State),
+			StartedAtMs: c.StartedAtMs, EndedAtMs: c.EndedAtMs,
+			DurationMs: c.EndedAtMs - c.StartedAtMs, SizeBytes: c.SizeBytes,
+			SegmentCount: c.SegmentCount,
+			Segments:     segViews,
+		}
+		// Thumbnail is the first segment's <filename>.jpg.
+		if len(segs) > 0 {
+			cv.ThumbnailURL = archiveURL(c.PhoneID, segs[0].Filename+".jpg")
+			cv.HasThumbnail = segs[0].ThumbnailPath != ""
+		}
+		out[i] = cv
 	}
 	return out, nil
 }
@@ -384,36 +416,39 @@ func archiveURL(phoneID, name string) string {
 	return "/archive/" + phoneID + "/" + name
 }
 
-// TrashClip: active -> trashed (file stays on disk, restorable).
-func (a *App) TrashClip(phoneID, filename string) error {
-	return a.store.SetClipState(phoneID, filename, dbstore.ClipTrashed)
+// TrashClip: active -> trashed (segment files stay on disk, restorable).
+func (a *App) TrashClip(phoneID, clipID string) error {
+	return a.store.SetClipState(phoneID, clipID, dbstore.ClipTrashed)
 }
 
 // RestoreClip: trashed -> active.
-func (a *App) RestoreClip(phoneID, filename string) error {
-	return a.store.SetClipState(phoneID, filename, dbstore.ClipActive)
+func (a *App) RestoreClip(phoneID, clipID string) error {
+	return a.store.SetClipState(phoneID, clipID, dbstore.ClipActive)
 }
 
-// DeleteClipPermanently: trashed -> purged. Deletes the on-disk file +
-// thumbnail immediately (permanent-on-disk right away per the handoff doc)
-// but keeps the DB tombstone — the eviction-probe loop that would eventually
-// drop the tombstone entirely is out of scope for this slice (see README).
-func (a *App) DeleteClipPermanently(phoneID, filename string) error {
-	clip, err := a.store.GetClip(phoneID, filename)
+// DeleteClipPermanently: trashed -> purged. Deletes every segment's on-disk
+// file + thumbnail immediately (permanent-on-disk right away per the handoff
+// doc) but keeps the DB rows as tombstones — the segment rows stop resync from
+// resurrecting the files, and the eviction-probe loop that would eventually
+// drop the tombstones entirely is out of scope for this slice (see README).
+func (a *App) DeleteClipPermanently(phoneID, clipID string) error {
+	segs, err := a.store.ListSegmentsForClip(clipID)
 	if err != nil {
 		return err
 	}
-	if clip.LocalPath != "" {
-		if err := removeIfExists(clip.LocalPath); err != nil {
-			log.Printf("delete clip file: %v", err)
+	for _, s := range segs {
+		if s.LocalPath != "" {
+			if err := removeIfExists(s.LocalPath); err != nil {
+				log.Printf("delete segment file: %v", err)
+			}
+		}
+		if s.ThumbnailPath != "" {
+			if err := removeIfExists(s.ThumbnailPath); err != nil {
+				log.Printf("delete segment thumbnail: %v", err)
+			}
 		}
 	}
-	if clip.ThumbnailPath != "" {
-		if err := removeIfExists(clip.ThumbnailPath); err != nil {
-			log.Printf("delete thumbnail file: %v", err)
-		}
-	}
-	return a.store.SetClipState(phoneID, filename, dbstore.ClipPurged)
+	return a.store.SetClipState(phoneID, clipID, dbstore.ClipPurged)
 }
 
 // EmptyTrash purges every trashed clip (bulk version of DeleteClipPermanently).
@@ -423,7 +458,7 @@ func (a *App) EmptyTrash() (int, error) {
 		return 0, err
 	}
 	for _, c := range clips {
-		if err := a.DeleteClipPermanently(c.PhoneID, c.Filename); err != nil {
+		if err := a.DeleteClipPermanently(c.PhoneID, c.ID); err != nil {
 			log.Printf("empty trash: %v", err)
 		}
 	}

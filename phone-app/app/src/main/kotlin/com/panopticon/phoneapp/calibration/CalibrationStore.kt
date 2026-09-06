@@ -10,7 +10,7 @@ private const val TAG = "CalibrationStore"
 
 /**
  * Persists the last completed [CalibrationResult] as a single JSON file under
- * app-specific external storage (same storage class as [com.panopticon.phoneapp.clips.ClipStore],
+ * app-specific external storage (same storage class as [com.panopticon.phoneapp.clips.SegmentStore],
  * no permission needed, wiped on uninstall). One file, always read/written
  * whole - the document is small and there's only ever one "last result".
  *

@@ -32,6 +32,29 @@ already lives elsewhere and would drift.
   `ImageReader.close()` SIGSEGV race, front-camera control-interleaving readback corruption,
   metadata-only position check being unreliable).
 
+- **Segments and clips.** A phone that's been recording for weeks accumulates thousands of ~10s
+  files; nobody wants a gallery item per fragment. So the model splits in two: a **segment** is
+  one file (what the code/API used to call a "clip"), and a **clip** is now a *contiguous run of
+  segments* — the user-facing gallery item. The phone HTTP API is reworded to segments
+  (`/api/segments…`, response key `"segments"`); grouping is a controller concern. The controller
+  DB gains a `segments` table (one row per file, each with a `clip_id`) and a rebuilt `clips`
+  group table (`active`/`trashed`/`purged` lifecycle + aggregate span/size/count); migration
+  `002` copies existing rows over and a one-time `RegroupUnassignedSegments` backfill groups
+  them. The syncer assigns each downloaded segment to the phone's open clip when it starts
+  within `dbstore.GroupingGapMs` (**3000ms** — loose on purpose, see below) of that clip's end,
+  else opens a new clip. Both galleries (controller Preact + phone Compose) show one item per
+  clip; the controller's `ClipPlayer` walks a clip's segments as a playlist and auto-advances to
+  the next clip on end. Trash/restore/delete act on the whole clip. `regroup_test.go`,
+  `SegmentGroupingTest.kt`, and reworked integration tests (`TestSyncLoop_GroupsContiguousSegments`
+  / `_SplitsOnGap`) cover it. **Not yet run against the real ~4k-segment Pixel 6 archive.** The
+  3000ms threshold is deliberately loose: `CameraPipeline` currently tears the whole capture
+  session down and back up on every ~10s rotation (`delay(500)` settle included), dropping
+  ~1–2s each time, so a tighter gap would wrongly split one continuous motion event. The
+  immediately-following slice is **gapless rotation** — keep one `MediaRecorder` +
+  `CameraCaptureSession` per motion event and roll files with `setMaxDuration` +
+  `OnInfoListener` + `setNextOutputFile()` — after which the threshold drops to ~500ms on both
+  sides (`dbstore.GroupingGapMs` and `SegmentGrouping.GAP_MS`).
+
 - **Motion-gated recording (phone-app only).** The always-record pipeline is gone. `CameraPipeline`
   now runs an always-on analysis `ImageReader` → `motion/MotionDetector` (frame-difference on a
   32×24 luma grid) → `motion/RecordingPhaseController` (ARMED ⇄ RECORDING with a trailer tail).

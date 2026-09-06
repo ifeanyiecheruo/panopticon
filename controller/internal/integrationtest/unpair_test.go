@@ -33,11 +33,19 @@ func TestUnpair_Success(t *testing.T) {
 	store, _ := newTestStore(t)
 	res := pairForTest(t, store, srv.URL, "GOOD-CODE")
 
-	// Simulate one already-archived clip so we can prove it survives.
-	if err := store.UpsertClip(dbstore.Clip{
-		PhoneID: res.PhoneID, Filename: "old.mp4", State: dbstore.ClipActive, CreatedAtMs: 1,
+	// Simulate one already-archived clip (a single-segment run) so we can
+	// prove it survives the unpair.
+	clipID := dbstore.NewClipID()
+	if err := store.InsertClip(dbstore.Clip{
+		ID: clipID, PhoneID: res.PhoneID, StartedAtMs: 1, EndedAtMs: 2,
+		SegmentCount: 1, State: dbstore.ClipActive, CreatedAtMs: 1,
 	}); err != nil {
 		t.Fatalf("seed clip: %v", err)
+	}
+	if err := store.UpsertSegment(dbstore.Segment{
+		PhoneID: res.PhoneID, Filename: "old.mp4", ClipID: clipID, CreatedAtMs: 1, EndMs: 2,
+	}); err != nil {
+		t.Fatalf("seed segment: %v", err)
 	}
 
 	r, err := unpair.Unpair(context.Background(), store, res.PhoneID, false)
@@ -68,7 +76,7 @@ func TestUnpair_BlockedByUnsyncedClips(t *testing.T) {
 	res := pairForTest(t, store, srv.URL, "GOOD-CODE")
 
 	fp.mu.Lock()
-	fp.clips = []fakeClip{{filename: "pending.mp4", createdAtMs: time.Now().UnixMilli(), data: []byte("x")}}
+	fp.segments = []fakeSegment{{filename: "pending.mp4", createdAtMs: time.Now().UnixMilli(), data: []byte("x")}}
 	fp.mu.Unlock()
 
 	r, err := unpair.Unpair(context.Background(), store, res.PhoneID, false)

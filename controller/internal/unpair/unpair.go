@@ -55,7 +55,7 @@ func Unpair(ctx context.Context, store *dbstore.Store, phoneID string, confirmed
 	}
 	client := phoneapi.New(phone.BaseURL, phone.Token)
 
-	// Unsynced-clips check (skipped once the user has confirmed).
+	// Unsynced-segments check (skipped once the user has confirmed).
 	if !confirmed {
 		unsynced, err := countUnsynced(ctx, store, client, phoneID)
 		if err != nil {
@@ -71,7 +71,7 @@ func Unpair(ctx context.Context, store *dbstore.Store, phoneID string, confirmed
 			return Result{
 				Outcome:       OutcomeNeedsConfirmation,
 				UnsyncedCount: unsynced,
-				Message:       fmt.Sprintf("%d clip%s haven't synced yet; unpairing risks losing them once the phone's ring buffer evicts them.", unsynced, plural(unsynced)),
+				Message:       fmt.Sprintf("%d segment%s haven't synced yet; unpairing risks losing them once the phone's ring buffer evicts them.", unsynced, plural(unsynced)),
 			}, nil
 		}
 	}
@@ -103,7 +103,7 @@ func Unpair(ctx context.Context, store *dbstore.Store, phoneID string, confirmed
 
 // Force removes the local pairing regardless of whether the phone can be
 // reached or the revoke succeeds. It still *attempts* the revoke (best effort)
-// so a reachable phone does drop the token. It cannot do the unsynced-clips
+// so a reachable phone does drop the token. It cannot do the unsynced-segments
 // check — the phone may be unreachable, which is the whole premise.
 func Force(ctx context.Context, store *dbstore.Store, phoneID string) (Result, error) {
 	phone, err := store.GetPhone(phoneID)
@@ -123,20 +123,20 @@ func Force(ctx context.Context, store *dbstore.Store, phoneID string) (Result, e
 	return Result{Outcome: OutcomeOK, Message: msg}, nil
 }
 
-// countUnsynced asks the phone what clips it has since our sync cursor and
+// countUnsynced asks the phone what segments it has since our sync cursor and
 // counts the ones we haven't archived locally.
 func countUnsynced(ctx context.Context, store *dbstore.Store, client *phoneapi.Client, phoneID string) (int, error) {
 	phone, err := store.GetPhone(phoneID)
 	if err != nil {
 		return 0, err
 	}
-	resp, err := client.Clips(ctx, phone.SyncCursorMs)
+	resp, err := client.Segments(ctx, phone.SyncCursorMs)
 	if err != nil {
 		return 0, err
 	}
 	n := 0
-	for _, c := range resp.Clips {
-		exists, err := store.ClipExists(phoneID, c.Filename)
+	for _, s := range resp.Segments {
+		exists, err := store.SegmentExists(phoneID, s.Filename)
 		if err != nil {
 			return 0, err
 		}

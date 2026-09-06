@@ -9,29 +9,17 @@ import (
 	"context"
 )
 
-const clipExists = `-- name: ClipExists :one
-SELECT COUNT(1) FROM clips WHERE phone_id = ? AND filename = ?
-`
-
-type ClipExistsParams struct {
-	PhoneID  string
-	Filename string
-}
-
-func (q *Queries) ClipExists(ctx context.Context, arg ClipExistsParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, clipExists, arg.PhoneID, arg.Filename)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const diskUsageBytes = `-- name: DiskUsageBytes :one
-SELECT CAST(COALESCE(SUM(size_bytes), 0) AS INTEGER) FROM clips
-WHERE state IN ('active', 'trashed')
-  AND (CAST(?1 AS TEXT) = '' OR phone_id = ?1)
+SELECT CAST(COALESCE(SUM(s.size_bytes), 0) AS INTEGER)
+FROM segments s
+JOIN clips c ON c.id = s.clip_id
+WHERE c.state IN ('active', 'trashed')
+  AND (CAST(?1 AS TEXT) = '' OR c.phone_id = ?1)
 `
 
-// sqlc.arg(phone_id) = "" means every phone; see ListClips above.
+// sqlc.arg(phone_id) = "" means every phone. Disk usage is the on-disk bytes of
+// segments belonging to non-purged clips (purged clips have had their files
+// removed).
 func (q *Queries) DiskUsageBytes(ctx context.Context, phoneID string) (int64, error) {
 	row := q.db.QueryRowContext(ctx, diskUsageBytes, phoneID)
 	var column_1 int64
@@ -39,40 +27,108 @@ func (q *Queries) DiskUsageBytes(ctx context.Context, phoneID string) (int64, er
 	return column_1, err
 }
 
+const extendClip = `-- name: ExtendClip :exec
+UPDATE clips
+SET ended_at_ms = ?, segment_count = segment_count + 1, size_bytes = size_bytes + ?
+WHERE id = ?
+`
+
+type ExtendClipParams struct {
+	EndedAtMs int64
+	SizeBytes int64
+	ID        string
+}
+
+func (q *Queries) ExtendClip(ctx context.Context, arg ExtendClipParams) error {
+	_, err := q.db.ExecContext(ctx, extendClip, arg.EndedAtMs, arg.SizeBytes, arg.ID)
+	return err
+}
+
 const getClip = `-- name: GetClip :one
-SELECT phone_id, filename, state, local_path, thumbnail_path, created_at_ms, duration_ms, size_bytes, width, height
-FROM clips WHERE phone_id = ? AND filename = ?
+SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms
+FROM clips WHERE phone_id = ? AND id = ?
 `
 
 type GetClipParams struct {
-	PhoneID  string
-	Filename string
+	PhoneID string
+	ID      string
 }
 
 func (q *Queries) GetClip(ctx context.Context, arg GetClipParams) (Clip, error) {
-	row := q.db.QueryRowContext(ctx, getClip, arg.PhoneID, arg.Filename)
+	row := q.db.QueryRowContext(ctx, getClip, arg.PhoneID, arg.ID)
 	var i Clip
 	err := row.Scan(
+		&i.ID,
 		&i.PhoneID,
-		&i.Filename,
-		&i.State,
-		&i.LocalPath,
-		&i.ThumbnailPath,
-		&i.CreatedAtMs,
-		&i.DurationMs,
+		&i.StartedAtMs,
+		&i.EndedAtMs,
+		&i.SegmentCount,
 		&i.SizeBytes,
-		&i.Width,
-		&i.Height,
+		&i.State,
+		&i.CreatedAtMs,
 	)
 	return i, err
 }
 
+const getOpenClip = `-- name: GetOpenClip :one
+SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms
+FROM clips
+WHERE phone_id = ? AND state = 'active'
+ORDER BY ended_at_ms DESC LIMIT 1
+`
+
+func (q *Queries) GetOpenClip(ctx context.Context, phoneID string) (Clip, error) {
+	row := q.db.QueryRowContext(ctx, getOpenClip, phoneID)
+	var i Clip
+	err := row.Scan(
+		&i.ID,
+		&i.PhoneID,
+		&i.StartedAtMs,
+		&i.EndedAtMs,
+		&i.SegmentCount,
+		&i.SizeBytes,
+		&i.State,
+		&i.CreatedAtMs,
+	)
+	return i, err
+}
+
+const insertClip = `-- name: InsertClip :exec
+INSERT INTO clips (id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+type InsertClipParams struct {
+	ID           string
+	PhoneID      string
+	StartedAtMs  int64
+	EndedAtMs    int64
+	SegmentCount int64
+	SizeBytes    int64
+	State        string
+	CreatedAtMs  int64
+}
+
+func (q *Queries) InsertClip(ctx context.Context, arg InsertClipParams) error {
+	_, err := q.db.ExecContext(ctx, insertClip,
+		arg.ID,
+		arg.PhoneID,
+		arg.StartedAtMs,
+		arg.EndedAtMs,
+		arg.SegmentCount,
+		arg.SizeBytes,
+		arg.State,
+		arg.CreatedAtMs,
+	)
+	return err
+}
+
 const listClips = `-- name: ListClips :many
-SELECT phone_id, filename, state, local_path, thumbnail_path, created_at_ms, duration_ms, size_bytes, width, height
+SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms
 FROM clips
 WHERE (CAST(?1 AS TEXT) = '' OR phone_id = ?1)
   AND (CAST(?2 AS TEXT) = '' OR state = ?2)
-ORDER BY created_at_ms DESC
+ORDER BY started_at_ms DESC
 `
 
 type ListClipsParams struct {
@@ -80,9 +136,9 @@ type ListClipsParams struct {
 	State   string
 }
 
-// sqlc.arg(phone_id) = "" means every phone, sqlc.arg(state) = "" means
-// every state - the sentinel-OR trick keeps this one static query doing
-// the work of what would otherwise be up to four hand-built variants.
+// sqlc.arg(phone_id) = "" means every phone, sqlc.arg(state) = "" means every
+// state - the sentinel-OR trick keeps this one static query doing what would
+// otherwise be several hand-built variants.
 func (q *Queries) ListClips(ctx context.Context, arg ListClipsParams) ([]Clip, error) {
 	rows, err := q.db.QueryContext(ctx, listClips, arg.PhoneID, arg.State)
 	if err != nil {
@@ -93,16 +149,14 @@ func (q *Queries) ListClips(ctx context.Context, arg ListClipsParams) ([]Clip, e
 	for rows.Next() {
 		var i Clip
 		if err := rows.Scan(
+			&i.ID,
 			&i.PhoneID,
-			&i.Filename,
-			&i.State,
-			&i.LocalPath,
-			&i.ThumbnailPath,
-			&i.CreatedAtMs,
-			&i.DurationMs,
+			&i.StartedAtMs,
+			&i.EndedAtMs,
+			&i.SegmentCount,
 			&i.SizeBytes,
-			&i.Width,
-			&i.Height,
+			&i.State,
+			&i.CreatedAtMs,
 		); err != nil {
 			return nil, err
 		}
@@ -118,51 +172,16 @@ func (q *Queries) ListClips(ctx context.Context, arg ListClipsParams) ([]Clip, e
 }
 
 const setClipState = `-- name: SetClipState :exec
-UPDATE clips SET state = ? WHERE phone_id = ? AND filename = ?
+UPDATE clips SET state = ? WHERE phone_id = ? AND id = ?
 `
 
 type SetClipStateParams struct {
-	State    string
-	PhoneID  string
-	Filename string
+	State   string
+	PhoneID string
+	ID      string
 }
 
 func (q *Queries) SetClipState(ctx context.Context, arg SetClipStateParams) error {
-	_, err := q.db.ExecContext(ctx, setClipState, arg.State, arg.PhoneID, arg.Filename)
-	return err
-}
-
-const upsertClip = `-- name: UpsertClip :exec
-INSERT INTO clips (phone_id, filename, state, local_path, thumbnail_path, created_at_ms, duration_ms, size_bytes, width, height)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(phone_id, filename) DO NOTHING
-`
-
-type UpsertClipParams struct {
-	PhoneID       string
-	Filename      string
-	State         string
-	LocalPath     string
-	ThumbnailPath string
-	CreatedAtMs   int64
-	DurationMs    int64
-	SizeBytes     int64
-	Width         int64
-	Height        int64
-}
-
-func (q *Queries) UpsertClip(ctx context.Context, arg UpsertClipParams) error {
-	_, err := q.db.ExecContext(ctx, upsertClip,
-		arg.PhoneID,
-		arg.Filename,
-		arg.State,
-		arg.LocalPath,
-		arg.ThumbnailPath,
-		arg.CreatedAtMs,
-		arg.DurationMs,
-		arg.SizeBytes,
-		arg.Width,
-		arg.Height,
-	)
+	_, err := q.db.ExecContext(ctx, setClipState, arg.State, arg.PhoneID, arg.ID)
 	return err
 }

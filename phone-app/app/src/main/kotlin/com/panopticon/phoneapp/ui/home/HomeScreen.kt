@@ -27,7 +27,7 @@ fun HomeScreen(app: PanopticonApplication) {
     val cameraHealthy by app.appState.cameraHealthy.collectAsStateWithLifecycle()
     val motionActive by app.appState.motionActive.collectAsStateWithLifecycle()
     val config = app.appConfig.get()
-    val usedBytes = app.clipStore.totalBytes()
+    val usedBytes = app.segmentStore.totalBytes()
     val capBytes = config.storageCapBytes
 
     Column(
@@ -82,7 +82,7 @@ fun HomeScreen(app: PanopticonApplication) {
                 fontSize = 16.sp,
             )
             Text(
-                text = "${app.clipStore.listSince(0).size} clips on disk",
+                text = "${app.segmentStore.listSince(0).size} segments on disk",
                 color = PanopticonColors.textFaint,
                 fontSize = 12.sp,
             )

@@ -9,36 +9,43 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileOutputStream
 
-private const val TAG = "ClipStore"
+private const val TAG = "SegmentStore"
 
 /**
- * Owns the on-disk clip directory + a small JSON index of [ClipEntry] metadata (createdAtMs,
- * duration, dimensions) so `GET /api/clips` doesn't need to probe every file with
- * MediaMetadataRetriever on every request.
+ * Owns the on-disk segment directory + a small JSON index of [SegmentEntry] metadata
+ * (createdAtMs, duration, dimensions) so `GET /api/segments` doesn't need to probe every file
+ * with MediaMetadataRetriever on every request.
+ *
+ * A "segment" is a single recorded file - what the phone used to call a "clip". The controller
+ * groups contiguous segments into user-facing clips; the phone has no notion of that.
  *
  * Uses app-specific external storage (`getExternalFilesDir`) - no storage permission needed on
  * modern Android, and it's automatically cleaned up on uninstall.
+ *
+ * The on-disk directory (`"clips"`) and the SharedPreferences name/key
+ * (`"panopticon_clips"` / `"clips_index_json"`) deliberately keep their old literals: renaming
+ * them would orphan every already-recorded file and the existing index on an app update.
  */
-class ClipStore(context: Context) {
+class SegmentStore(context: Context) {
     private val appContext = context.applicationContext
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
     private val prefs = appContext.getSharedPreferences("panopticon_clips", Context.MODE_PRIVATE)
 
-    val clipsDir: File = File(appContext.getExternalFilesDir(null), "clips").apply { mkdirs() }
+    val segmentsDir: File = File(appContext.getExternalFilesDir(null), "clips").apply { mkdirs() }
     val thumbsDir: File = File(appContext.getExternalFilesDir(null), "thumbnails").apply { mkdirs() }
 
     @Synchronized
-    private fun loadIndex(): MutableMap<String, ClipEntry> {
+    private fun loadIndex(): MutableMap<String, SegmentEntry> {
         val raw = prefs.getString(KEY, null) ?: return mutableMapOf()
         return try {
-            json.decodeFromString<Map<String, ClipEntry>>(raw).toMutableMap()
+            json.decodeFromString<Map<String, SegmentEntry>>(raw).toMutableMap()
         } catch (e: Exception) {
             mutableMapOf()
         }
     }
 
     @Synchronized
-    private fun saveIndex(map: Map<String, ClipEntry>) {
+    private fun saveIndex(map: Map<String, SegmentEntry>) {
         prefs.edit().putString(KEY, json.encodeToString(map)).apply()
     }
 
@@ -46,7 +53,7 @@ class ClipStore(context: Context) {
     @Synchronized
     fun reconcile() {
         val index = loadIndex()
-        val filesOnDisk = clipsDir.listFiles { f -> f.isFile && f.name.endsWith(".mp4") }?.associateBy { it.name } ?: emptyMap()
+        val filesOnDisk = segmentsDir.listFiles { f -> f.isFile && f.name.endsWith(".mp4") }?.associateBy { it.name } ?: emptyMap()
 
         // Drop index entries whose file no longer exists.
         val stale = index.keys.filter { it !in filesOnDisk.keys }
@@ -60,13 +67,13 @@ class ClipStore(context: Context) {
             index[name] = probed
         }
         saveIndex(index)
-        Log.i(TAG, "reconcile: ${index.size} clips indexed, ${stale.size} stale entries dropped")
+        Log.i(TAG, "reconcile: ${index.size} segments indexed, ${stale.size} stale entries dropped")
     }
 
     @Synchronized
-    fun addClip(file: File, createdAtMs: Long, durationMs: Long, width: Int, height: Int) {
+    fun addSegment(file: File, createdAtMs: Long, durationMs: Long, width: Int, height: Int) {
         val index = loadIndex()
-        index[file.name] = ClipEntry(
+        index[file.name] = SegmentEntry(
             filename = file.name,
             createdAtMs = createdAtMs,
             durationMs = durationMs,
@@ -79,12 +86,12 @@ class ClipStore(context: Context) {
     }
 
     @Synchronized
-    fun listSince(sinceMs: Long): List<ClipEntry> =
+    fun listSince(sinceMs: Long): List<SegmentEntry> =
         loadIndex().values.filter { it.createdAtMs >= sinceMs }.sortedBy { it.createdAtMs }
 
     fun fileFor(filename: String): File? {
-        val f = File(clipsDir, sanitize(filename))
-        return if (f.exists() && f.parentFile == clipsDir) f else null
+        val f = File(segmentsDir, sanitize(filename))
+        return if (f.exists() && f.parentFile == segmentsDir) f else null
     }
 
     @Synchronized
@@ -93,7 +100,7 @@ class ClipStore(context: Context) {
         val index = loadIndex()
         val existed = index.remove(safe) != null
         saveIndex(index)
-        File(clipsDir, safe).delete()
+        File(segmentsDir, safe).delete()
         File(thumbsDir, thumbName(safe)).delete()
         return existed
     }
@@ -101,16 +108,16 @@ class ClipStore(context: Context) {
     @Synchronized
     fun totalBytes(): Long = loadIndex().values.sumOf { it.sizeBytes }
 
-    /** Extracts (and caches) a single JPEG frame from a clip for the Gallery filmstrip. */
+    /** Extracts (and caches) a single JPEG frame from a segment for the Gallery filmstrip. */
     fun thumbnailFor(filename: String): File? {
         val safe = sanitize(filename)
-        val clipFile = fileFor(safe) ?: return null
+        val segmentFile = fileFor(safe) ?: return null
         val thumbFile = File(thumbsDir, thumbName(safe))
         if (thumbFile.exists()) return thumbFile
 
         val retriever = MediaMetadataRetriever()
         return try {
-            retriever.setDataSource(clipFile.absolutePath)
+            retriever.setDataSource(segmentFile.absolutePath)
             val frame: Bitmap = retriever.getFrameAtTime(0) ?: return null
             FileOutputStream(thumbFile).use { out ->
                 frame.compress(Bitmap.CompressFormat.JPEG, 80, out)
@@ -124,7 +131,7 @@ class ClipStore(context: Context) {
         }
     }
 
-    private fun probe(file: File): ClipEntry? {
+    private fun probe(file: File): SegmentEntry? {
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(file.absolutePath)
@@ -132,7 +139,7 @@ class ClipStore(context: Context) {
             val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
             val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
             val createdAtMs = file.lastModified() - durationMs
-            ClipEntry(
+            SegmentEntry(
                 filename = file.name,
                 createdAtMs = createdAtMs,
                 durationMs = durationMs,
@@ -149,7 +156,7 @@ class ClipStore(context: Context) {
         }
     }
 
-    private fun thumbName(clipFilename: String) = clipFilename.removeSuffix(".mp4") + ".jpg"
+    private fun thumbName(segmentFilename: String) = segmentFilename.removeSuffix(".mp4") + ".jpg"
 
     /** Strips any path components - filenames come from the URL path, never trust them raw. */
     private fun sanitize(filename: String): String = File(filename).name

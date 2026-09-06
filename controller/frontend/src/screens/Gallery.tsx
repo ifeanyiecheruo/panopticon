@@ -3,6 +3,7 @@ import { ListPhones, ListClips, TrashClip, type PhoneView, type ClipView } from 
 import { groupByDay, clipKey } from '../lib/clips';
 import { fmtDuration } from '../lib/format';
 import { DayGroupList } from '../components/ClipTiles';
+import { ClipPlayer } from '../components/ClipPlayer';
 import { TrashIcon } from '../lib/icons';
 
 interface GalleryProps {
@@ -70,8 +71,15 @@ export function Gallery({ galleryFilter, gallerySelected, onFilterChange, onSele
 
   const handleTrash = async () => {
     if (!selected) return;
-    await TrashClip(selected.phoneId, selected.filename);
+    await TrashClip(selected.phoneId, selected.clipId);
     onTrashed();
+  };
+
+  const handleClipFinished = () => {
+    if (!selected) return;
+    const idx = clips.findIndex((c) => clipKey(c) === clipKey(selected));
+    const next = idx >= 0 ? clips[idx + 1] : undefined;
+    if (next) onAutoSelect(clipKey(next));
   };
 
   return (
@@ -98,12 +106,13 @@ export function Gallery({ galleryFilter, gallerySelected, onFilterChange, onSele
         <div className="viewer-pane">
           {selected ? (
             <>
-              <video controls preload="metadata" poster={selected.thumbnailUrl} src={selected.videoUrl}></video>
+              <ClipPlayer clip={selected} controls onFinished={handleClipFinished} />
               <div className="viewer-meta">
                 <div>
                   <div className="who">{selected.phoneName}</div>
                   <div className="when">
-                    {new Date(selected.createdAtMs).toLocaleString()} · {fmtDuration(selected.durationMs)}
+                    {new Date(selected.startedAtMs).toLocaleString()} · {fmtDuration(selected.durationMs)} ·{' '}
+                    {selected.segmentCount} segment{selected.segmentCount === 1 ? '' : 's'}
                   </div>
                 </div>
               </div>

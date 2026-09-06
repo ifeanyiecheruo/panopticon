@@ -4,8 +4,8 @@
 // available.
 //
 // Routes implemented: POST/DELETE /api/pair, GET /api/status, GET /api/device,
-// GET /api/config, GET /api/build-info, GET /api/clips, GET
-// /api/clips/:filename/file, GET /api/clips/:filename/thumbnail,
+// GET /api/config, GET /api/build-info, GET /api/segments, GET
+// /api/segments/:filename/file, GET /api/segments/:filename/thumbnail,
 // POST /api/calibration/start, GET /api/calibration/status,
 // DELETE /api/calibration/:runId, GET /api/calibration/result.
 //
@@ -36,7 +36,7 @@ type pairedController struct {
 	name         string
 }
 
-type clip struct {
+type segment struct {
 	filename    string
 	createdAtMs int64
 	durationMs  int64
@@ -51,7 +51,7 @@ type server struct {
 	invite       string
 	inviteUsed   bool
 	controllers  map[string]pairedController // token -> controller
-	clips        []clip
+	segments     []segment
 	deviceName   string
 	manufacturer string
 	model        string
@@ -67,7 +67,7 @@ type server struct {
 func main() {
 	addr := flag.String("addr", ":8091", "listen address")
 	invite := flag.String("invite", "TEST-INVITE-CODE", "invite code this mock phone accepts (once)")
-	numClips := flag.Int("clips", 3, "number of fake pre-existing clips to seed")
+	numSegments := flag.Int("segments", 6, "number of fake pre-existing segments to seed (as two runs split by a gap)")
 	flag.Parse()
 
 	s := &server{
@@ -79,7 +79,7 @@ func main() {
 		mode:          "record",
 		calSweepDurMs: 6000,
 	}
-	s.seedClips(*numClips)
+	s.seedSegments(*numSegments)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/pair", s.handlePair)
@@ -88,26 +88,50 @@ func main() {
 	mux.HandleFunc("/api/config", s.withAuth(s.handleConfig))
 	mux.HandleFunc("/api/build-info", s.withAuth(s.handleBuildInfo))
 	mux.HandleFunc("/api/mode", s.withAuth(s.handleMode))
-	mux.HandleFunc("/api/clips", s.withAuth(s.handleClipsList))
-	mux.HandleFunc("/api/clips/", s.withAuth(s.handleClipFileOrThumb))
+	mux.HandleFunc("/api/segments", s.withAuth(s.handleSegmentsList))
+	mux.HandleFunc("/api/segments/", s.withAuth(s.handleSegmentFileOrThumb))
 	mux.HandleFunc("/api/calibration/start", s.withAuth(s.handleCalibrationStart))
 	mux.HandleFunc("/api/calibration/status", s.withAuth(s.handleCalibrationStatus))
 	mux.HandleFunc("/api/calibration/result", s.withAuth(s.handleCalibrationResult))
 	mux.HandleFunc("/api/calibration/", s.withAuth(s.handleCalibrationCancel)) // DELETE /api/calibration/:runId
 
-	log.Printf("mockphone listening on %s (invite=%s, manufacturer=%s model=%s, %d seeded clips)",
-		*addr, *invite, s.manufacturer, s.model, *numClips)
+	log.Printf("mockphone listening on %s (invite=%s, manufacturer=%s model=%s, %d seeded segments)",
+		*addr, *invite, s.manufacturer, s.model, *numSegments)
 	log.Fatal(http.ListenAndServe(*addr, mux))
 }
 
-func (s *server) seedClips(n int) {
+// seedSegments lays n fake segments out as TWO back-to-back runs (~10s apart,
+// i.e. within the controller's 3s grouping gap once the ~2s rotation loss is
+// accounted for) separated by a multi-minute gap, so the controller's
+// segment→clip grouping has something real to collapse: n segments in, 2 clips
+// out.
+func (s *server) seedSegments(n int) {
+	if n < 2 {
+		n = 2
+	}
 	now := time.Now().UnixMilli()
+	const segLenMs int64 = 10_000
+	firstRun := (n + 1) / 2
+
+	// Walk a cursor backwards from "now" so the newest segment is ~now.
+	// Segments within a run start segLenMs apart; the run boundary inserts a
+	// 10-minute gap.
+	starts := make([]int64, n)
+	cursor := now
+	for i := n - 1; i >= 0; i-- {
+		starts[i] = cursor - segLenMs
+		cursor = starts[i]
+		if i == firstRun {
+			cursor -= 10 * 60_000 // gap between run 1 and run 2
+		}
+	}
+
 	for i := 0; i < n; i++ {
-		data := makeFakeMp4(fmt.Sprintf("clip %d", i))
-		s.clips = append(s.clips, clip{
+		data := makeFakeMp4(fmt.Sprintf("segment %d", i))
+		s.segments = append(s.segments, segment{
 			filename:    fmt.Sprintf("clip_%07d.mp4", i+1),
-			createdAtMs: now - int64(n-i)*60_000,
-			durationMs:  8000,
+			createdAtMs: starts[i],
+			durationMs:  segLenMs,
 			sizeBytes:   int64(len(data)),
 			width:       1920,
 			height:      1080,
@@ -277,20 +301,20 @@ func (s *server) handleBuildInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *server) handleClipsList(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleSegmentsList(w http.ResponseWriter, r *http.Request) {
 	sinceStr := r.URL.Query().Get("since")
 	since, _ := strconv.ParseInt(sinceStr, 10, 64)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []map[string]any
-	for _, c := range s.clips {
+	for _, c := range s.segments {
 		if c.createdAtMs <= since {
 			continue
 		}
 		out = append(out, map[string]any{
 			"filename":    c.filename,
-			"url":         "/api/clips/" + c.filename + "/file",
+			"url":         "/api/segments/" + c.filename + "/file",
 			"createdAtMs": c.createdAtMs,
 			"durationMs":  c.durationMs,
 			"endMs":       c.createdAtMs + c.durationMs,
@@ -299,12 +323,12 @@ func (s *server) handleClipsList(w http.ResponseWriter, r *http.Request) {
 			"height":      c.height,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"clips": out})
+	writeJSON(w, http.StatusOK, map[string]any{"segments": out})
 }
 
-func (s *server) handleClipFileOrThumb(w http.ResponseWriter, r *http.Request) {
-	// Path shape: /api/clips/<filename>/file or /api/clips/<filename>/thumbnail
-	rest := strings.TrimPrefix(r.URL.Path, "/api/clips/")
+func (s *server) handleSegmentFileOrThumb(w http.ResponseWriter, r *http.Request) {
+	// Path shape: /api/segments/<filename>/file or /api/segments/<filename>/thumbnail
+	rest := strings.TrimPrefix(r.URL.Path, "/api/segments/")
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) != 2 {
 		w.WriteHeader(http.StatusNotFound)
@@ -313,10 +337,10 @@ func (s *server) handleClipFileOrThumb(w http.ResponseWriter, r *http.Request) {
 	filename, kind := parts[0], parts[1]
 
 	s.mu.Lock()
-	var found *clip
-	for i := range s.clips {
-		if s.clips[i].filename == filename {
-			found = &s.clips[i]
+	var found *segment
+	for i := range s.segments {
+		if s.segments[i].filename == filename {
+			found = &s.segments[i]
 			break
 		}
 	}

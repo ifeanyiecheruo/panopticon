@@ -1,14 +1,14 @@
 # panopticon phone-app
 
 Android half of Panopticon - turns a spare phone into a standalone security camera. This is a
-**thin vertical slice** ("pair -> record -> sync a clip -> view it"), not the full app described
+**thin vertical slice** ("pair -> record -> sync footage -> view it"), not the full app described
 in `../docs/implementation/HANDOFF-phone-ux.md` and `../docs/implementation/phone-http-api.md`.
 See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full intended design.
 
 ## What's here
 
 - **`PanopticonService`** - foreground, `START_STICKY` service. Opens the back camera via
-  Camera2, runs a **motion-gated** recording pipeline (rotating ~10s H.264 clips via
+  Camera2, runs a **motion-gated** recording pipeline (rotating ~10s H.264 *segments* via
   `MediaRecorder`, written only while motion is present plus a short tail), and runs an embedded
   Ktor/Netty HTTP server.
 - **Motion gate** - an always-on analysis stream (small YUV `ImageReader`) feeds a
@@ -18,7 +18,7 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   simplification note below for what the detector does and doesn't handle.
 - **HTTP API** - implements a subset of `phone-http-api.md`: pairing (`POST`/`DELETE /api/pair`),
   device identity/status/config (`/api/device`, `/api/build-info`, `/api/status`, `/api/config`),
-  mode (`/api/mode` - `live` is a stub), clip sync (`/api/clips`, `.../file`, `.../thumbnail`,
+  mode (`/api/mode` - `live` is a stub), segment sync (`/api/segments`, `.../file`, `.../thumbnail`,
   `DELETE .../:filename`), and device-wide calibration (`POST /api/calibration/start`,
   `GET /api/calibration/status`, `DELETE /api/calibration/:runId`, `GET /api/calibration/result`).
   Every route except `POST /api/pair` requires `Authorization: Bearer <token>`.
@@ -38,8 +38,8 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   entered explicitly (`POST /api/mode {"mode":"standby"}` or the Calibrate screen's "Stop
   recording").
 - **Compose UI** - Home (device identity, storage, recording status), Connect (generate an
-  invite code + show this phone's LAN address), Gallery (list clips, play via the system video
-  viewer, delete), Calibrate (stop recording → run/re-run a sweep, live progress, per-camera
+  invite code + show this phone's LAN address), Gallery (list clips - contiguous segments grouped
+  by time gap - play the run via the system video viewer, delete a whole clip), Calibrate (stop recording → run/re-run a sweep, live progress, per-camera
   optical/digital/position/quality readout).
 
 ## Deliberate simplifications (see code comments for exact locations)
@@ -51,7 +51,7 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   small global shifts), and slow scene drift. The per-sensitivity thresholds in the code are
   starting points chosen by reasoning, **not measured against the Pixel 6 in real lighting** -
   that tuning (and any move to a real background-subtraction model) is follow-up work. Also **no
-  pre-roll**: a clip starts at motion-detection time, since `MediaRecorder` can't back-date a
+  pre-roll**: a segment starts at motion-detection time, since `MediaRecorder` can't back-date a
   buffer (pre-roll is tied to the future `MediaCodec`+`MediaMuxer` switch).
 - **`live` mode is a stub.** `POST /api/mode {"mode":"live"}` flips the mode flag and tears down
   the recording pipeline (RECORD/LIVE stay mutually exclusive, per the architecture doc) but
@@ -74,7 +74,7 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 - **Debug-only `adb` calibration trigger.** `src/debug/…/DebugCalibrationReceiver` (declared in
   `src/debug/AndroidManifest.xml`, never in release) drives a sweep via
   `adb shell am broadcast` on devices whose Compose UI uiautomator/screencap can't touch.
-- **Full `CameraCaptureSession` teardown+recreate on every clip rotation and every ARMED&lt;-&gt;RECORDING
+- **Full `CameraCaptureSession` teardown+recreate on every segment rotation and every ARMED&lt;-&gt;RECORDING
   transition** rather than a lighter in-place surface swap - simpler to reason about, doubles as a
   session-reconfigure stress test. The analysis `ImageReader` persists across those; only the
   session and `MediaRecorder` churn.
@@ -82,7 +82,12 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   (dark/teal theme, `ui/theme/Theme.kt`) carried over; exact chrome layout wasn't a priority for
   this slice.
 - **Gallery playback via `Intent.ACTION_VIEW`** to the system video player, not an in-app
-  ExoPlayer/VideoView.
+  ExoPlayer/VideoView. It opens the clip's first segment; there's no in-Gallery segment-to-segment
+  advance (the controller's player does that).
+- **"Segment" is the code's word, but the on-disk names weren't churned.** `SegmentStore` writes
+  to a directory still literally named `clips/`, backed by SharedPreferences `panopticon_clips` /
+  `clips_index_json`, and each file keeps a `clip_` filename prefix. Renaming any of those on an
+  app update would orphan every already-recorded file and the index, for zero behavioural gain.
 
 ## Explicitly out of scope for this slice (not started)
 

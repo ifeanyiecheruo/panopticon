@@ -47,9 +47,12 @@ access to every route below (no read-only/view-only notion).
 - **The set of paired controllers is not exposed over HTTP at all** — not even read-only to
   other controllers. Purely a local/owner concern, hence `ControllerRegistry.list()` above
   being a library function, not a route.
-- **Favoriting is removed entirely** — no favorite field on clips, no favorite route.
-- **"Segments" renamed to "clips"** throughout (routes, field names) — clearer name for the
-  ring-buffer recordings a controller syncs.
+- **Favoriting is removed entirely** — no favorite field on segments, no favorite route.
+- **This API speaks in "segments"** — one segment is one recorded file in the phone's ring
+  buffer. The user-facing "clip" (a contiguous run of segments recorded back-to-back during one
+  motion event) is assembled *by the controller* from the segments it syncs; the phone has no
+  notion of it and there is no clip route here. (An earlier draft of this doc used "clips" for
+  the individual files; that's now "segments", and "clip" is the group.)
 - **`/api/control/*` renamed to `/api/camera/*`.**
 - **Multi-camera is a first-class concept**: `/api/cameras` lists physical cameras (id,
   facing, label, focal length, which is active); `/api/cameras/active` switches, which is a
@@ -71,7 +74,7 @@ access to every route below (no read-only/view-only notion).
   [HANDOFF-controller-ux.md](HANDOFF-controller-ux.md)) pull a phone's results opportunistically
   — e.g. right after pairing — without asking that phone to actually run calibration.
 - Added along the way: `batteryPercent`/`charging`/`serverTimeMs` on `/api/status` (battery
-  display + clock-skew correction for a controller's clip timeline), and a new
+  display + clock-skew correction for a controller's segment timeline), and a new
   `GET /api/build-info` endpoint so a controller/server can gate on the phone app's version
   before calling a route it might not support.
 
@@ -151,20 +154,28 @@ feature, and you must move to `standby` *explicitly* before any of them can run.
 | GET | `/live/live.m3u8` | — | — | *(binary `application/vnd.apple.mpegurl`)* | Rolling HLS playlist. `404` before start, `409` in `record` mode. |
 | GET | `/live/live-<n>.ts` | — | — | *(binary `video/mp2t`)* | One HLS segment. |
 
-### Clips (sync)
+### Segments (sync)
+
+A **segment** is one recorded file in the ring buffer. Grouping contiguous segments into a
+user-facing **clip** is a controller/UX concern (the controller does it on sync, by time gap) —
+**not part of this API**. The phone only ever lists, serves, and deletes individual segments.
 
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
-| GET | `/api/clips` | `since=<epochMs>` | — | `{ "clips": [ { "filename": "clip_0004123.mp4", "url": "/api/clips/clip_0004123.mp4/file", "createdAtMs": 1755270012000, "durationMs": 8000, "endMs": 1755270020000, "sizeBytes": 2100000, "width": 1920, "height": 1080 } ] }` | Delta-pull of clips created after `since` (default `0` = everything on disk). |
-| GET | `/api/clips/:filename/file` | — | — | *(binary `video/mp4`, supports `Range`)* | Downloads one clip; `404` if evicted. |
-| GET | `/api/clips/:filename/thumbnail` | — | — | *(binary `image/jpeg`)* | Single extracted frame, for the Gallery filmstrip. |
-| DELETE | `/api/clips/:filename` | — | — | `{ "deleted": true }` | Explicit early eviction. |
+| GET | `/api/segments` | `since=<epochMs>` | — | `{ "segments": [ { "filename": "clip_0004123.mp4", "url": "/api/segments/clip_0004123.mp4/file", "createdAtMs": 1755270012000, "durationMs": 8000, "endMs": 1755270020000, "sizeBytes": 2100000, "width": 1920, "height": 1080 } ] }` | Delta-pull of segments created after `since` (default `0` = everything on disk). |
+| GET | `/api/segments/:filename/file` | — | — | *(binary `video/mp4`, supports `Range`)* | Downloads one segment; `404` if evicted. |
+| GET | `/api/segments/:filename/thumbnail` | — | — | *(binary `image/jpeg`)* | Single extracted frame, for the Gallery filmstrip. |
+| DELETE | `/api/segments/:filename` | — | — | `{ "deleted": true }` | Explicit early eviction. |
+
+(The `filename` still carries a historical `clip_` prefix — it's an opaque on-disk name, not a
+statement that the file is a "clip" in the grouped sense.)
 
 ## Open items for the controller-design session
 
 - How the controller stores/uses its per-pairing bearer token and public/private keypair.
-- Controller-side archive/sync strategy against `/api/clips` (polling cadence, how it dedupes
-  on `filename`, how it decides what to keep locally vs. re-fetch).
+- Controller-side archive/sync strategy against `/api/segments` (polling cadence, how it dedupes
+  on `filename`, how it decides what to keep locally vs. re-fetch, how it groups contiguous
+  segments into clips).
 - ~~Server-side device-capability database (mentioned in the old prototype's contract, keyed by
   manufacturer+model+device+`cameraId` now) — whether/how the controller design reuses that
   concept.~~ **Resolved**: the controller owns this, keyed by manufacturer+model, populated by

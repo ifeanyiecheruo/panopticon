@@ -30,29 +30,40 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.panopticon.phoneapp.PanopticonApplication
-import com.panopticon.phoneapp.clips.ClipEntry
+import com.panopticon.phoneapp.clips.Clip
+import com.panopticon.phoneapp.clips.groupIntoClips
 import com.panopticon.phoneapp.ui.theme.PanopticonColors
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * Bare-bones clip list: play launches the system video viewer via ACTION_VIEW (fastest path for
- * this slice, per the task's own guidance - no in-app ExoPlayer/VideoView here). Delete calls
- * straight into ClipStore, same as the HTTP DELETE route would.
+ * Bare-bones clip list. A "clip" here is a contiguous run of segments (same
+ * time-gap grouping the controller uses); the phone stores only segments and
+ * groups them at display time. Play launches the system video viewer via
+ * ACTION_VIEW on the clip's first segment (fastest path for this slice - no
+ * in-app player). Delete removes every segment in the clip, same as issuing the
+ * HTTP DELETE for each.
  */
 @Composable
 fun GalleryScreen(app: PanopticonApplication) {
     val context = LocalContext.current
-    var clips by remember { mutableStateOf(app.clipStore.listSince(0).sortedByDescending { it.createdAtMs }) }
+    var clips by remember { mutableStateOf(groupIntoClips(app.segmentStore.listSince(0))) }
 
     fun refresh() {
-        clips = app.clipStore.listSince(0).sortedByDescending { it.createdAtMs }
+        clips = groupIntoClips(app.segmentStore.listSince(0))
     }
+
+    val segmentCount = clips.sumOf { it.count }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text(text = "Gallery", color = PanopticonColors.text, fontSize = 20.sp)
-        Text(text = "${clips.size} clips", color = PanopticonColors.textDim, fontSize = 13.sp, modifier = Modifier.padding(bottom = 12.dp))
+        Text(
+            text = "${clips.size} clip${if (clips.size == 1) "" else "s"} · $segmentCount segment${if (segmentCount == 1) "" else "s"}",
+            color = PanopticonColors.textDim,
+            fontSize = 13.sp,
+            modifier = Modifier.padding(bottom = 12.dp),
+        )
 
         if (clips.isEmpty()) {
             Text(
@@ -63,11 +74,11 @@ fun GalleryScreen(app: PanopticonApplication) {
         }
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(clips, key = { it.filename }) { clip ->
+            items(clips, key = { it.firstSegment.filename }) { clip ->
                 ClipRow(
                     clip = clip,
                     onPlay = {
-                        val file = app.clipStore.fileFor(clip.filename) ?: return@ClipRow
+                        val file = app.segmentStore.fileFor(clip.firstSegment.filename) ?: return@ClipRow
                         val uri = FileProvider.getUriForFile(context, "com.panopticon.phoneapp.fileprovider", file)
                         val intent = Intent(Intent.ACTION_VIEW).apply {
                             setDataAndType(uri, "video/mp4")
@@ -77,7 +88,7 @@ fun GalleryScreen(app: PanopticonApplication) {
                         context.startActivity(intent)
                     },
                     onDelete = {
-                        app.clipStore.delete(clip.filename)
+                        clip.segments.forEach { app.segmentStore.delete(it.filename) }
                         refresh()
                     },
                 )
@@ -87,7 +98,7 @@ fun GalleryScreen(app: PanopticonApplication) {
 }
 
 @Composable
-private fun ClipRow(clip: ClipEntry, onPlay: () -> Unit, onDelete: () -> Unit) {
+private fun ClipRow(clip: Clip, onPlay: () -> Unit, onDelete: () -> Unit) {
     val timeFormat = remember { SimpleDateFormat("MMM d, HH:mm:ss", Locale.US) }
     Row(
         modifier = Modifier
@@ -99,9 +110,10 @@ private fun ClipRow(clip: ClipEntry, onPlay: () -> Unit, onDelete: () -> Unit) {
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Column {
-            Text(text = timeFormat.format(Date(clip.createdAtMs)), color = PanopticonColors.text, fontSize = 15.sp)
+            Text(text = timeFormat.format(Date(clip.startedAtMs)), color = PanopticonColors.text, fontSize = 15.sp)
+            val segLabel = if (clip.count == 1) "1 segment" else "${clip.count} segments"
             Text(
-                text = "${clip.durationMs / 1000}s - ${clip.width}x${clip.height} - ${clip.sizeBytes / 1024} KB",
+                text = "${clip.durationMs / 1000}s - $segLabel - ${clip.sizeBytes / 1024} KB",
                 color = PanopticonColors.textFaint,
                 fontSize = 12.sp,
             )

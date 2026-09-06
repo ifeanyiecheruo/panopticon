@@ -32,6 +32,7 @@ type Manager struct {
 	store    *dbstore.Store
 	dirs     appdirs.Dirs
 	interval time.Duration
+	gapMs    int64 // segments this close (createdAtMs - prev.endMs) join one clip
 
 	mu       sync.Mutex
 	cancels  map[string]context.CancelFunc // phoneID -> stop this phone's goroutine
@@ -40,15 +41,16 @@ type Manager struct {
 	wg       sync.WaitGroup
 }
 
-// NewManager builds a Manager. interval is how often each phone is polled
-// (the handoff doc leaves cadence as an open item; 30s is this slice's
-// pick, and it's a constructor argument specifically so it's easy to tune
-// later without touching the loop logic).
-func NewManager(store *dbstore.Store, dirs appdirs.Dirs, interval time.Duration) *Manager {
+// NewManager builds a Manager. interval is how often each phone is polled;
+// gapMs is the contiguity threshold for grouping downloaded segments into
+// clips (see dbstore.GroupingGapMs). Both are constructor arguments so
+// they're easy to tune without touching the loop logic.
+func NewManager(store *dbstore.Store, dirs appdirs.Dirs, interval time.Duration, gapMs int64) *Manager {
 	return &Manager{
 		store:    store,
 		dirs:     dirs,
 		interval: interval,
+		gapMs:    gapMs,
 		cancels:  make(map[string]context.CancelFunc),
 	}
 }
@@ -150,21 +152,21 @@ func (m *Manager) runOnce(ctx context.Context, phoneID string) {
 	}
 
 	client := phoneapi.New(phone.BaseURL, phone.Token)
-	resp, err := client.Clips(ctx, phone.SyncCursorMs)
+	resp, err := client.Segments(ctx, phone.SyncCursorMs)
 	if err != nil {
 		// Unreachable/auth-failed/etc: this is exactly the "phone can be
 		// flaky, don't let it wedge anything else" case — just log and let
 		// the next tick retry. Fleet/Phone-detail surfaces reachability
 		// live via its own GET /api/status call, not via this loop's state.
-		log.Printf("syncer[%s]: poll clips: %v", phoneID, err)
+		log.Printf("syncer[%s]: poll segments: %v", phoneID, err)
 		return
 	}
 	if err := m.store.UpdatePhoneLastSeen(phoneID, dbstore.NowMs()); err != nil {
 		log.Printf("syncer[%s]: update last_seen: %v", phoneID, err)
 	}
 
-	clips := resp.Clips
-	sort.Slice(clips, func(i, j int) bool { return clips[i].CreatedAtMs < clips[j].CreatedAtMs })
+	segments := resp.Segments
+	sort.Slice(segments, func(i, j int) bool { return segments[i].CreatedAtMs < segments[j].CreatedAtMs })
 
 	archiveDir, err := m.dirs.PhoneArchiveDir(phoneID)
 	if err != nil {
@@ -173,73 +175,119 @@ func (m *Manager) runOnce(ctx context.Context, phoneID string) {
 	}
 
 	cursor := phone.SyncCursorMs
-	for _, clip := range clips {
-		exists, err := m.store.ClipExists(phoneID, clip.Filename)
+	for _, seg := range segments {
+		exists, err := m.store.SegmentExists(phoneID, seg.Filename)
 		if err != nil {
-			log.Printf("syncer[%s]: check existing clip %s: %v", phoneID, clip.Filename, err)
+			log.Printf("syncer[%s]: check existing segment %s: %v", phoneID, seg.Filename, err)
 			break // stop this tick; retry from here next time
 		}
 		if exists {
 			// Already indexed (possibly since trashed/purged by the user) —
 			// never re-download. Safe to advance past it.
-			cursor = maxInt64(cursor, clip.CreatedAtMs)
+			cursor = maxInt64(cursor, seg.CreatedAtMs)
 			continue
 		}
 
-		localPath := filepath.Join(archiveDir, clip.Filename)
-		thumbPath := filepath.Join(archiveDir, clip.Filename+".jpg")
+		localPath := filepath.Join(archiveDir, seg.Filename)
+		thumbPath := filepath.Join(archiveDir, seg.Filename+".jpg")
 
-		if err := downloadToFile(ctx, client.DownloadClipFile, clip.Filename, localPath); err != nil {
+		if err := downloadToFile(ctx, client.DownloadSegmentFile, seg.Filename, localPath); err != nil {
 			if errors.Is(err, phoneapi.ErrEvicted) {
-				// Phone already evicted this clip from its ring buffer
+				// Phone already evicted this segment from its ring buffer
 				// between listing it and us fetching it — a normal race,
 				// not an error (see phone-http-api.md and the old
 				// prototype's identical lesson). Never retry it: advance
 				// past it and move on.
-				log.Printf("syncer[%s]: clip %s already evicted, skipping", phoneID, clip.Filename)
-				cursor = maxInt64(cursor, clip.CreatedAtMs)
+				log.Printf("syncer[%s]: segment %s already evicted, skipping", phoneID, seg.Filename)
+				cursor = maxInt64(cursor, seg.CreatedAtMs)
 				continue
 			}
 			// Any other failure (network hiccup, disk full, ...): stop this
-			// tick here so the next tick retries this same clip, rather
-			// than advancing the cursor past a clip we never actually got.
-			log.Printf("syncer[%s]: download clip %s: %v", phoneID, clip.Filename, err)
+			// tick here so the next tick retries this same segment, rather
+			// than advancing the cursor past a segment we never actually got.
+			log.Printf("syncer[%s]: download segment %s: %v", phoneID, seg.Filename, err)
 			break
 		}
 
 		// Thumbnail is best-effort: a missing thumbnail shouldn't block
-		// archiving the clip itself.
-		if err := downloadToFile(ctx, client.DownloadThumbnail, clip.Filename, thumbPath); err != nil {
-			log.Printf("syncer[%s]: download thumbnail %s: %v", phoneID, clip.Filename, err)
+		// archiving the segment itself.
+		if err := downloadToFile(ctx, client.DownloadSegmentThumbnail, seg.Filename, thumbPath); err != nil {
+			log.Printf("syncer[%s]: download thumbnail %s: %v", phoneID, seg.Filename, err)
 			thumbPath = ""
 		}
 
-		err = m.store.UpsertClip(dbstore.Clip{
-			PhoneID:       phoneID,
-			Filename:      clip.Filename,
-			State:         dbstore.ClipActive,
-			LocalPath:     localPath,
-			ThumbnailPath: thumbPath,
-			CreatedAtMs:   clip.CreatedAtMs,
-			DurationMs:    clip.DurationMs,
-			SizeBytes:     clip.SizeBytes,
-			Width:         clip.Width,
-			Height:        clip.Height,
-		})
+		endMs := seg.EndMs
+		if endMs == 0 {
+			endMs = seg.CreatedAtMs + seg.DurationMs
+		}
+
+		// Assign to a clip: extend the phone's open (active, most-recently-
+		// ended) clip if this segment starts within gapMs of its end,
+		// otherwise open a new one.
+		clipID, err := m.assignClip(phoneID, seg, endMs)
 		if err != nil {
-			log.Printf("syncer[%s]: index clip %s: %v", phoneID, clip.Filename, err)
+			log.Printf("syncer[%s]: assign clip for %s: %v", phoneID, seg.Filename, err)
 			break
 		}
 
-		// Only now — file downloaded AND DB row inserted — is it safe to
-		// move the cursor past this clip. A crash right here just re-pulls
-		// this same clip next run, which UpsertClip's ON CONFLICT DO
-		// NOTHING makes idempotent.
-		cursor = maxInt64(cursor, clip.CreatedAtMs)
+		err = m.store.UpsertSegment(dbstore.Segment{
+			PhoneID:       phoneID,
+			Filename:      seg.Filename,
+			ClipID:        clipID,
+			LocalPath:     localPath,
+			ThumbnailPath: thumbPath,
+			CreatedAtMs:   seg.CreatedAtMs,
+			DurationMs:    seg.DurationMs,
+			EndMs:         endMs,
+			SizeBytes:     seg.SizeBytes,
+			Width:         seg.Width,
+			Height:        seg.Height,
+		})
+		if err != nil {
+			log.Printf("syncer[%s]: index segment %s: %v", phoneID, seg.Filename, err)
+			break
+		}
+
+		// Only now — file downloaded, clip assigned, segment row inserted —
+		// is it safe to move the cursor. A crash right here re-pulls this
+		// same segment next run; UpsertSegment's ON CONFLICT DO NOTHING makes
+		// that idempotent (the clip may end up over-counted by one on that
+		// rare path — acceptable; the counts are display sugar).
+		cursor = maxInt64(cursor, seg.CreatedAtMs)
 		if err := m.store.AdvanceSyncCursor(phoneID, cursor); err != nil {
 			log.Printf("syncer[%s]: advance cursor: %v", phoneID, err)
 		}
 	}
+}
+
+// assignClip returns the clip id a freshly-downloaded segment belongs to,
+// extending the phone's current open clip when the segment is contiguous with
+// it (gap <= m.gapMs) or creating a new active clip otherwise.
+func (m *Manager) assignClip(phoneID string, seg phoneapi.SegmentMeta, endMs int64) (string, error) {
+	open, err := m.store.GetOpenClip(phoneID)
+	if err == nil && seg.CreatedAtMs-open.EndedAtMs <= m.gapMs {
+		if err := m.store.ExtendClip(open.ID, endMs, seg.SizeBytes); err != nil {
+			return "", err
+		}
+		return open.ID, nil
+	}
+	if err != nil && !errors.Is(err, dbstore.ErrNotFound) {
+		return "", err
+	}
+	clip := dbstore.Clip{
+		ID:           dbstore.NewClipID(),
+		PhoneID:      phoneID,
+		StartedAtMs:  seg.CreatedAtMs,
+		EndedAtMs:    endMs,
+		SegmentCount: 1,
+		SizeBytes:    seg.SizeBytes,
+		State:        dbstore.ClipActive,
+		CreatedAtMs:  dbstore.NowMs(),
+	}
+	if err := m.store.InsertClip(clip); err != nil {
+		return "", err
+	}
+	return clip.ID, nil
 }
 
 // downloadToFile streams a phoneapi binary download to disk. Written to a

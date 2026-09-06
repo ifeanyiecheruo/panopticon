@@ -34,8 +34,8 @@ not a one-shot task): `cd controller && wails dev`, which also opens
 `http://localhost:34115` for calling bound Go methods from an ordinary browser tab.
 
 On first launch it creates `data/` (SQLite DB + single-instance lock file) and `archive/`
-(downloaded clips, one subdirectory per paired phone) next to wherever the binary is run
-from. Both are gitignored — they're runtime state, not source.
+(downloaded segment files, one subdirectory per paired phone) next to wherever the binary is
+run from. Both are gitignored — they're runtime state, not source.
 
 A tray icon appears with "Open"/"Quit". Closing the window hides it (sync keeps running in
 the background); only the tray's "Quit" (or a frontend quit affordance calling
@@ -49,13 +49,17 @@ module, not part of the shipped app) implementing just enough of `phone-http-api
 pairing + sync:
 
 ```
-go run ../tools/mock-phone/cmd/mockphone -addr :8091 -invite TESTCODE1234 -clips 3
+go run ../tools/mock-phone/cmd/mockphone -addr :8091 -invite TESTCODE1234 -segments 6
 ```
+
+(`-segments` seeds that many fake segments as two back-to-back runs split by a gap, so the
+controller's segment→clip grouping collapses them into 2 gallery clips.)
 
 `internal/integrationtest` has automated tests against an equivalent in-process fake server,
 covering: successful pairing (with a real generated Ed25519 identity), invalid-invite vs.
-unreachable-address error classification, clip download + cursor advancement, and the
-evicted-clip-is-a-normal-skip behavior. Run with `go test ./...`.
+unreachable-address error classification, segment download + cursor advancement, grouping
+contiguous segments into one clip vs. splitting on a gap, and the
+evicted-segment-is-a-normal-skip behavior. Run with `go test ./...`.
 
 This was also verified manually end to end: `wails dev`'s browser-bindings URL
 (`http://localhost:34115`) driving the real Go backend against a running `mockphone`,
@@ -69,14 +73,17 @@ rows, and the Gallery/Trash screens reading them back correctly.
 - `internal/dbstore` — SQLite schema + typed queries (`modernc.org/sqlite`, a pure-Go driver
   — no CGO/gcc toolchain needed, same reasoning as the old prototype's `node:sqlite` choice).
   Tables: `identity` (controller's own Ed25519 keypair), `phones` (paired phones + bearer
-  token + sync cursor), `clips` (active/trashed/purged lifecycle), and `calibration`
+  token + sync cursor), `segments` (one row per synced file, each carrying its `clip_id`),
+  `clips` (the user-facing gallery item — a contiguous run of segments, with the
+  active/trashed/purged lifecycle and aggregate span/size/count), and `calibration`
   (manufacturer+model → last result JSON + source phone + timestamp; see `calibration.go`).
   Schema migrations are
   goose-managed (`internal/dbstore/schemas/db/*.sql`, applied automatically on every `Open()`)
   and query code is sqlc-generated (`internal/dbstore/queries/*.sql` → `queries/*.sql.go`) —
   see `internal/dbstore/README.md` for what's hand-written vs. generated and how to add a
-  migration or a query. `Store` itself (`db.go`/`identity.go`/`phones.go`/`clips.go`) is the
-  hand-written domain-shaped wrapper on top, unchanged from a caller's perspective.
+  migration or a query. `Store` itself (`db.go`/`identity.go`/`phones.go`/`clips.go`/`segments.go`)
+  is the hand-written domain-shaped wrapper on top. `RegroupUnassignedSegments` (`regroup.go`)
+  is the one-time backfill that groups segments carried over by the `002` migration.
 - `internal/identity` — generates/persists the controller's Ed25519 keypair.
 - `internal/phoneapi` — HTTP client for the phone routes, one explicit timeout per call
   type, sentinel errors (`ErrUnreachable`, `ErrUnauthorized`, `ErrInvalidInvite`,
@@ -95,15 +102,17 @@ rows, and the Gallery/Trash screens reading them back correctly.
   `internal/phoneapi/calibration.go` is the matching HTTP client surface (decodes the full
   per-resolution zoom map).
 - `internal/unpair` — `DELETE /api/pair` wiring. `Unpair` (safe path): checks
-  `GET /api/clips` for clips the phone still has that we never archived and returns
+  `GET /api/segments` for segments the phone still has that we never archived and returns
   `needs_confirmation` if any; requires the phone reachable and the revoke to succeed (or a 401
   — already forgotten) before dropping the local row. `Force`: best-effort revoke, drops the
-  row regardless. Either way already-archived clips are kept (`store.DeletePhone` removes only
+  row regardless. Either way already-archived footage is kept (`store.DeletePhone` removes only
   the pairing row); `syncer.reconcile` stops the phone's goroutine on its next tick.
 - `internal/syncer` — per-phone background poll loop (`syncPollInterval` in `main.go`, 30s by
-  default). Downloads new clips + thumbnails, advances the sync cursor only after each clip
-  is durably written and indexed (crash-safe/idempotent), treats a 404 on download as a
-  normal "already evicted" skip.
+  default). Downloads new segments + thumbnails, and as each one lands assigns it to a clip:
+  it extends the phone's open clip when the segment starts within `dbstore.GroupingGapMs`
+  (3000ms) of that clip's end, otherwise it opens a new clip. Advances the sync cursor only
+  after each segment is durably written, assigned, and indexed (crash-safe/idempotent), and
+  treats a 404 on download as a normal "already evicted" skip.
 - `internal/trayapp` — `getlantern/systray` Open/Quit menu; runs on its own goroutine
   alongside `wails.Run()`'s own message loop.
 - `internal/singleinstance` — Windows single-instance lock via an exclusive `CreateFile`
@@ -122,8 +131,10 @@ rows, and the Gallery/Trash screens reading them back correctly.
     the vanilla version had, including the loading flash on every clip selection.
   - `src/screens/` — one component per screen: `Fleet.tsx`, `PhoneDetail.tsx`,
     `Gallery.tsx`, `Trash.tsx`, `AddPhone.tsx`.
-  - `src/components/` — `Shell.tsx` (the left nav rail + main slot) and `ClipTiles.tsx`
-    (the day-grouped clip grid shared by Gallery and Trash).
+  - `src/components/` — `Shell.tsx` (the left nav rail + main slot), `ClipTiles.tsx`
+    (the day-grouped clip grid shared by Gallery and Trash, each tile a clip with a `×N`
+    segment badge), and `ClipPlayer.tsx` (a `<video>` that walks a clip's segments as a
+    playlist, advancing on `ended` and then handing off to the next clip).
   - `src/api.ts` — thin typed re-export of the generated Wails bindings
     (`generated/wailsjs/go/main/App` + `generated/wailsjs/go/models`) under stable names, so a
     binding-shape change only needs a fix in one place.
@@ -132,7 +143,7 @@ rows, and the Gallery/Trash screens reading them back correctly.
     physically separated from hand-written code) - regenerated by `wails build`/`wails dev`,
     never hand-edited.
   - `src/lib/` — `format.ts` (byte/duration/status-label formatting), `clips.ts`
-    (day-grouping + the `phoneId|filename` selection-key helper), `icons.tsx` (the inline
+    (day-grouping + the `phoneId|clipId` selection-key helper), `icons.tsx` (the inline
     SVG icon set, as small components instead of the old HTML-string map).
   - `src/types.ts` — shared `Route`/`AppState` types.
 
@@ -150,19 +161,20 @@ oversights:
   `calibration.EffectiveRect` helper are in place, but the overlay hangs off Live preview,
   which doesn't exist yet.
 - **Eviction-probe loop.** The handoff doc's tombstone-cleanup mechanism (probing
-  `/api/clips/:filename/file` on trashed/purged clips until a 404 confirms the phone's ring
-  buffer evicted them, then dropping the DB row) is not implemented. `DeleteClipPermanently`
-  and `EmptyTrash` purge the on-disk file immediately and mark the row `purged`, but purged
+  `/api/segments/:filename/file` on a purged clip's segments until a 404 confirms the phone's
+  ring buffer evicted them, then dropping the DB rows) is not implemented. `DeleteClipPermanently`
+  and `EmptyTrash` purge every segment file in the clip immediately and mark the clip row
+  `purged` (its segment rows stay as tombstones so resync can't resurrect them), but purged
   tombstones accumulate forever rather than eventually being dropped.
 - **Bulk arm / bulk stand-down** (Fleet's fleet-wide record/standby actions) — not
   implemented; this slice's Fleet screen is read-only (status display + drill-down).
   Likewise no per-phone rename action.
 - **QR-code pairing.** Only the paste-two-fields path is implemented (address + invite code,
   with full-URL autofill into either field). No webcam viewfinder.
-- **Gallery autoplay-on-end / custom scrubber.** Uses a native `<video controls>` element
-  instead of the mock's custom scrubber+playhead component. Native controls do give
-  play/pause/seek/fullscreen, just not the mock's exact visual treatment or
-  advance-to-next-clip-on-end behavior.
+- **Custom scrubber.** Uses a native `<video controls>` element instead of the mock's custom
+  scrubber+playhead component — native controls give play/pause/seek/fullscreen, just not the
+  mock's exact visual treatment. Advance-on-end *is* implemented now: `ClipPlayer` plays a
+  clip's segments as a playlist and auto-selects the next clip when the last one ends.
 - **Per-phone app-data directory.** `data/`/`archive/` are resolved relative to the current
   working directory (`internal/appdirs`), not a proper per-OS app-data directory
   (`os.UserConfigDir()`), for development convenience. Fine for `wails dev`/manual runs; a

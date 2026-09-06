@@ -12,16 +12,14 @@ type Calibration struct {
 }
 
 type Clip struct {
-	PhoneID       string
-	Filename      string
-	State         string
-	LocalPath     string
-	ThumbnailPath string
-	CreatedAtMs   int64
-	DurationMs    int64
-	SizeBytes     int64
-	Width         int64
-	Height        int64
+	ID           string
+	PhoneID      string
+	StartedAtMs  int64
+	EndedAtMs    int64
+	SegmentCount int64
+	SizeBytes    int64
+	State        string
+	CreatedAtMs  int64
 }
 
 type Identity struct {
@@ -41,4 +39,18 @@ type Phone struct {
 	LastSeenMs   int64
 	SyncCursorMs int64
 	CreatedAtMs  int64
+}
+
+type Segment struct {
+	PhoneID       string
+	Filename      string
+	ClipID        string
+	LocalPath     string
+	ThumbnailPath string
+	CreatedAtMs   int64
+	DurationMs    int64
+	EndMs         int64
+	SizeBytes     int64
+	Width         int64
+	Height        int64
 }

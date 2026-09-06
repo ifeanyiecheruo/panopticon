@@ -3,9 +3,9 @@ package com.panopticon.phoneapp.http
 import android.content.Context
 import android.util.Log
 import com.panopticon.phoneapp.calibration.CalibrationRunner
-import com.panopticon.phoneapp.clips.ClipStore
+import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.http.routes.calibrationRoutes
-import com.panopticon.phoneapp.http.routes.clipRoutes
+import com.panopticon.phoneapp.http.routes.segmentRoutes
 import com.panopticon.phoneapp.http.routes.deviceRoutes
 import com.panopticon.phoneapp.http.routes.modeRoutes
 import com.panopticon.phoneapp.http.routes.pairingRoutes
@@ -46,7 +46,7 @@ class PanopticonHttpServer(
     private val invites: InviteManager,
     private val appConfig: AppConfig,
     private val appState: AppState,
-    private val clipStore: ClipStore,
+    private val segmentStore: SegmentStore,
     private val calibrationRunner: CalibrationRunner,
     private val onModeChanged: (AppMode) -> Unit,
 ) {
@@ -121,9 +121,9 @@ class PanopticonHttpServer(
 
         routing {
             pairingRoutes(registry, invites, appConfig, androidContext)
-            deviceRoutes(androidContext, appConfig, appState, clipStore)
+            deviceRoutes(androidContext, appConfig, appState, segmentStore)
             modeRoutes(appState, onModeChanged)
-            clipRoutes(clipStore)
+            segmentRoutes(segmentStore)
             calibrationRoutes(calibrationRunner)
         }
     }

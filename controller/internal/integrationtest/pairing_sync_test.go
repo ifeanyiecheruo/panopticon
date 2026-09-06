@@ -25,9 +25,10 @@ import (
 	"panopticon-controller/internal/syncer"
 )
 
-type fakeClip struct {
+type fakeSegment struct {
 	filename    string
 	createdAtMs int64
+	durationMs  int64 // defaults to 1000 when zero
 	data        []byte
 }
 
@@ -36,7 +37,7 @@ type fakePhone struct {
 	invite      string
 	inviteUsed  bool
 	tokens      map[string]bool
-	clips       []fakeClip
+	segments    []fakeSegment
 	evictedName string // if set, this filename 404s on download even though listed
 
 	manufacturer string // defaults to "Google" if empty
@@ -209,25 +210,29 @@ func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePho
 	mux.HandleFunc("/api/config", authed(fp, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"deviceName": "Test Phone", "motionSensitivity": "medium", "storageCapBytes": 1000, "ringBufferMaxAgeMs": 1000, "rotationDegrees": 0})
 	}))
-	mux.HandleFunc("/api/clips", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/segments", authed(fp, func(w http.ResponseWriter, r *http.Request) {
 		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 		fp.mu.Lock()
 		defer fp.mu.Unlock()
 		var out []map[string]any
-		for _, c := range fp.clips {
-			if c.createdAtMs <= since {
+		for _, s := range fp.segments {
+			if s.createdAtMs <= since {
 				continue
 			}
+			dur := s.durationMs
+			if dur == 0 {
+				dur = 1000
+			}
 			out = append(out, map[string]any{
-				"filename": c.filename, "url": "/api/clips/" + c.filename + "/file",
-				"createdAtMs": c.createdAtMs, "durationMs": 1000, "endMs": c.createdAtMs + 1000,
-				"sizeBytes": len(c.data), "width": 100, "height": 100,
+				"filename": s.filename, "url": "/api/segments/" + s.filename + "/file",
+				"createdAtMs": s.createdAtMs, "durationMs": dur, "endMs": s.createdAtMs + dur,
+				"sizeBytes": len(s.data), "width": 100, "height": 100,
 			})
 		}
-		writeJSON(w, map[string]any{"clips": out})
+		writeJSON(w, map[string]any{"segments": out})
 	}))
-	mux.HandleFunc("/api/clips/", authed(fp, func(w http.ResponseWriter, r *http.Request) {
-		rest := strings.TrimPrefix(r.URL.Path, "/api/clips/")
+	mux.HandleFunc("/api/segments/", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.TrimPrefix(r.URL.Path, "/api/segments/")
 		parts := strings.SplitN(rest, "/", 2)
 		if len(parts) != 2 {
 			w.WriteHeader(http.StatusNotFound)
@@ -239,10 +244,10 @@ func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePho
 			return
 		}
 		fp.mu.Lock()
-		var found *fakeClip
-		for i := range fp.clips {
-			if fp.clips[i].filename == filename {
-				found = &fp.clips[i]
+		var found *fakeSegment
+		for i := range fp.segments {
+			if fp.segments[i].filename == filename {
+				found = &fp.segments[i]
 			}
 		}
 		fp.mu.Unlock()
@@ -372,19 +377,45 @@ func asPairingError(err error, target **pairing.Error) bool {
 	return ok
 }
 
-// TestSyncLoop_DownloadsClipsAndAdvancesCursor is the end-to-end sync
-// verification: pair against the mock phone (which is seeded with 2 clips),
-// start the syncer.Manager, and confirm the clip files+thumbnails actually
-// land on disk and get indexed in SQLite, and that the cursor advances so a
-// second run doesn't redownload anything.
-func TestSyncLoop_DownloadsClipsAndAdvancesCursor(t *testing.T) {
+// waitForSyncedSegments blocks until at least want segments (across all of the
+// phone's active clips) have been indexed, or fails the test on timeout.
+func waitForSyncedSegments(t *testing.T, store *dbstore.Store, phoneID string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		clips, err := store.ListClips(phoneID, dbstore.ClipActive)
+		if err != nil {
+			t.Fatalf("ListClips: %v", err)
+		}
+		total := 0
+		for _, c := range clips {
+			total += c.SegmentCount
+		}
+		if total >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for sync; got %d/%d segments", total, want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestSyncLoop_GroupsContiguousSegments is the end-to-end sync verification for
+// the segments→clips grouping: the mock phone is seeded with three back-to-back
+// segments (each starting well within the 3s threshold of the previous one's
+// end), and after the syncer runs they must collapse into a single clip whose
+// segment files + thumbnails are all on disk, with the cursor advanced so a
+// second run re-downloads nothing.
+func TestSyncLoop_GroupsContiguousSegments(t *testing.T) {
 	srv, fp := newFakePhoneServer(t, "GOOD-CODE")
 	store, dirs := newTestStore(t)
 
 	now := time.Now().UnixMilli()
-	fp.clips = []fakeClip{
-		{filename: "clip_0000001.mp4", createdAtMs: now - 5000, data: []byte("VIDEO-ONE-DATA")},
-		{filename: "clip_0000002.mp4", createdAtMs: now - 3000, data: []byte("VIDEO-TWO-DATA")},
+	fp.segments = []fakeSegment{
+		{filename: "seg_1.mp4", createdAtMs: now - 20000, data: []byte("A")},
+		{filename: "seg_2.mp4", createdAtMs: now - 17500, data: []byte("BB")},
+		{filename: "seg_3.mp4", createdAtMs: now - 15000, data: []byte("CCC")},
 	}
 
 	address := strings.TrimPrefix(srv.URL, "http://")
@@ -393,34 +424,38 @@ func TestSyncLoop_DownloadsClipsAndAdvancesCursor(t *testing.T) {
 		t.Fatalf("AddPhone failed: %v", err)
 	}
 
-	mgr := syncer.NewManager(store, dirs, 50*time.Millisecond)
+	mgr := syncer.NewManager(store, dirs, 50*time.Millisecond, dbstore.GroupingGapMs)
 	mgr.Start()
 	defer mgr.Stop()
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		clips, err := store.ListClips(result.PhoneID, dbstore.ClipActive)
-		if err != nil {
-			t.Fatalf("ListClips: %v", err)
-		}
-		if len(clips) == 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for sync; got %d/2 clips", len(clips))
-		}
-		time.Sleep(20 * time.Millisecond)
+	waitForSyncedSegments(t, store, result.PhoneID, 3)
+
+	clips, err := store.ListClips(result.PhoneID, dbstore.ClipActive)
+	if err != nil {
+		t.Fatalf("ListClips: %v", err)
+	}
+	if len(clips) != 1 {
+		t.Fatalf("expected the 3 contiguous segments to form 1 clip, got %d clips", len(clips))
+	}
+	if clips[0].SegmentCount != 3 {
+		t.Errorf("clip.SegmentCount = %d, want 3", clips[0].SegmentCount)
 	}
 
-	clips, _ := store.ListClips(result.PhoneID, dbstore.ClipActive)
-	for _, c := range clips {
-		if _, statErr := os.Stat(c.LocalPath); statErr != nil {
-			t.Errorf("expected clip file on disk at %s: %v", c.LocalPath, statErr)
+	segs, err := store.ListSegmentsForClip(clips[0].ID)
+	if err != nil {
+		t.Fatalf("ListSegmentsForClip: %v", err)
+	}
+	if len(segs) != 3 {
+		t.Fatalf("expected 3 segments in the clip, got %d", len(segs))
+	}
+	for _, s := range segs {
+		if _, statErr := os.Stat(s.LocalPath); statErr != nil {
+			t.Errorf("expected segment file on disk at %s: %v", s.LocalPath, statErr)
 		}
-		if c.ThumbnailPath == "" {
-			t.Errorf("expected a thumbnail path for %s", c.Filename)
-		} else if _, statErr := os.Stat(c.ThumbnailPath); statErr != nil {
-			t.Errorf("expected thumbnail file on disk at %s: %v", c.ThumbnailPath, statErr)
+		if s.ThumbnailPath == "" {
+			t.Errorf("expected a thumbnail path for %s", s.Filename)
+		} else if _, statErr := os.Stat(s.ThumbnailPath); statErr != nil {
+			t.Errorf("expected thumbnail file on disk at %s: %v", s.ThumbnailPath, statErr)
 		}
 	}
 
@@ -428,26 +463,26 @@ func TestSyncLoop_DownloadsClipsAndAdvancesCursor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPhone: %v", err)
 	}
-	if phone.SyncCursorMs < fp.clips[1].createdAtMs {
-		t.Errorf("expected cursor to advance past last clip's createdAtMs; cursor=%d want>=%d", phone.SyncCursorMs, fp.clips[1].createdAtMs)
+	if phone.SyncCursorMs < fp.segments[2].createdAtMs {
+		t.Errorf("expected cursor to advance past the last segment; cursor=%d want>=%d", phone.SyncCursorMs, fp.segments[2].createdAtMs)
 	}
 }
 
-// TestSyncLoop_TreatsEvictedClipAsSkipNotError verifies the "404 on
-// download == already evicted, normal skip" rule from phone-http-api.md and
-// the old prototype's identical lesson: a clip that 404s on file download
-// must be skipped (never indexed, never retried forever) while the OTHER
-// listed clip still syncs normally.
-func TestSyncLoop_TreatsEvictedClipAsSkipNotError(t *testing.T) {
+// TestSyncLoop_SplitsOnGap is the counterpart: two runs of two segments each,
+// separated by a gap well over the 3s threshold, must produce two distinct
+// clips.
+func TestSyncLoop_SplitsOnGap(t *testing.T) {
 	srv, fp := newFakePhoneServer(t, "GOOD-CODE")
 	store, dirs := newTestStore(t)
 
 	now := time.Now().UnixMilli()
-	fp.clips = []fakeClip{
-		{filename: "clip_evicted.mp4", createdAtMs: now - 5000, data: []byte("GONE")},
-		{filename: "clip_ok.mp4", createdAtMs: now - 3000, data: []byte("STILL-HERE")},
+	fp.segments = []fakeSegment{
+		{filename: "seg_a1.mp4", createdAtMs: now - 30000, data: []byte("A")},
+		{filename: "seg_a2.mp4", createdAtMs: now - 27500, data: []byte("BB")},
+		// run a2 ends at now-26500; run b1 starts at now-20000 -> ~6.5s gap.
+		{filename: "seg_b1.mp4", createdAtMs: now - 20000, data: []byte("CCC")},
+		{filename: "seg_b2.mp4", createdAtMs: now - 17500, data: []byte("DDDD")},
 	}
-	fp.evictedName = "clip_evicted.mp4"
 
 	address := strings.TrimPrefix(srv.URL, "http://")
 	result, err := pairing.AddPhone(context.Background(), store, address, "GOOD-CODE")
@@ -455,7 +490,49 @@ func TestSyncLoop_TreatsEvictedClipAsSkipNotError(t *testing.T) {
 		t.Fatalf("AddPhone failed: %v", err)
 	}
 
-	mgr := syncer.NewManager(store, dirs, 50*time.Millisecond)
+	mgr := syncer.NewManager(store, dirs, 50*time.Millisecond, dbstore.GroupingGapMs)
+	mgr.Start()
+	defer mgr.Stop()
+
+	waitForSyncedSegments(t, store, result.PhoneID, 4)
+
+	clips, err := store.ListClips(result.PhoneID, dbstore.ClipActive)
+	if err != nil {
+		t.Fatalf("ListClips: %v", err)
+	}
+	if len(clips) != 2 {
+		t.Fatalf("expected the gap to split into 2 clips, got %d", len(clips))
+	}
+	for _, c := range clips {
+		if c.SegmentCount != 2 {
+			t.Errorf("clip %s: SegmentCount = %d, want 2", c.ID, c.SegmentCount)
+		}
+	}
+}
+
+// TestSyncLoop_TreatsEvictedSegmentAsSkipNotError verifies the "404 on
+// download == already evicted, normal skip" rule from phone-http-api.md and
+// the old prototype's identical lesson: a segment that 404s on file download
+// must be skipped (never indexed, never retried forever) while the OTHER
+// listed segment still syncs normally.
+func TestSyncLoop_TreatsEvictedSegmentAsSkipNotError(t *testing.T) {
+	srv, fp := newFakePhoneServer(t, "GOOD-CODE")
+	store, dirs := newTestStore(t)
+
+	now := time.Now().UnixMilli()
+	fp.segments = []fakeSegment{
+		{filename: "seg_evicted.mp4", createdAtMs: now - 5000, data: []byte("GONE")},
+		{filename: "seg_ok.mp4", createdAtMs: now - 3000, data: []byte("STILL-HERE")},
+	}
+	fp.evictedName = "seg_evicted.mp4"
+
+	address := strings.TrimPrefix(srv.URL, "http://")
+	result, err := pairing.AddPhone(context.Background(), store, address, "GOOD-CODE")
+	if err != nil {
+		t.Fatalf("AddPhone failed: %v", err)
+	}
+
+	mgr := syncer.NewManager(store, dirs, 50*time.Millisecond, dbstore.GroupingGapMs)
 	mgr.Start()
 	defer mgr.Stop()
 
@@ -465,19 +542,19 @@ func TestSyncLoop_TreatsEvictedClipAsSkipNotError(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetPhone: %v", err)
 		}
-		if phone.SyncCursorMs >= fp.clips[1].createdAtMs {
+		if phone.SyncCursorMs >= fp.segments[1].createdAtMs {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for cursor to pass the evicted+ok clips; cursor=%d", phone.SyncCursorMs)
+			t.Fatalf("timed out waiting for cursor to pass the evicted+ok segments; cursor=%d", phone.SyncCursorMs)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	if exists, _ := store.ClipExists(result.PhoneID, "clip_evicted.mp4"); exists {
-		t.Errorf("evicted clip should never be indexed")
+	if exists, _ := store.SegmentExists(result.PhoneID, "seg_evicted.mp4"); exists {
+		t.Errorf("evicted segment should never be indexed")
 	}
-	if exists, _ := store.ClipExists(result.PhoneID, "clip_ok.mp4"); !exists {
-		t.Errorf("expected the non-evicted clip to be indexed")
+	if exists, _ := store.SegmentExists(result.PhoneID, "seg_ok.mp4"); !exists {
+		t.Errorf("expected the non-evicted segment to be indexed")
 	}
 }

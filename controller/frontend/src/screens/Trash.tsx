@@ -3,6 +3,7 @@ import { ListTrash, RestoreClip, DeleteClipPermanently, EmptyTrash, type ClipVie
 import { groupByDay, clipKey } from '../lib/clips';
 import { fmtDuration } from '../lib/format';
 import { DayGroupList } from '../components/ClipTiles';
+import { ClipPlayer } from '../components/ClipPlayer';
 import { TrashIcon, RestoreIcon } from '../lib/icons';
 
 interface TrashProps {
@@ -78,13 +79,19 @@ export function Trash({
   };
   const handleRestore = async () => {
     if (!selected) return;
-    await RestoreClip(selected.phoneId, selected.filename);
+    await RestoreClip(selected.phoneId, selected.clipId);
     onRestored();
   };
   const handleDelete = async () => {
     if (!selected) return;
-    await DeleteClipPermanently(selected.phoneId, selected.filename);
+    await DeleteClipPermanently(selected.phoneId, selected.clipId);
     onDeleted();
+  };
+  const handleClipFinished = () => {
+    if (!selected) return;
+    const idx = clips.findIndex((c) => clipKey(c) === clipKey(selected));
+    const next = idx >= 0 ? clips[idx + 1] : undefined;
+    if (next) onAutoSelect(clipKey(next));
   };
 
   return (
@@ -123,15 +130,16 @@ export function Trash({
         <div className="viewer-pane">
           {selected ? (
             <>
-              {/* No `controls` here — matches the vanilla version's trash
-                  viewer exactly (its video element has preload/poster/src
-                  but no controls attribute, unlike the Gallery viewer). */}
-              <video preload="metadata" poster={selected.thumbnailUrl} src={selected.videoUrl}></video>
+              {/* No `controls` here — matches the pre-split trash viewer
+                  (its video element had preload/poster/src but no controls
+                  attribute, unlike the Gallery viewer). */}
+              <ClipPlayer clip={selected} onFinished={handleClipFinished} />
               <div className="viewer-meta">
                 <div>
                   <div className="who">{selected.phoneName}</div>
                   <div className="when">
-                    {new Date(selected.createdAtMs).toLocaleString()} · {fmtDuration(selected.durationMs)}
+                    {new Date(selected.startedAtMs).toLocaleString()} · {fmtDuration(selected.durationMs)} ·{' '}
+                    {selected.segmentCount} segment{selected.segmentCount === 1 ? '' : 's'}
                   </div>
                 </div>
               </div>

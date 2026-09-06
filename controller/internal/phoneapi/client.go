@@ -302,9 +302,13 @@ func (c *Client) Config(ctx context.Context) (Config, error) {
 	return out, err
 }
 
-// ---- Clips (sync) ----
+// ---- Segments (sync) ----
+//
+// A "segment" is one recorded file. Grouping contiguous segments into "clips"
+// is a controller-side concern (see internal/syncer + dbstore) - the phone API
+// only knows segments.
 
-type ClipMeta struct {
+type SegmentMeta struct {
 	Filename    string `json:"filename"`
 	URL         string `json:"url"`
 	CreatedAtMs int64  `json:"createdAtMs"`
@@ -315,20 +319,20 @@ type ClipMeta struct {
 	Height      int    `json:"height"`
 }
 
-type ClipsResponse struct {
-	Clips []ClipMeta `json:"clips"`
+type SegmentsResponse struct {
+	Segments []SegmentMeta `json:"segments"`
 }
 
-// Clips performs the delta-pull: GET /api/clips?since=<sinceMs>.
-func (c *Client) Clips(ctx context.Context, sinceMs int64) (ClipsResponse, error) {
+// Segments performs the delta-pull: GET /api/segments?since=<sinceMs>.
+func (c *Client) Segments(ctx context.Context, sinceMs int64) (SegmentsResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
 	defer cancel()
-	var out ClipsResponse
-	err := c.doJSON(ctx, http.MethodGet, "/api/clips", url.Values{"since": {strconv.FormatInt(sinceMs, 10)}}, nil, &out)
+	var out SegmentsResponse
+	err := c.doJSON(ctx, http.MethodGet, "/api/segments", url.Values{"since": {strconv.FormatInt(sinceMs, 10)}}, nil, &out)
 	return out, err
 }
 
-// downloadBinary is the shared implementation for clip file/thumbnail
+// downloadBinary is the shared implementation for segment file/thumbnail
 // downloads: on success the caller owns the returned ReadCloser and MUST
 // close it. A 404 becomes ErrEvicted — per phone-http-api.md ("404 if
 // evicted") and the old prototype's lesson, this is a normal skip, not a
@@ -372,12 +376,12 @@ func (r *cancelOnCloseReader) Close() error {
 	return r.ReadCloser.Close()
 }
 
-// DownloadClipFile fetches GET /api/clips/:filename/file.
-func (c *Client) DownloadClipFile(ctx context.Context, filename string) (io.ReadCloser, error) {
-	return c.downloadBinary(ctx, "/api/clips/"+url.PathEscape(filename)+"/file", fileTimeout)
+// DownloadSegmentFile fetches GET /api/segments/:filename/file.
+func (c *Client) DownloadSegmentFile(ctx context.Context, filename string) (io.ReadCloser, error) {
+	return c.downloadBinary(ctx, "/api/segments/"+url.PathEscape(filename)+"/file", fileTimeout)
 }
 
-// DownloadThumbnail fetches GET /api/clips/:filename/thumbnail.
-func (c *Client) DownloadThumbnail(ctx context.Context, filename string) (io.ReadCloser, error) {
-	return c.downloadBinary(ctx, "/api/clips/"+url.PathEscape(filename)+"/thumbnail", thumbnailTimeout)
+// DownloadSegmentThumbnail fetches GET /api/segments/:filename/thumbnail.
+func (c *Client) DownloadSegmentThumbnail(ctx context.Context, filename string) (io.ReadCloser, error) {
+	return c.downloadBinary(ctx, "/api/segments/"+url.PathEscape(filename)+"/thumbnail", thumbnailTimeout)
 }
