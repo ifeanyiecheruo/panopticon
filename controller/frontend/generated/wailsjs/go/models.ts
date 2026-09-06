@@ -7,6 +7,7 @@ export namespace calibration {
 	    digitalRange: phoneapi.FloatRange2;
 	    crossoverRatio?: number;
 	    positionHonored: boolean;
+	    positionMetadataLied: boolean;
 	    qualityCollapseRatio?: number;
 	    resolutions: number;
 	
@@ -22,6 +23,7 @@ export namespace calibration {
 	        this.digitalRange = this.convertValues(source["digitalRange"], phoneapi.FloatRange2);
 	        this.crossoverRatio = source["crossoverRatio"];
 	        this.positionHonored = source["positionHonored"];
+	        this.positionMetadataLied = source["positionMetadataLied"];
 	        this.qualityCollapseRatio = source["qualityCollapseRatio"];
 	        this.resolutions = source["resolutions"];
 	    }

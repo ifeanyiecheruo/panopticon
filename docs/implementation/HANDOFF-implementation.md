@@ -10,22 +10,26 @@ already lives elsewhere and would drift.
 **Slices added since the initial handoff:**
 
 - **Calibration (both sides), incl. the real empirical zoom probe.** phone-app's
-  `CalibrationRunner` now does a real per-camera / per-`StreamConfigurationMap`-size / per-zoom
+  `CalibrationRunner` does a real per-camera / per-`StreamConfigurationMap`-size / per-zoom
   sweep — applies `CONTROL_ZOOM_RATIO` (API 30+) / `SCALER_CROP_REGION`, reads back the
-  effective crop, checks ratio + off-centre position honouring, tracks the active physical
-  camera (optical→digital crossover) and a Laplacian-variance sharpness score; derives
-  `opticalRange` / `digitalRange` / `crossoverRatio` / `positionHonored` / `qualityCollapseRatio`
-  per camera. A new `standby` mode (RECORD is sticky) frees the camera for it. controller
-  decodes the full per-resolution map, shows the per-camera summary in Phone detail (button
-  disabled + reason while the phone is recording), and has `calibration.EffectiveRect` (requested
-  zoom+centre → honoured crop). **Verified end to end on the Pixel 6 (API 36 — `CONTROL_ZOOM_RATIO`
-  + logical multi-camera; probe correctly located the ultrawide→wide handoff at 1.15×) and the
-  BLU G5 (API 28 — legacy `SCALER_CROP_REGION` path).** **Still to do:** a lit resolution-chart
-  run to trust `qualityCollapseRatio`, and the controller-side **zoom-rect picker UI** that
-  consumes `EffectiveRect` (deferred — it hangs off Live preview). See `docs/QUIRKS.md`'s
-  "Calibration zoom probe" for the device findings + the weak-HAL quirks the probe works around
-  (API-gated-key `NoSuchFieldError`, session-recycle device disconnect, `ImageReader.close()`
-  SIGSEGV race, front-camera control-interleaving readback corruption).
+  effective crop, tracks the active physical camera (optical→digital crossover), a
+  brightness-normalised median-of-frames sharpness score, and — for an off-centre crop — both
+  the `SCALER_CROP_REGION` metadata round-trip **and** whether the pixels actually shifted
+  (`frameShifted`), so a HAL that echoes a crop it doesn't apply is caught. Derives
+  `opticalRange` / `digitalRange` / `crossoverRatio` / `positionHonored` /
+  `positionMetadataLiedRatios` / `qualityCollapseRatio` per camera. A new `standby` mode (RECORD
+  is sticky) frees the camera for it. controller decodes the full per-resolution map, shows the
+  per-camera summary in Phone detail (button disabled + reason while the phone is recording),
+  and has `calibration.EffectiveRect` (requested zoom+centre → honoured crop).
+  **Verified end to end:** ratio honouring + the optical/digital crossover on the Pixel 6 (probe
+  located the ultrawide→wide handoff at 1.15×) and the BLU G5. **Still open:** a Pixel 6 re-run
+  with the current probe (the frame-content position check needs a wide-zoom device + a
+  textured/lit scene — the Pixel keeps dropping off USB); and the controller-side **zoom-rect
+  picker UI** that consumes `EffectiveRect` (deferred — it hangs off Live preview). See
+  `docs/QUIRKS.md`'s "Calibration zoom probe" for the device findings + the weak-HAL quirks the
+  probe works around (API-gated-key `NoSuchFieldError`, session-recycle device disconnect,
+  `ImageReader.close()` SIGSEGV race, front-camera control-interleaving readback corruption,
+  metadata-only position check being unreliable).
 
 - **Motion-gated recording (phone-app only).** The always-record pipeline is gone. `CameraPipeline`
   now runs an always-on analysis `ImageReader` → `motion/MotionDetector` (frame-difference on a

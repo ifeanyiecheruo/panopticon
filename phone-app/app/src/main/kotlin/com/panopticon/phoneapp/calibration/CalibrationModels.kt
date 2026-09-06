@@ -68,6 +68,11 @@ data class ZoomSample(
     /** Off-centre probe: did an intentionally off-centre crop keep its offset? */
     val positionRequestedNorm: RectNorm? = null,
     val positionReportedNorm: RectNorm? = null,
+    /** Did the reported SCALER_CROP_REGION *metadata* echo the off-centre request? */
+    val positionMetadataMatch: Boolean? = null,
+    /** Did the *pixels* actually shift vs. the centred frame at this zoom? (the truth) */
+    val positionFrameShifted: Boolean? = null,
+    /** = positionFrameShifted: whether the crop position was really honoured. */
     val positionHonored: Boolean? = null,
     /** Which physical camera answered (logical multi-cam only, API 29+). */
     val activePhysicalId: String? = null,
@@ -118,6 +123,10 @@ data class CameraCalibration(
     val crossoverMethod: String = "none", // active-physical-id | focal-length | single-camera | none
     val positionHonored: Boolean = false,
     val positionFailRatios: List<Float> = emptyList(),
+    /** Ratios where the metadata echoed the off-centre request but the pixels
+     *  did NOT shift - i.e. the device reported a crop position it didn't apply
+     *  (the old prototype's "the device lies about it"). */
+    val positionMetadataLiedRatios: List<Float> = emptyList(),
     /** First requested ratio at which sharpness fell below ~60% of the ratio-1.0 baseline. */
     val qualityCollapseRatio: Float? = null,
     val perResolution: Map<String, ResolutionZoomMap> = emptyMap(),

@@ -39,6 +39,7 @@ type CameraZoomSummary struct {
 	DigitalRange         phoneapi.FloatRange2 `json:"digitalRange"`
 	CrossoverRatio       *float64             `json:"crossoverRatio"`
 	PositionHonored      bool                 `json:"positionHonored"`
+	PositionMetadataLied bool                 `json:"positionMetadataLied"`
 	QualityCollapseRatio *float64             `json:"qualityCollapseRatio"`
 	Resolutions          int                  `json:"resolutions"`
 }
@@ -98,6 +99,7 @@ func Lookup(store *dbstore.Store, phone dbstore.Phone) (View, error) {
 			DigitalRange:         cam.DigitalRange,
 			CrossoverRatio:       cam.CrossoverRatio,
 			PositionHonored:      cam.PositionHonored,
+			PositionMetadataLied: len(cam.PositionMetadataLiedRatios) > 0,
 			QualityCollapseRatio: cam.QualityCollapseRatio,
 			Resolutions:          len(cam.PerResolution),
 		})

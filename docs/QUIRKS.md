@@ -175,42 +175,61 @@ that, the front camera reads back clean (`reported ≈ requested` across 1.0–1
 result.
 **Where:** `calibration/CalibrationRunner.kt` (`captureOneShot`, `probeResolution`).
 
-#### Frame-sharpness (variance-of-Laplacian) is only trustworthy against a lit, textured target
-The sharpness values are tiny (single/low-double digits) unless the camera sees a genuinely
-lit, detailed scene — "lights on in the room" isn't enough if the phone is face-down or aimed
-at a blank surface. On both device runs `qualityCollapseRatio` fired somewhere in the 1.3–4.9×
-band, but the underlying `sharpnessRelToBaseline` curve was noisy enough that the *exact* ratio
-shouldn't be trusted; the *shape* (digital zoom softens as you push past ~2–3× on the Pixel 6
-main sensor, faster on the fixed-focus front camera) is real. Re-run against a resolution chart
-before quoting a number.
-**Where:** `calibration/ZoomMath.varianceOfLaplacian` / `deriveQualityCollapse`.
+#### "Position honoured?" can't be answered from `SCALER_CROP_REGION` metadata alone — the HAL can echo a crop it doesn't apply
+**What we did first:** `positionHonored` = "did the reported `SCALER_CROP_REGION` centre match
+the off-centre request (within tolerance)". On the Pixel 6 back camera (`SCALER_CROPPING_TYPE =
+CENTER_ONLY`) that came back `true` — which is impossible if the device really can't do an
+off-centre crop.
+**What we do now:** the off-centre probe also **grabs a frame** and compares its pixels to the
+centred frame at the same zoom (`ZoomMath.frameShifted` — grid-subsampled mean-abs-diff,
+luma-normalised, null verdict below a min-brightness). `positionHonored` is now the *pixel*
+verdict; `positionMetadataMatch` is recorded separately, and a ratio where the metadata matched
+but the pixels didn't move is added to `positionMetadataLiedRatios` — that's the old prototype's
+"the device lies about it", now measured directly rather than trusted-by-metadata.
+**Where:** `calibration/ZoomMath.frameShifted`, `probeResolution`, `summariseCamera`.
+
+#### Frame-sharpness is normalised now, but still wants a lit, textured target
+`ZoomMath.sharpness` is variance-of-Laplacian **divided by mean-luma²** (the raw Laplacian
+scales with luma amplitude), taken as the **median of ~4 frames** per zoom step, with the
+baseline = the sharpest of the first four samples. `deriveQualityCollapse` now requires a
+**sustained** drop (below 0.5× baseline and staying there), so a single noisy frame no longer
+fires it. That removes most of the lighting sensitivity, but a genuinely blank / dark scene
+still can't tell blur from "nothing to focus on" — for an absolute `qualityCollapseRatio`,
+point the camera at a resolution chart. The *shape* (digital zoom softens past ~2–3× on a main
+sensor, faster on a fixed-focus front camera) is the trustworthy part.
+**Where:** `calibration/ZoomMath.sharpness` / `medianSharpness` / `deriveQualityCollapse`.
 
 #### Device findings
+
+Two probe generations here: the first (metadata-only position check) and the current one
+(frame-content position check + normalised sharpness). Ratio/crossover findings are the same
+across both; position and quality-collapse findings below are from the current probe.
 
 **Pixel 6 (API 36), camera 0 / back — logical multi-camera, physicals `2` + `3`:**
 `CONTROL_ZOOM_RATIO_RANGE = 0.67–7.0`, `SCALER_CROPPING_TYPE = CENTER_ONLY`. The probe
 **empirically located the optical→digital handoff at 1.15×**: `LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID`
 is `3` (ultrawide, `LENS_FOCAL_LENGTH` 2.35 mm) for requested ratios ≤ 0.96×, flips to `2`
 (main wide, 6.81 mm) at 1.15× and stays there to 7.0× — so `opticalRange 0.67–1.15`,
-`digitalRange 1.15–7.0`. **Every requested ratio was honoured** (`reportedRatio ≈ requested`
-across the whole range), and — despite `CENTER_ONLY` cropping — the off-centre position probe
-came back honoured with the one-shot capture fix. 24/24 YUV output sizes, all 14 zoom steps.
+`digitalRange 1.15–7.0`. **Every requested ratio honoured** (`reportedRatio ≈ requested` across
+0.67–7.0×), 24/24 YUV output sizes. Position: **re-run with the frame-content check pending** —
+the Pixel 6's wide zoom range is what makes that check conclusive, and it dropped off USB
+before the improved probe could run on it.
 
 **Pixel 6, camera 1 / front — single sensor:** `CONTROL_ZOOM_RATIO_RANGE = 1.0–10.0`,
-all-digital (`crossoverMethod = "single-camera"`). Every ratio honoured 1.0–10.0×, position
-honoured, 24/24 sizes. (This is the camera whose readback was junk before the one-shot fix —
-see above.)
+all-digital (`crossoverMethod = "single-camera"`). Every ratio honoured 1.0–10.0×, 24/24 sizes.
 
 **BLU G5 (API 28), both cameras — single physical sensor, legacy `SCALER_CROP_REGION` path:**
 `crossoverMethod = "single-camera"`, `SCALER_AVAILABLE_MAX_DIGITAL_ZOOM = 2.0`, no
-`CONTROL_ZOOM_RATIO_RANGE`. `SCALER_CROPPING_TYPE = FREEFORM`; reported crop area tracked the
-request cleanly across all 24 sizes and **the off-centre crop's position was honoured** at
-every ratio.
+`CONTROL_ZOOM_RATIO_RANGE`, `SCALER_CROPPING_TYPE = FREEFORM`. Reported crop area tracked the
+request cleanly across all 24 sizes. **Position: inconclusive** — with only a 2.0× max the
+off-centre shift clears the "visible fraction of the frame" gate at just the top ~1.7–2.0×
+band, and the dark low-texture test scene made `frameShifted` jittery there. The metadata-only
+first run said "honoured"; the frame-content run couldn't confidently confirm or deny.
 
-**Net:** the old prototype's "`SCALER_CROP_REGION` position isn't honoured, and the device lies
-about it" finding **did not reproduce** on either device once the probe stopped corrupting its
-own readback. Worth re-checking with a tighter position tolerance and on more hardware before
-calling it settled.
+**Net:** ratio honouring and the optical/digital crossover are solid. The old prototype's
+"`SCALER_CROP_REGION` position isn't honoured, and the device lies about it" finding is **still
+open** — it needs the current probe run against a device with a wide zoom range (Pixel 6) and a
+textured, lit scene, which we haven't managed to line up yet.
 
 ### Carried forward, not yet re-verified in this project
 
@@ -220,9 +239,10 @@ still haven't been re-tested against the Pixel 6) - see `panopticon-prototype/QU
 original write-ups:
 
 - `SCALER_CROP_REGION` position isn't honored, and the device lies about it — the calibration
-  probe measures exactly this (`positionHonored` / `positionFailRatios` per camera). **Did not
-  reproduce** on the Pixel 6 or the BLU G5 (see "Device findings" in the zoom-probe section);
-  keep it on the list until re-checked with a tighter tolerance and on more hardware.
+  probe now measures this by frame content (`positionHonored` / `positionFailRatios` /
+  `positionMetadataLiedRatios` per camera), not metadata alone. **Still open:** the conclusive
+  run needs a wide-zoom device (Pixel 6) *and* a textured lit scene, which hasn't lined up yet
+  (see "Device findings" in the zoom-probe section).
 - Digital zoom quality collapses well below the declared max, invisible to crop-region metadata —
   the probe's `qualityCollapseRatio` targets this. The *shape* showed up on both devices
   (softening past ~2–3×) but the exact ratio needs a lit resolution-chart run to trust (see the

@@ -58,26 +58,60 @@ class ZoomMathTest {
     }
 
     @Test
-    fun `positionHonored flags a recentred crop`() {
+    fun `positionMetadataMatch compares reported crop centre to the request`() {
         val requested = ZoomMath.offsetCropForRatio(active, 2f, 0.6f, 0.6f)
         val recentred = ZoomMath.centeredCropForRatio(active, 2f)
-        assertTrue(ZoomMath.positionHonored(requested, requested, tolPx = 40))
-        assertFalse(ZoomMath.positionHonored(requested, recentred, tolPx = 40))
+        assertTrue(ZoomMath.positionMetadataMatch(requested, requested, tolPx = 40))
+        assertFalse(ZoomMath.positionMetadataMatch(requested, recentred, tolPx = 40))
+        assertFalse(ZoomMath.positionMetadataMatch(requested, null, tolPx = 40))
     }
 
     @Test
-    fun `varianceOfLaplacian is high on a checkerboard and near zero on a flat field`() {
+    fun `frameShifted is true when the pixels actually differ, false when near-identical`() {
+        val w = 96
+        val h = 72
+        // A vertical gradient scene.
+        val centred = ByteArray(w * h) { i -> ((i % w) * 255 / w).toByte() }
+        // Same scene shifted left by ~20px (what an off-centre crop toward +x looks like).
+        val shifted = ByteArray(w * h) { i ->
+            val x = (i % w + 20).coerceAtMost(w - 1); val y = i / w
+            (x * 255 / w).toByte()
+        }
+        val noiseOnly = ByteArray(w * h) { i -> ((i % w) * 255 / w + ((i * 7) % 3) - 1).coerceIn(0, 255).toByte() }
+
+        assertTrue(ZoomMath.frameShifted(centred, shifted, w, h, w) == true)
+        assertTrue(ZoomMath.frameShifted(centred, noiseOnly, w, h, w) == false)
+    }
+
+    @Test
+    fun `frameShifted returns null on a too-dark scene`() {
+        val w = 64; val h = 48
+        val darkA = ByteArray(w * h) { 2 }
+        val darkB = ByteArray(w * h) { 3 }
+        assertNull(ZoomMath.frameShifted(darkA, darkB, w, h, w))
+    }
+
+    @Test
+    fun `sharpness is high on a checkerboard, ~zero on flat, and brightness-normalised`() {
         val w = 64
         val h = 64
-        val flat = ByteArray(w * h) { 128.toByte() }
-        val checker = ByteArray(w * h) { i ->
+        fun checker(level: Int) = ByteArray(w * h) { i ->
             val x = i % w; val y = i / w
-            (if ((x + y) % 2 == 0) 0 else 255).toByte()
+            (if ((x + y) % 2 == 0) 0 else level).toByte()
         }
-        val flatVar = ZoomMath.varianceOfLaplacian(flat, w, h, w, 48)
-        val checkerVar = ZoomMath.varianceOfLaplacian(checker, w, h, w, 48)
-        assertEquals(0.0, flatVar, 1e-6)
-        assertTrue("checker=$checkerVar", checkerVar > 10_000.0)
+        val flat = ByteArray(w * h) { 128.toByte() }
+        assertEquals(0.0, ZoomMath.sharpness(flat, w, h, w, 48), 1e-9)
+        val dim = ZoomMath.sharpness(checker(120), w, h, w, 48)
+        val bright = ZoomMath.sharpness(checker(240), w, h, w, 48)
+        assertTrue("dim=$dim", dim > 0.5)
+        // Same relative texture at 2x brightness => normalised score within ~2x.
+        assertTrue("dim=$dim bright=$bright", bright in (dim * 0.4)..(dim * 2.5))
+    }
+
+    @Test
+    fun `medianSharpness ignores a single outlier`() {
+        assertEquals(3.0, ZoomMath.medianSharpness(listOf(3.0, 3.1, 2.9, 99.0)), 0.3)
+        assertEquals(0.0, ZoomMath.medianSharpness(emptyList()), 0.0)
     }
 
     @Test
@@ -106,10 +140,13 @@ class ZoomMathTest {
     }
 
     @Test
-    fun `deriveQualityCollapse returns the first ratio below the drop threshold`() {
-        val ratios = listOf(1f, 2f, 3f, 4f, 5f)
-        val rel = listOf(1.0, 0.9, 0.7, 0.5, 0.3)
-        assertEquals(4f, ZoomMath.deriveQualityCollapse(ratios, rel)!!, 1e-4f)
-        assertNull(ZoomMath.deriveQualityCollapse(ratios, listOf(1.0, 1.0, 0.95, 0.9, 0.8)))
+    fun `deriveQualityCollapse needs a sustained drop, not a single dip`() {
+        val ratios = listOf(1f, 2f, 3f, 4f, 5f, 6f)
+        // Sustained drop below 0.5 from ratio 4x onward.
+        assertEquals(4f, ZoomMath.deriveQualityCollapse(ratios, listOf(1.0, 0.9, 0.7, 0.4, 0.3, 0.25))!!, 1e-4f)
+        // A single noisy dip at 3x that recovers => not a collapse.
+        assertNull(ZoomMath.deriveQualityCollapse(ratios, listOf(1.0, 0.9, 0.3, 0.9, 0.85, 0.8)))
+        // Never drops => null.
+        assertNull(ZoomMath.deriveQualityCollapse(ratios, listOf(1.0, 1.0, 0.9, 0.8, 0.7, 0.6)))
     }
 }

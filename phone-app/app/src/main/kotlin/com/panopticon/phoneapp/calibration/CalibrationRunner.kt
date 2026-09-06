@@ -380,7 +380,6 @@ class CalibrationRunner(
                 lockAe = true
 
                 val result = primary
-                val frame = frameHolder.get()
 
                 val reportedRatio = if (hasZoomRatio && result != null) ZoomRatioApi30.readResult(result) else null
                 val reportedCrop = result?.get(CaptureResult.SCALER_CROP_REGION)?.toIntRect()
@@ -388,33 +387,63 @@ class CalibrationRunner(
                     ?: reportedRatio?.let { ZoomMath.centeredCropForRatio(activeRect, it) }
                     ?: requestedCrop
                 val effRatioForHonor = reportedRatio ?: reportedCrop?.let { ZoomMath.ratioFromCrop(it, activeRect) }
-                val sharpness = frame?.let {
-                    ZoomMath.varianceOfLaplacian(it.y, it.width, it.height, it.rowStride, SHARPNESS_PATCH)
-                } ?: 0.0
                 val activePhysical = if (hasActivePhysicalId && result != null)
                     ActivePhysicalIdApi29.read(result) else null
                 val focal = result?.get(CaptureResult.LENS_FOCAL_LENGTH)
 
+                // Sharpness: median of a few frames off the (still-running,
+                // centred) repeating stream - one frame is too noisy.
+                val sharps = ArrayList<Double>(4)
+                repeat(4) {
+                    delay(45)
+                    frameHolder.get()?.let { f ->
+                        sharps += ZoomMath.sharpness(f.y, f.width, f.height, f.rowStride, SHARPNESS_PATCH)
+                    }
+                }
+                val sharpness = ZoomMath.medianSharpness(sharps.filter { it > 0.0 })
+                val centredFrame = frameHolder.get()
+
                 var positionRequestedNorm: RectNorm? = null
                 var positionReportedNorm: RectNorm? = null
-                var positionHonored: Boolean? = null
+                var positionMetadataMatch: Boolean? = null
+                var positionFrameShifted: Boolean? = null
 
-                // ---- off-centre crop-region probe (position honoured?): a
-                //      one-shot capture so the primary repeating stream is
-                //      untouched. Metadata only - no frame needed. ----
-                if (ratio in positionProbeRatios && ratio > 1.02f && !lost.get()) {
+                // ---- off-centre crop probe: swap the repeating request to an
+                //      off-centre crop, grab a frame, swap back. Compare the
+                //      metadata round-trip AND the actual pixels vs. the centred
+                //      frame - a HAL can echo the crop it didn't apply. Only
+                //      worth doing where the requested shift is a visible
+                //      fraction of the frame; near ratio 1 the crop slack (and
+                //      so any shift) is too small to see against sensor noise. ----
+                val offCrop = ZoomMath.offsetCropForRatio(activeRect, ratio, 0.7f, 0.7f)
+                val centredCrop = ZoomMath.centeredCropForRatio(activeRect, ratio)
+                val shiftPx = kotlin.math.abs(offCrop.centerX - centredCrop.centerX)
+                if (ratio in positionProbeRatios && shiftPx >= activeRect.width / 12f && !lost.get() && centredFrame != null) {
                     try {
-                        val offCrop = ZoomMath.offsetCropForRatio(activeRect, ratio, 0.6f, 0.6f)
                         val pb = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                         pb.addTarget(reader.surface)
                         pb.set(CaptureRequest.CONTROL_AE_LOCK, true)
                         pb.set(CaptureRequest.CONTROL_AWB_LOCK, true)
                         pb.set(CaptureRequest.SCALER_CROP_REGION, offCrop.toRect())
-                        val pResult = captureOneShot(session, pb.build())
-                        val pReported = pResult?.get(CaptureResult.SCALER_CROP_REGION)?.toIntRect()
+                        session.setRepeatingRequest(pb.build(), captureCallback, callbackHandler)
+                        delay(260)
+                        val pReported = resultHolder.get()?.get(CaptureResult.SCALER_CROP_REGION)?.toIntRect()
+                        val offFrame = frameHolder.get()
+                        // restore the centred primary stream before the next step
+                        session.setRepeatingRequest(primaryRequest(), captureCallback, callbackHandler)
+                        delay(120)
+
                         positionRequestedNorm = ZoomMath.normalize(offCrop, activeRect)
                         positionReportedNorm = pReported?.let { ZoomMath.normalize(it, activeRect) }
-                        positionHonored = ZoomMath.positionHonored(offCrop, pReported, tolPx = activeRect.width / 50)
+                        positionMetadataMatch = ZoomMath.positionMetadataMatch(
+                            offCrop, pReported, tolPx = (offCrop.width / 12).coerceAtLeast(8),
+                        )
+                        positionFrameShifted = if (offFrame != null && offFrame.width == centredFrame.width) {
+                            ZoomMath.frameShifted(
+                                centredFrame.y, offFrame.y,
+                                offFrame.width, offFrame.height, offFrame.rowStride,
+                            )
+                        } else null
                     } catch (e: Exception) {
                         Log.w(TAG, "position probe at ${ratio}x failed", e)
                     }
@@ -428,7 +457,9 @@ class CalibrationRunner(
                     effectiveCropNorm = ZoomMath.normalize(effectiveCrop, activeRect),
                     positionRequestedNorm = positionRequestedNorm,
                     positionReportedNorm = positionReportedNorm,
-                    positionHonored = positionHonored,
+                    positionMetadataMatch = positionMetadataMatch,
+                    positionFrameShifted = positionFrameShifted,
+                    positionHonored = positionFrameShifted,
                     activePhysicalId = activePhysical,
                     lensFocalLengthMm = focal,
                     sharpness = sharpness,
@@ -453,7 +484,10 @@ class CalibrationRunner(
             runCatching { reader.close() }
         }
 
-        val baseline = samples.firstOrNull { it.sharpness > 0.0 }?.sharpness ?: 0.0
+        // Baseline = the best (sharpest) of the first few samples - the wide
+        // end, where digital zoom hasn't kicked in. Using sample[0] blindly
+        // would anchor to the ultrawide, which is often the softest.
+        val baseline = samples.take(4).map { it.sharpness }.filter { it > 0.0 }.maxOrNull() ?: 0.0
         val withRel = if (baseline > 0.0) {
             samples.map { it.copy(sharpnessRelToBaseline = it.sharpness / baseline) }
         } else samples
@@ -480,17 +514,29 @@ class CalibrationRunner(
         )
 
         val allSamples = perResolution.values.flatMap { it.samples }
-        val posProbes = allSamples.filter { it.positionHonored != null }
-        val posHonored = posProbes.isNotEmpty() && posProbes.all { it.positionHonored == true }
-        val posFailRatios = posProbes.filter { it.positionHonored == false }
+        // Only frame-content verdicts we're confident in (probe ran, scene wasn't
+        // too dark to tell): positionFrameShifted != null.
+        val posProbes = allSamples.filter { it.positionFrameShifted != null }
+        val shifted = posProbes.count { it.positionFrameShifted == true }
+        // "Honoured" needs a clear majority of confident probes showing the pixels moved.
+        val posHonored = posProbes.size >= 3 && shifted >= (posProbes.size * 3 + 4) / 5
+        val posFailRatios = posProbes.filter { it.positionFrameShifted == false }
             .map { it.requestedRatio }.distinct().sorted()
+        // "The device lied" = a clear majority echoed the off-centre crop in
+        // metadata while the pixels stayed put. A one-off mismatch is noise, not
+        // a lie.
+        val liedCount = posProbes.count { it.positionMetadataMatch == true && it.positionFrameShifted == false }
+        val posLiedRatios = if (posProbes.size >= 3 && liedCount >= (posProbes.size * 3 + 4) / 5) {
+            posProbes.filter { it.positionMetadataMatch == true && it.positionFrameShifted == false }
+                .map { it.requestedRatio }.distinct().sorted()
+        } else emptyList()
 
-        val zoomChecksPassed = allSamples.count { it.ratioHonored && it.positionHonored != false }
+        val zoomChecksPassed = allSamples.count { it.ratioHonored && it.positionFrameShifted != false }
         val steps = mapOf(
             "zoom-map" to CalibrationStep(checksTotal = allSamples.size, checksPassed = zoomChecksPassed),
             "crop-region" to CalibrationStep(
                 checksTotal = posProbes.size,
-                checksPassed = posProbes.count { it.positionHonored == true },
+                checksPassed = posProbes.count { it.positionFrameShifted == true },
             ),
         )
 
@@ -501,6 +547,7 @@ class CalibrationRunner(
             crossoverRatio = split.crossoverRatio,
             crossoverMethod = split.method,
             positionHonored = posHonored,
+            positionMetadataLiedRatios = posLiedRatios,
             positionFailRatios = posFailRatios,
             qualityCollapseRatio = collapse,
             perResolution = perResolution,

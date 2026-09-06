@@ -25,11 +25,13 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 - **Calibration** - `CalibrationRunner` runs a real **empirical zoom probe**: for every camera,
   at every `StreamConfigurationMap` output size, it applies a geometric range of zoom requests
   (`CONTROL_ZOOM_RATIO` on API 30+, `SCALER_CROP_REGION` on every API) and records what the HAL
-  actually did - the effective crop rect read back, whether the requested ratio/position was
-  honoured, which physical camera answered (optical→digital crossover), and a frame-sharpness
-  score (variance of Laplacian). Per camera it derives `opticalRange` / `digitalRange` /
-  `crossoverRatio` / `positionHonored` / `qualityCollapseRatio`. Cancellable, resilient to a
-  weak HAL dropping the device mid-sweep, last result persisted to disk. See
+  actually did - the effective crop rect read back, whether the requested ratio was honoured,
+  which physical camera answered (optical→digital crossover), a brightness-normalised
+  median-of-frames sharpness score, and - for an off-centre crop - both the metadata round-trip
+  *and* whether the pixels actually shifted (so a HAL that echoes a crop it doesn't apply is
+  caught). Per camera it derives `opticalRange` / `digitalRange` / `crossoverRatio` /
+  `positionHonored` / `positionMetadataLiedRatios` / `qualityCollapseRatio`. Cancellable,
+  resilient to a weak HAL dropping the device mid-sweep, last result persisted to disk. See
   `calibration/ZoomMath.kt` for the pure geometry/metric helpers.
 - **Mode** - `record` (motion-gated pipeline), `standby` (camera released), `live` (stub).
   `record` is sticky: calibration and live preview only run from `standby`, which must be
@@ -63,11 +65,13 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   recycling - see `docs/QUIRKS.md`). Tens of minutes on a phone with many resolutions and
   cameras; it's meant to be run once, phone stood down. The `MAX_RESOLUTIONS_PER_CAMERA` cap is
   a safety net, not a normal limit.
-- **Frame-sharpness metric needs a lit, textured target.** `qualityCollapseRatio`'s exact value
-  isn't trustworthy without a resolution-chart run (see `docs/QUIRKS.md`); the softening trend
-  is real. Verified end to end on the **Pixel 6** (API 36 - `CONTROL_ZOOM_RATIO` + logical
-  multi-camera; probe located the ultrawide→wide handoff at 1.15x) and the **BLU G5** (API 28 -
-  legacy `SCALER_CROP_REGION` path).
+- **Sharpness + position checks need a lit, textured scene** and, for position, a device with a
+  wide zoom range. `qualityCollapseRatio` and the frame-content position verdict are only
+  conclusive against a resolution chart (see `docs/QUIRKS.md`); the softening *trend* is real.
+  Ratio honouring + the optical/digital crossover are verified on the **Pixel 6** (API 36 -
+  `CONTROL_ZOOM_RATIO` + logical multi-camera; handoff at 1.15x) and the **BLU G5** (API 28 -
+  legacy path); a Pixel 6 re-run with the current position/sharpness metrics is still pending
+  (flaky USB).
 - **Debug-only `adb` calibration trigger.** `src/debug/…/DebugCalibrationReceiver` (declared in
   `src/debug/AndroidManifest.xml`, never in release) drives a sweep via
   `adb shell am broadcast` on devices whose Compose UI uiautomator/screencap can't touch.

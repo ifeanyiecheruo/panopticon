@@ -271,7 +271,11 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
                   <span>{c.crossoverRatio != null ? `${c.crossoverRatio.toFixed(2)}×` : '—'}</span>
                   <span>zoom-rect position</span>
                   <span className={c.positionHonored ? '' : 'calib-bad'}>
-                    {c.positionHonored ? 'honoured' : 'NOT honoured'}
+                    {c.positionHonored
+                      ? 'honoured'
+                      : c.positionMetadataLied
+                        ? 'NOT honoured (metadata lied)'
+                        : 'NOT honoured'}
                   </span>
                   <span>quality collapse</span>
                   <span className={c.qualityCollapseRatio != null ? 'calib-bad' : ''}>

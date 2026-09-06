@@ -79,40 +79,97 @@ object ZoomMath {
         return abs(reported - requested) <= tol
     }
 
-    /** True if [reported]'s centre is within [tolPx] of [requested]'s centre. */
-    fun positionHonored(requested: IntRect, reported: IntRect?, tolPx: Int): Boolean {
+    /**
+     * Whether the reported `SCALER_CROP_REGION` *metadata* matched an
+     * intentionally off-centre request (centre within [tolPx]). NB: a HAL can
+     * echo the requested region here while actually centring the output - use
+     * [frameShifted] on the pixels to catch that.
+     */
+    fun positionMetadataMatch(requested: IntRect, reported: IntRect?, tolPx: Int): Boolean {
         if (reported == null) return false
         return abs(requested.centerX - reported.centerX) <= tolPx &&
             abs(requested.centerY - reported.centerY) <= tolPx
     }
 
     /**
-     * Variance of a 3x3 Laplacian over a centred [patch]x[patch] window of the
-     * Y plane - a cheap focus/sharpness proxy (high = crisp, low = soft/blurred).
+     * Did the off-centre-cropped frame [offCentre] actually show a different
+     * part of the scene than the centred frame [centred] at the same zoom? If
+     * the two are near-identical, the HAL ignored the crop position (whatever
+     * its metadata said). Both are the same-size Y planes; compares a
+     * grid-subsampled mean-absolute-difference, normalised by mean luma so it's
+     * brightness-independent. [minMeanLuma] guards against a black scene giving
+     * a meaningless verdict.
      */
-    fun varianceOfLaplacian(y: ByteArray, width: Int, height: Int, rowStride: Int, patch: Int): Double {
+    fun frameShifted(
+        centred: ByteArray, offCentre: ByteArray,
+        width: Int, height: Int, rowStride: Int,
+        threshold: Double = 0.06,
+        minMeanLuma: Double = 6.0,
+    ): Boolean? {
+        val cols = 48
+        val rows = 36
+        var diff = 0.0
+        var lumaSum = 0.0
+        var n = 0
+        for (gy in 0 until rows) {
+            val py = (gy * height) / rows
+            val row = py * rowStride
+            for (gx in 0 until cols) {
+                val px = (gx * width) / cols
+                val a = centred[row + px].toInt() and 0xFF
+                val b = offCentre[row + px].toInt() and 0xFF
+                diff += abs(a - b)
+                lumaSum += a
+                n++
+            }
+        }
+        if (n == 0) return null
+        val meanLuma = lumaSum / n
+        if (meanLuma < minMeanLuma) return null // too dark to tell
+        return (diff / n) / meanLuma > threshold
+    }
+
+    /**
+     * Contrast-normalised sharpness: variance of a 3x3 Laplacian over a centred
+     * [patch]x[patch] window of the Y plane, divided by mean-luma squared.
+     * The raw Laplacian scales with luma amplitude, so its variance scales with
+     * luma^2 - dividing that out makes the number comparable across exposures
+     * (a brighter frame of the same scene detail scores the same). High = crisp.
+     */
+    fun sharpness(y: ByteArray, width: Int, height: Int, rowStride: Int, patch: Int): Double {
         val p = min(patch, min(width, height))
         if (p < 3) return 0.0
         val x0 = (width - p) / 2
         val y0 = (height - p) / 2
         fun lum(px: Int, py: Int): Int = y[py * rowStride + px].toInt() and 0xFF
 
-        var sum = 0.0
-        var sumSq = 0.0
+        var lapSum = 0.0
+        var lapSumSq = 0.0
+        var lumaSum = 0.0
         var n = 0
         for (py in y0 + 1 until y0 + p - 1) {
             for (px in x0 + 1 until x0 + p - 1) {
                 val lap = (4 * lum(px, py) -
                     lum(px - 1, py) - lum(px + 1, py) -
                     lum(px, py - 1) - lum(px, py + 1)).toDouble()
-                sum += lap
-                sumSq += lap * lap
+                lapSum += lap
+                lapSumSq += lap * lap
+                lumaSum += lum(px, py)
                 n++
             }
         }
         if (n == 0) return 0.0
-        val mean = sum / n
-        return sumSq / n - mean * mean
+        val lapMean = lapSum / n
+        val lapVar = lapSumSq / n - lapMean * lapMean
+        val meanLuma = lumaSum / n
+        return lapVar / (meanLuma * meanLuma + 1.0)
+    }
+
+    /** Median of the per-frame [sharpness] values - robust to a single noisy frame. */
+    fun medianSharpness(values: List<Double>): Double {
+        if (values.isEmpty()) return 0.0
+        val s = values.sorted()
+        return if (s.size % 2 == 1) s[s.size / 2] else (s[s.size / 2 - 1] + s[s.size / 2]) / 2.0
     }
 
     // ---- Derived per-camera summaries ----
@@ -168,17 +225,23 @@ object ZoomMath {
     }
 
     /**
-     * First requested ratio whose sharpness (relative to the ratio-1.0 baseline)
-     * has dropped below [dropFraction] - the point digital zoom visibly degrades.
-     * null if it never does within the swept range.
+     * First requested ratio where sharpness (relative to the baseline of the
+     * *best* early sample) drops below [dropFraction] **and stays below it** for
+     * the rest of the sweep (or at least [sustain] more samples). The
+     * sustained-drop requirement stops a single noisy frame from firing a false
+     * "quality collapsed here". null if it never sustainedly drops.
      */
     fun deriveQualityCollapse(
         ratios: List<Float>,
         sharpnessRelToBaseline: List<Double>,
-        dropFraction: Double = 0.6,
+        dropFraction: Double = 0.5,
+        sustain: Int = 2,
     ): Float? {
-        for (i in ratios.indices) {
-            if (i < sharpnessRelToBaseline.size && sharpnessRelToBaseline[i] < dropFraction) {
+        val n = min(ratios.size, sharpnessRelToBaseline.size)
+        for (i in 0 until n) {
+            if (sharpnessRelToBaseline[i] >= dropFraction) continue
+            val window = (i until minOf(n, i + 1 + sustain))
+            if (window.all { sharpnessRelToBaseline[it] < dropFraction }) {
                 return ratios[i]
             }
         }

@@ -51,6 +51,8 @@ type ZoomSample struct {
 	EffectiveCropNorm      RectNorm  `json:"effectiveCropNorm"`
 	PositionRequestedNorm  *RectNorm `json:"positionRequestedNorm"`
 	PositionReportedNorm   *RectNorm `json:"positionReportedNorm"`
+	PositionMetadataMatch  *bool     `json:"positionMetadataMatch"`
+	PositionFrameShifted   *bool     `json:"positionFrameShifted"`
 	PositionHonored        *bool     `json:"positionHonored"`
 	ActivePhysicalID       *string   `json:"activePhysicalId"`
 	LensFocalLengthMm      *float64  `json:"lensFocalLengthMm"`
@@ -89,9 +91,10 @@ type CalibrationCameraResult struct {
 	DigitalRange        FloatRange2                     `json:"digitalRange"`
 	CrossoverRatio      *float64                        `json:"crossoverRatio"`
 	CrossoverMethod     string                          `json:"crossoverMethod"`
-	PositionHonored     bool                            `json:"positionHonored"`
-	PositionFailRatios  []float64                       `json:"positionFailRatios"`
-	QualityCollapseRatio *float64                       `json:"qualityCollapseRatio"`
+	PositionHonored          bool                       `json:"positionHonored"`
+	PositionFailRatios       []float64                  `json:"positionFailRatios"`
+	PositionMetadataLiedRatios []float64                `json:"positionMetadataLiedRatios"`
+	QualityCollapseRatio     *float64                   `json:"qualityCollapseRatio"`
 	PerResolution       map[string]ResolutionZoomMap    `json:"perResolution"`
 	Steps               map[string]CalibrationStepResult `json:"steps"`
 }
