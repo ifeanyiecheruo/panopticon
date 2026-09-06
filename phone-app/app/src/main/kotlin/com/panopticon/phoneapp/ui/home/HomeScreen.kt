@@ -82,7 +82,7 @@ fun HomeScreen(app: PanopticonApplication) {
                 fontSize = 16.sp,
             )
             Text(
-                text = "${app.segmentStore.listSince(0).size} segments on disk",
+                text = "${app.segmentStore.count()} segments on disk",
                 color = PanopticonColors.textFaint,
                 fontSize = 12.sp,
             )

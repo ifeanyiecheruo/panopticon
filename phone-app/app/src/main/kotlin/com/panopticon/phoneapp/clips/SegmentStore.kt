@@ -8,16 +8,33 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "SegmentStore"
 
 /**
- * Owns the on-disk segment directory + a small JSON index of [SegmentEntry] metadata
+ * Owns the on-disk segment directory + an index of [SegmentEntry] metadata
  * (createdAtMs, duration, dimensions) so `GET /api/segments` doesn't need to probe every file
  * with MediaMetadataRetriever on every request.
  *
  * A "segment" is a single recorded file - what the phone used to call a "clip". The controller
  * groups contiguous segments into user-facing clips; the phone has no notion of that.
+ *
+ * ## Why the index is held in memory
+ *
+ * The index is persisted as one JSON blob in SharedPreferences. After weeks of motion-gated
+ * recording that blob holds thousands of entries, and the original design re-parsed it on every
+ * read and re-serialised + rewrote the whole thing on every single add/delete. Recording adds an
+ * entry every ~10s; deleting one clip deletes N entries. On a weak device that per-op JSON
+ * round-trip stacks into an ANR (and OOM, from the repeated big allocations) once the user
+ * deletes a few clips back to back.
+ *
+ * So the parsed map is loaded once and kept as the authoritative in-memory copy. Reads hit it
+ * directly; mutations update it and schedule a single coalesced background flush of the whole
+ * blob. Losing the last few unflushed mutations on a hard kill is harmless: [reconcile] on the
+ * next launch drops index entries whose file is gone and re-probes files that aren't indexed, so
+ * the index converges to what's actually on disk regardless.
  *
  * Uses app-specific external storage (`getExternalFilesDir`) - no storage permission needed on
  * modern Android, and it's automatically cleaned up on uninstall.
@@ -34,46 +51,67 @@ class SegmentStore(context: Context) {
     val segmentsDir: File = File(appContext.getExternalFilesDir(null), "clips").apply { mkdirs() }
     val thumbsDir: File = File(appContext.getExternalFilesDir(null), "thumbnails").apply { mkdirs() }
 
+    // Authoritative in-memory index. Loaded lazily on first access, mutated in place thereafter.
+    private var cache: MutableMap<String, SegmentEntry>? = null
+
+    private val flushExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SegmentIndexFlush") }
+    private val flushPending = AtomicBoolean(false)
+
     @Synchronized
-    private fun loadIndex(): MutableMap<String, SegmentEntry> {
-        val raw = prefs.getString(KEY, null) ?: return mutableMapOf()
-        return try {
-            json.decodeFromString<Map<String, SegmentEntry>>(raw).toMutableMap()
-        } catch (e: Exception) {
+    private fun index(): MutableMap<String, SegmentEntry> {
+        cache?.let { return it }
+        val raw = prefs.getString(KEY, null)
+        val loaded: MutableMap<String, SegmentEntry> = if (raw == null) {
             mutableMapOf()
+        } else {
+            try {
+                json.decodeFromString<Map<String, SegmentEntry>>(raw).toMutableMap()
+            } catch (e: Exception) {
+                Log.w(TAG, "index parse failed, starting empty", e)
+                mutableMapOf()
+            }
+        }
+        cache = loaded
+        return loaded
+    }
+
+    /** Schedules one coalesced write of the whole index to prefs on the flush thread. Mutations
+     *  that land while a flush is in flight simply arm the next one. */
+    private fun markDirty() {
+        if (flushPending.compareAndSet(false, true)) {
+            flushExecutor.execute {
+                flushPending.set(false)
+                val snapshot = synchronized(this) { HashMap(index()) }
+                prefs.edit().putString(KEY, json.encodeToString(snapshot)).commit()
+            }
         }
     }
 
-    @Synchronized
-    private fun saveIndex(map: Map<String, SegmentEntry>) {
-        prefs.edit().putString(KEY, json.encodeToString(map)).apply()
-    }
-
-    /** Repairs the index against what's actually on disk - recovers from a crash mid-write. */
+    /** Repairs the index against what's actually on disk - recovers from unflushed mutations and
+     *  from a crash mid-recording. Called once on process start. */
     @Synchronized
     fun reconcile() {
-        val index = loadIndex()
+        val index = index()
         val filesOnDisk = segmentsDir.listFiles { f -> f.isFile && f.name.endsWith(".mp4") }?.associateBy { it.name } ?: emptyMap()
 
-        // Drop index entries whose file no longer exists.
+        // Drop index entries whose file no longer exists (e.g. a delete that never got flushed).
         val stale = index.keys.filter { it !in filesOnDisk.keys }
         stale.forEach { index.remove(it) }
 
-        // Add index entries for files that exist but aren't tracked (e.g. crash mid-recording
-        // left a finished-looking file behind before the index write landed).
+        // Add index entries for files that exist but aren't tracked (a finished file whose index
+        // write never landed).
         for ((name, file) in filesOnDisk) {
             if (index.containsKey(name)) continue
             val probed = probe(file) ?: continue
             index[name] = probed
         }
-        saveIndex(index)
+        markDirty()
         Log.i(TAG, "reconcile: ${index.size} segments indexed, ${stale.size} stale entries dropped")
     }
 
     @Synchronized
     fun addSegment(file: File, createdAtMs: Long, durationMs: Long, width: Int, height: Int) {
-        val index = loadIndex()
-        index[file.name] = SegmentEntry(
+        index()[file.name] = SegmentEntry(
             filename = file.name,
             createdAtMs = createdAtMs,
             durationMs = durationMs,
@@ -82,12 +120,12 @@ class SegmentStore(context: Context) {
             width = width,
             height = height,
         )
-        saveIndex(index)
+        markDirty()
     }
 
     @Synchronized
     fun listSince(sinceMs: Long): List<SegmentEntry> =
-        loadIndex().values.filter { it.createdAtMs >= sinceMs }.sortedBy { it.createdAtMs }
+        index().values.filter { it.createdAtMs >= sinceMs }.sortedBy { it.createdAtMs }
 
     fun fileFor(filename: String): File? {
         val f = File(segmentsDir, sanitize(filename))
@@ -95,18 +133,35 @@ class SegmentStore(context: Context) {
     }
 
     @Synchronized
-    fun delete(filename: String): Boolean {
-        val safe = sanitize(filename)
-        val index = loadIndex()
-        val existed = index.remove(safe) != null
-        saveIndex(index)
-        File(segmentsDir, safe).delete()
-        File(thumbsDir, thumbName(safe)).delete()
-        return existed
+    fun delete(filename: String): Boolean = deleteAll(listOf(filename)) > 0
+
+    /**
+     * Deletes one or many segments: N in-memory map removals + N file deletes + ONE coalesced
+     * index flush, regardless of N. (Deleting a clip = deleting all its segments, so N is
+     * routinely large.) Returns how many index entries were actually removed.
+     */
+    @Synchronized
+    fun deleteAll(filenames: Collection<String>): Int {
+        if (filenames.isEmpty()) return 0
+        val safe = filenames.map { sanitize(it) }
+        val index = index()
+        var removed = 0
+        for (name in safe) {
+            if (index.remove(name) != null) removed++
+        }
+        markDirty()
+        for (name in safe) {
+            File(segmentsDir, name).delete()
+            File(thumbsDir, thumbName(name)).delete()
+        }
+        return removed
     }
 
     @Synchronized
-    fun totalBytes(): Long = loadIndex().values.sumOf { it.sizeBytes }
+    fun totalBytes(): Long = index().values.sumOf { it.sizeBytes }
+
+    @Synchronized
+    fun count(): Int = index().size
 
     /** Extracts (and caches) a single JPEG frame from a segment for the Gallery filmstrip. */
     fun thumbnailFor(filename: String): File? {

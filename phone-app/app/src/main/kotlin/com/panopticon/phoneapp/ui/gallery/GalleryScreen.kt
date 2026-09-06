@@ -19,9 +19,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,6 +35,9 @@ import com.panopticon.phoneapp.PanopticonApplication
 import com.panopticon.phoneapp.clips.Clip
 import com.panopticon.phoneapp.clips.groupIntoClips
 import com.panopticon.phoneapp.ui.theme.PanopticonColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -42,30 +47,60 @@ import java.util.Locale
  * time-gap grouping the controller uses); the phone stores only segments and
  * groups them at display time. Play launches the system video viewer via
  * ACTION_VIEW on the clip's first segment (fastest path for this slice - no
- * in-app player). Delete removes every segment in the clip, same as issuing the
- * HTTP DELETE for each.
+ * in-app player). Delete removes every segment in the clip in one shot.
+ *
+ * The index read (`listSince`) and the delete both touch a whole-file JSON
+ * index, so they run off the main thread and a delete in flight disables the
+ * delete buttons - otherwise, on a weak device with a big backlog, hammering
+ * delete stacks up index rewrites into an ANR / OOM.
  */
 @Composable
 fun GalleryScreen(app: PanopticonApplication) {
     val context = LocalContext.current
-    var clips by remember { mutableStateOf(groupIntoClips(app.segmentStore.listSince(0))) }
+    val scope = rememberCoroutineScope()
 
-    fun refresh() {
-        clips = groupIntoClips(app.segmentStore.listSince(0))
+    // null = still loading the first time.
+    var clips by remember { mutableStateOf<List<Clip>?>(null) }
+    var busy by remember { mutableStateOf(false) }
+
+    suspend fun reload() {
+        val loaded = withContext(Dispatchers.IO) { groupIntoClips(app.segmentStore.listSince(0)) }
+        clips = loaded
     }
 
-    val segmentCount = clips.sumOf { it.count }
+    LaunchedEffect(Unit) { reload() }
+
+    fun deleteClip(clip: Clip) {
+        if (busy) return
+        busy = true
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    app.segmentStore.deleteAll(clip.segments.map { it.filename })
+                }
+                reload()
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    val shown = clips
+    val segmentCount = shown?.sumOf { it.count } ?: 0
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text(text = "Gallery", color = PanopticonColors.text, fontSize = 20.sp)
         Text(
-            text = "${clips.size} clip${if (clips.size == 1) "" else "s"} · $segmentCount segment${if (segmentCount == 1) "" else "s"}",
+            text = when {
+                shown == null -> "Loading…"
+                else -> "${shown.size} clip${if (shown.size == 1) "" else "s"} · $segmentCount segment${if (segmentCount == 1) "" else "s"}"
+            },
             color = PanopticonColors.textDim,
             fontSize = 13.sp,
             modifier = Modifier.padding(bottom = 12.dp),
         )
 
-        if (clips.isEmpty()) {
+        if (shown != null && shown.isEmpty()) {
             Text(
                 text = "No clips yet - recording is motion-gated, so clips only appear once the analysis stream sees movement in the scene.",
                 color = PanopticonColors.textFaint,
@@ -74,9 +109,10 @@ fun GalleryScreen(app: PanopticonApplication) {
         }
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(clips, key = { it.firstSegment.filename }) { clip ->
+            items(shown ?: emptyList(), key = { it.firstSegment.filename }) { clip ->
                 ClipRow(
                     clip = clip,
+                    deleteEnabled = !busy,
                     onPlay = {
                         val file = app.segmentStore.fileFor(clip.firstSegment.filename) ?: return@ClipRow
                         val uri = FileProvider.getUriForFile(context, "com.panopticon.phoneapp.fileprovider", file)
@@ -87,10 +123,7 @@ fun GalleryScreen(app: PanopticonApplication) {
                         }
                         context.startActivity(intent)
                     },
-                    onDelete = {
-                        clip.segments.forEach { app.segmentStore.delete(it.filename) }
-                        refresh()
-                    },
+                    onDelete = { deleteClip(clip) },
                 )
             }
         }
@@ -98,7 +131,7 @@ fun GalleryScreen(app: PanopticonApplication) {
 }
 
 @Composable
-private fun ClipRow(clip: Clip, onPlay: () -> Unit, onDelete: () -> Unit) {
+private fun ClipRow(clip: Clip, deleteEnabled: Boolean, onPlay: () -> Unit, onDelete: () -> Unit) {
     val timeFormat = remember { SimpleDateFormat("MMM d, HH:mm:ss", Locale.US) }
     Row(
         modifier = Modifier
@@ -122,7 +155,7 @@ private fun ClipRow(clip: Clip, onPlay: () -> Unit, onDelete: () -> Unit) {
             IconButton(onClick = onPlay) {
                 Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = PanopticonColors.accent)
             }
-            IconButton(onClick = onDelete) {
+            IconButton(onClick = onDelete, enabled = deleteEnabled) {
                 Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = PanopticonColors.rec)
             }
         }
