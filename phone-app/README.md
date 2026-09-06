@@ -65,13 +65,12 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   recycling - see `docs/QUIRKS.md`). Tens of minutes on a phone with many resolutions and
   cameras; it's meant to be run once, phone stood down. The `MAX_RESOLUTIONS_PER_CAMERA` cap is
   a safety net, not a normal limit.
-- **Sharpness + position checks need a lit, textured scene** and, for position, a device with a
-  wide zoom range. `qualityCollapseRatio` and the frame-content position verdict are only
-  conclusive against a resolution chart (see `docs/QUIRKS.md`); the softening *trend* is real.
-  Ratio honouring + the optical/digital crossover are verified on the **Pixel 6** (API 36 -
-  `CONTROL_ZOOM_RATIO` + logical multi-camera; handoff at 1.15x) and the **BLU G5** (API 28 -
-  legacy path); a Pixel 6 re-run with the current position/sharpness metrics is still pending
-  (flaky USB).
+- **Sharpness + position checks want a lit, textured scene** and, for position, a device with a
+  wide zoom range - against a blank/dark scene `frameShifted` and `qualityCollapseRatio` go
+  inconclusive. Verified against a lit scene on the **Pixel 6** (API 36): crossover at 1.15×,
+  off-centre position honoured on the back camera / not the front (neither lies), digital-zoom
+  softening from ~2.8× vs. a declared 7× max. **BLU G5** (API 28, legacy path): ratio/crop
+  honouring clean; its 2.0× max is too small to judge position. See `docs/QUIRKS.md`.
 - **Debug-only `adb` calibration trigger.** `src/debug/…/DebugCalibrationReceiver` (declared in
   `src/debug/AndroidManifest.xml`, never in release) drives a sweep via
   `adb shell am broadcast` on devices whose Compose UI uiautomator/screencap can't touch.

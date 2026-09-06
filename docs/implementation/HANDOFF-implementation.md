@@ -21,12 +21,13 @@ already lives elsewhere and would drift.
   is sticky) frees the camera for it. controller decodes the full per-resolution map, shows the
   per-camera summary in Phone detail (button disabled + reason while the phone is recording),
   and has `calibration.EffectiveRect` (requested zoom+centre → honoured crop).
-  **Verified end to end:** ratio honouring + the optical/digital crossover on the Pixel 6 (probe
-  located the ultrawide→wide handoff at 1.15×) and the BLU G5. **Still open:** a Pixel 6 re-run
-  with the current probe (the frame-content position check needs a wide-zoom device + a
-  textured/lit scene — the Pixel keeps dropping off USB); and the controller-side **zoom-rect
+  **Verified end to end on the Pixel 6 (lit scene) and the BLU G5:** ratio honouring across the
+  full range; the optical→digital crossover at 1.15× on the Pixel 6 back camera (ultrawide→wide,
+  via `LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID`); off-centre position honoured on the Pixel 6
+  back, not on the front, neither lying about it in metadata; `qualityCollapseRatio ≈ 2.8×` on
+  the Pixel 6 back vs. its declared 7× max. **Still open:** the controller-side **zoom-rect
   picker UI** that consumes `EffectiveRect` (deferred — it hangs off Live preview). See
-  `docs/QUIRKS.md`'s "Calibration zoom probe" for the device findings + the weak-HAL quirks the
+  `docs/QUIRKS.md`'s "Calibration zoom probe" for the full device findings + the weak-HAL quirks the
   probe works around (API-gated-key `NoSuchFieldError`, session-recycle device disconnect,
   `ImageReader.close()` SIGSEGV race, front-camera control-interleaving readback corruption,
   metadata-only position check being unreliable).

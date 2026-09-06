@@ -201,35 +201,44 @@ sensor, faster on a fixed-focus front camera) is the trustworthy part.
 
 #### Device findings
 
-Two probe generations here: the first (metadata-only position check) and the current one
-(frame-content position check + normalised sharpness). Ratio/crossover findings are the same
-across both; position and quality-collapse findings below are from the current probe.
+All from the current probe (frame-content position check + normalised sharpness), against a
+lit indoor scene.
 
 **Pixel 6 (API 36), camera 0 / back — logical multi-camera, physicals `2` + `3`:**
-`CONTROL_ZOOM_RATIO_RANGE = 0.67–7.0`, `SCALER_CROPPING_TYPE = CENTER_ONLY`. The probe
-**empirically located the optical→digital handoff at 1.15×**: `LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID`
-is `3` (ultrawide, `LENS_FOCAL_LENGTH` 2.35 mm) for requested ratios ≤ 0.96×, flips to `2`
-(main wide, 6.81 mm) at 1.15× and stays there to 7.0× — so `opticalRange 0.67–1.15`,
-`digitalRange 1.15–7.0`. **Every requested ratio honoured** (`reportedRatio ≈ requested` across
-0.67–7.0×), 24/24 YUV output sizes. Position: **re-run with the frame-content check pending** —
-the Pixel 6's wide zoom range is what makes that check conclusive, and it dropped off USB
-before the improved probe could run on it.
+`CONTROL_ZOOM_RATIO_RANGE = 0.67–7.0`, `SCALER_CROPPING_TYPE = CENTER_ONLY`.
+- **Optical→digital handoff at 1.15×**, empirically: `LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID`
+  is `3` (ultrawide, `LENS_FOCAL_LENGTH` 2.35 mm) for requested ratios ≤ 0.96×, flips to `2`
+  (main wide, 6.81 mm) at 1.15× and stays to 7.0×. `opticalRange 0.67–1.15`, `digitalRange 1.15–7.0`.
+- **Every requested ratio honoured** across 0.67–7.0×, 24/24 output sizes.
+- **Off-centre position IS honoured** — the pixels actually shift (`positionFrameShifted = true`
+  at the majority of probed ratios), and the metadata agrees, so `positionMetadataLiedRatios`
+  is empty. `SCALER_CROPPING_TYPE = CENTER_ONLY` did *not* stop an off-centre `SCALER_CROP_REGION`
+  request from taking effect on API 36.
+- **`qualityCollapseRatio ≈ 2.8×`** — the normalised sharpness holds through ~2× then drops
+  sustainedly (rel-to-best falls to ~0.6 at 2.8×, ~0.25 at 4×, ~0.10 at 7×). With the lit scene
+  + median-of-frames + sustained-drop rule this is a defensible number: digital zoom on the
+  main sensor visibly softens past ~2.8×. (The ultrawide segment, 0.67–0.96×, also reads softer
+  than the 1.15× main-sensor baseline — real, the ultrawide is a lower-grade lens.)
 
 **Pixel 6, camera 1 / front — single sensor:** `CONTROL_ZOOM_RATIO_RANGE = 1.0–10.0`,
-all-digital (`crossoverMethod = "single-camera"`). Every ratio honoured 1.0–10.0×, 24/24 sizes.
+`CENTER_ONLY`, all-digital. Every ratio honoured 1.0–10.0×, 24/24 sizes. **Off-centre position
+is NOT honoured** (`positionFrameShifted = false` at every probe) — but the metadata *also*
+reports a centred crop, so it's honest, not a lie (`positionMetadataLiedRatios` empty). Sharpness
+collapses hard and early (fixed-focus tiny sensor); the exact `qualityCollapseRatio` is
+resolution-sensitive on this camera and shouldn't be quoted precisely.
 
 **BLU G5 (API 28), both cameras — single physical sensor, legacy `SCALER_CROP_REGION` path:**
 `crossoverMethod = "single-camera"`, `SCALER_AVAILABLE_MAX_DIGITAL_ZOOM = 2.0`, no
-`CONTROL_ZOOM_RATIO_RANGE`, `SCALER_CROPPING_TYPE = FREEFORM`. Reported crop area tracked the
-request cleanly across all 24 sizes. **Position: inconclusive** — with only a 2.0× max the
-off-centre shift clears the "visible fraction of the frame" gate at just the top ~1.7–2.0×
-band, and the dark low-texture test scene made `frameShifted` jittery there. The metadata-only
-first run said "honoured"; the frame-content run couldn't confidently confirm or deny.
+`CONTROL_ZOOM_RATIO_RANGE`, `SCALER_CROPPING_TYPE = FREEFORM`. Ratio (crop-area) honouring clean
+across all 24 sizes. **Position: inconclusive** — with only a 2.0× max, an off-centre shift
+clears the "visible fraction of the frame" gate at just the top ~1.7–2.0× band, too few probes
+(and too noisy a scene) to vote confidently.
 
-**Net:** ratio honouring and the optical/digital crossover are solid. The old prototype's
-"`SCALER_CROP_REGION` position isn't honoured, and the device lies about it" finding is **still
-open** — it needs the current probe run against a device with a wide zoom range (Pixel 6) and a
-textured, lit scene, which we haven't managed to line up yet.
+**Net:** ratio honouring and the optical/digital crossover are solid on both devices. On the
+Pixel 6, an off-centre zoom rect **is** honoured on the back camera and **is not** on the front
+camera — and in neither case did the device lie about it in metadata. The old prototype's
+"`SCALER_CROP_REGION` position isn't honoured, and the device lies about it" did **not
+reproduce** here; re-check on the specific hardware it came from if it matters.
 
 ### Carried forward, not yet re-verified in this project
 
@@ -239,14 +248,14 @@ still haven't been re-tested against the Pixel 6) - see `panopticon-prototype/QU
 original write-ups:
 
 - `SCALER_CROP_REGION` position isn't honored, and the device lies about it — the calibration
-  probe now measures this by frame content (`positionHonored` / `positionFailRatios` /
-  `positionMetadataLiedRatios` per camera), not metadata alone. **Still open:** the conclusive
-  run needs a wide-zoom device (Pixel 6) *and* a textured lit scene, which hasn't lined up yet
-  (see "Device findings" in the zoom-probe section).
+  probe measures this by frame content (`positionHonored` / `positionFailRatios` /
+  `positionMetadataLiedRatios` per camera). **Did not reproduce on the Pixel 6:** back camera
+  honours an off-centre crop, front camera doesn't, and neither lies about it in metadata (see
+  "Device findings"). Re-check on the exact hardware the old finding came from if it matters.
 - Digital zoom quality collapses well below the declared max, invisible to crop-region metadata —
-  the probe's `qualityCollapseRatio` targets this. The *shape* showed up on both devices
-  (softening past ~2–3×) but the exact ratio needs a lit resolution-chart run to trust (see the
-  zoom-probe section).
+  **confirmed on the Pixel 6 back camera**: `qualityCollapseRatio ≈ 2.8×` against a declared 7×
+  max (normalised sharpness, lit scene). Crop-region metadata reports the ratio as fully
+  honoured throughout - the softening is only visible in the pixels.
 - Crop readback is unreliable — the probe reads `SCALER_CROP_REGION` back from a one-shot
   capture of the exact request; clean on both devices once it stopped reading stale
   repeating-request results.
