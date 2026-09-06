@@ -8,14 +8,24 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 ## What's here
 
 - **`PanopticonService`** - foreground, `START_STICKY` service. Opens the back camera via
-  Camera2, runs a **motion-gated** recording pipeline (a persistent `MediaCodec` H.264 encoder
-  feeding a `MediaMuxer` that rotates ~10s *segments* gaplessly, written only while motion is
-  present plus a short tail), and runs an embedded Ktor/Netty HTTP server.
-- **Motion gate** - an always-on analysis stream (small YUV `ImageReader`) feeds a
-  frame-difference `MotionDetector`; its verdict drives a `RecordingPhaseController` state
-  machine (ARMED &lt;-&gt; RECORDING, with a trailer tail after motion stops). `motionSensitivity`
-  from `/api/config` picks the threshold and takes effect on the next idle period. See the
-  simplification note below for what the detector does and doesn't handle.
+  Camera2, runs a **motion-gated** recording pipeline (`CameraGlPipeline`), and runs an embedded
+  Ktor/Netty HTTP server.
+- **Recording pipeline** (`CameraGlPipeline`) - **one** camera stream into a `SurfaceTexture`,
+  fanned out on a GL thread (EGL recordable context, external-OES sampler). Each frame is
+  rendered twice: downscaled into an FBO that `glReadPixels` pulls back for motion analysis, and
+  full-size onto the input `Surface` of a persistent `MediaCodec` H.264 encoder
+  (`eglPresentationTimeANDROID` carries the camera timestamp). The encoder runs **continuously**;
+  a drain thread keeps a small in-RAM **pre-roll ring** of encoded access units. On motion a
+  `MediaMuxer` opens from the ring at the keyframe covering `now - preRollMs` and writes forward,
+  rotating ~10s *segments* gaplessly (sync-frame requested at the boundary, muxer swapped at the
+  next keyframe with PTS rebased per segment); it closes a trailer tail after motion stops.
+  Using a single stream + GL fan-out (rather than a separate analysis `ImageReader`) is what lets
+  the pipeline run on HALs that reject two concurrent streams - see the note below and QUIRKS.md.
+- **Motion gate** - the GL readback (a downscaled RGBA FBO, green channel taken as luma) feeds a
+  frame-difference `MotionDetector`; its verdict gates the `MediaMuxer` (open on motion, hold for
+  a trailer tail, then close). `motionSensitivity` from `/api/config` picks the threshold and is
+  re-read periodically. See the simplification note below for what the detector does and doesn't
+  handle.
 - **HTTP API** - implements a subset of `phone-http-api.md`: pairing (`POST`/`DELETE /api/pair`),
   device identity/status/config (`/api/device`, `/api/build-info`, `/api/status`, `/api/config`),
   mode (`/api/mode` - `live` is a stub), segment sync (`/api/segments`, `.../file`, `.../thumbnail`,
@@ -50,9 +60,7 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   on trips it), auto-exposure/gain drift (a warmup guard + the per-cell delta threshold absorb
   small global shifts), and slow scene drift. The per-sensitivity thresholds in the code are
   starting points chosen by reasoning, **not measured against the Pixel 6 in real lighting** -
-  that tuning (and any move to a real background-subtraction model) is follow-up work. Also **no
-  pre-roll**: a segment starts at motion-detection time. The `MediaCodec` pipeline makes pre-roll
-  feasible (keep a ring of pre-motion encoded frames) but it isn't wired up.
+  that tuning (and any move to a real background-subtraction model) is follow-up work.
 - **`live` mode is a stub.** `POST /api/mode {"mode":"live"}` flips the mode flag and tears down
   the recording pipeline (RECORD/LIVE stay mutually exclusive, per the architecture doc) but
   there's no real HLS encoder/relay behind it.
@@ -68,19 +76,20 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   off-centre position honoured on the back camera / not the front (neither lies), digital-zoom
   softening from ~2.8× vs. a declared 7× max. **BLU G5** (API 28, legacy path): ratio/crop
   honouring clean; its 2.0× max is too small to judge position. See `docs/QUIRKS.md`.
-- **Debug-only `adb` calibration trigger.** `src/debug/…/DebugCalibrationReceiver` (declared in
-  `src/debug/AndroidManifest.xml`, never in release) drives a sweep via
-  `adb shell am broadcast` on devices whose Compose UI uiautomator/screencap can't touch.
-- **Full `CameraCaptureSession` teardown+recreate on every ARMED&lt;-&gt;RECORDING transition**
-  (i.e. between separate motion events) rather than a lighter in-place surface swap. Segment
-  rotation *within* one motion event is gapless: one `MediaCodec` encoder runs untouched for the
-  whole RECORDING phase and the `MediaMuxer` is swapped at a keyframe (sync-frame requested at
-  the interval boundary) to start the next file - `start[k+1] == start[k] + dur[k]` on the
-  Pixel 6. A HAL that can't run the analysis stream + video stream together (the BLU G5's Unisoc
-  SC9863A - see QUIRKS.md) is detected on the first failed RECORDING and switched to a
-  **video-only burst** mode: fixed 30s bursts, no live motion detection, re-arm between them
-  (gapless within a burst, one ~2s gap per burst). The analysis `ImageReader` persists across
-  session churn.
+- **Debug-only `adb` triggers.** `src/debug/…/DebugCalibrationReceiver` drives a calibration
+  sweep and `src/debug/…/DebugGlSoakReceiver` runs the standalone `GlSoakTest` GL/encoder soak
+  (both declared in `src/debug/AndroidManifest.xml`, never in release) via
+  `adb shell am broadcast -n com.panopticon.phoneapp/.debug.<Receiver>` on devices whose Compose
+  UI uiautomator/screencap can't touch.
+- **One capture session for the life of the pipeline.** The camera stream, the GL thread, and
+  the encoder stay up whether or not motion is present; only the `MediaMuxer` opens and closes.
+  Segment rotation is gapless (`start[k+1] == start[k] + dur[k]`, ~1ms on the Pixel 6 / ~8ms on
+  the BLU G5) because one encoder runs untouched and the muxer is swapped at a keyframe with PTS
+  rebased per segment. The earlier design used a second stream (a YUV analysis `ImageReader`)
+  alongside the video stream; the BLU G5's Unisoc SC9863A HAL rejects two concurrent streams
+  (`sendRequestsBatch: Function not implemented` → the device errors out), which is why analysis
+  now rides the single stream through GL. A 10-minute BLU soak (`GlSoakTest`) held 24 fps with
+  zero dropped frames, 59 muxer rotations, no GL errors and flat memory. See QUIRKS.md.
 - **Bottom nav bar instead of the mock's left icon rail + top status pill** - visual language
   (dark/teal theme, `ui/theme/Theme.kt`) carried over; exact chrome layout wasn't a priority for
   this slice.
@@ -129,5 +138,5 @@ To reach the HTTP API from your dev machine: `adb -s <serial> forward tcp:8080 t
 tab, which shows an invite code/URL, then `POST http://127.0.0.1:8080/api/pair?invite=<code>`
 with a JSON body `{"publicKey": "...", "name": "...", "kind": "..."}`).
 
-See `../docs/QUIRKS.md` for Camera2/MediaCodec/HTTP-server findings from building this, and
-which of the old prototype's quirks were reconfirmed vs. only carried forward.
+See `../docs/QUIRKS.md` for Camera2/MediaCodec/OpenGL/HTTP-server findings from building this,
+and which of the old prototype's quirks were reconfirmed vs. only carried forward.

@@ -49,37 +49,37 @@ already lives elsewhere and would drift.
   Verified against the real Pixel 6 archive: migration `002` + backfill on the existing
   `data/panopticon.db` collapsed its 15 contiguous segments into one clip.
 
-- **Gapless segment rotation (phone-app only).** `CameraPipeline` was moved off `MediaRecorder`
-  to a **`MediaCodec` H.264 encoder + a rotating `MediaMuxer`**. One encoder (surface input)
-  runs untouched for the whole RECORDING phase; the muxer is what rotates — at each ~10s
-  boundary we request a sync frame and, on the next `BUFFER_FLAG_KEY_FRAME`, `stop()` the old
-  muxer, open a new one on the next file (re-`addTrack` from the cached output `MediaFormat`),
-  and write that keyframe as sample 0. Per-segment PTS rebased to 0; each segment's `createdAtMs`
-  is chained from the recording's start PTS so `endMs[k] == createdAtMs[k+1]`. `MediaRecorder`
-  can't do this — `setMaxDuration` *stops* the encoder rather than rolling, and `setMaxFileSize`
-  + `setNextOutputFile` (which does roll on oriole) is broken on the BLU G5's Spreadtrum
-  encoder. **Verified on the Pixel 6 at the real 10s interval:** consecutive segments contiguous
-  to ±3ms, clean ~1s GOP, valid playable files, no errors, indefinitely. Only the
-  ARMED→RECORDING transition between *separate* motion events still costs ~1.5s (session
-  rebuild) — a real motion stop that legitimately ends a clip. With rotation gapless,
-  `GroupingGapMs` / `SegmentGrouping.GAP_MS` dropped 3000 → **500ms**. The **BLU G5**'s Unisoc
-  HAL can't run the analysis (motion) stream and the video stream at once (`sendRequestsBatch`
-  → `-ENOSYS`; that's what broke MediaRecorder there too). `CameraPipeline` learns this on the
-  first failed RECORDING and switches that device to a **video-only burst** mode: RECORDING runs
-  a fixed 30s with no live motion detection, then re-arms and re-checks — segments inside a
-  burst are still gapless, continuous motion costs one ~2s gap per burst. The BLU records real
-  ~4MB 10s segments this way (was: nothing / empty stubs).
+- **Gapless recording, GPU texture fan-out, with pre-roll (phone-app only).** The recording
+  pipeline is now `CameraGlPipeline` (was `CameraPipeline`). **One** camera stream feeds a
+  `SurfaceTexture`; a GL thread samples that external-OES texture per frame and renders it twice
+  — a small downscaled copy to an FBO for `glReadPixels` → frame-difference `MotionDetector`,
+  *and* the full frame to an EGL window surface on `MediaCodec.createInputSurface()`. **The
+  encoder runs continuously.** A motion-gated `MediaMuxer` is what writes to disk: an in-RAM
+  **pre-roll ring** holds the last few seconds of encoded access units; when motion is seen, on
+  the next keyframe a muxer opens, is primed from the ring back to ~`preRollMs` (default 3s)
+  before the motion, and writes live from there. Rotation is a muxer swap at a keyframe (request
+  a sync frame at the interval, roll on the next `BUFFER_FLAG_KEY_FRAME`) → consecutive segments
+  contiguous; PTS rebased per segment, `createdAtMs` chained so `endMs[k] == createdAtMs[k+1]`.
+  `trailerMs` after motion stops, the muxer finalises. **Why one stream:** `MediaRecorder` and
+  `MediaCodec`-surface-input both need a camera session targeting `[analysis stream + video
+  stream]`, which the **BLU G5's Unisoc SC9863A HAL rejects** (`sendRequestsBatch` → `-ENOSYS`,
+  device errors out) — the earlier MediaRecorder→MediaCodec attempts and a "video-only burst"
+  fallback are all superseded by this. **Verified on both devices:** a 10-min soak
+  (`src/debug/GlSoakTest.kt`) on the BLU ran clean (24 fps camera==rendered==encoded, 0 dropped
+  frames, 59 muxer rotations, 0 GL errors, flat memory), and the real pipeline records gapless
+  (`start[k+1] - start[k] - dur[k]` within ~8ms BLU / ~1ms Pixel), with pre-roll, motion-gated,
+  on both. With rotation gapless, `GroupingGapMs` / `SegmentGrouping.GAP_MS` are **500ms**.
 
-- **Motion-gated recording (phone-app only).** The always-record pipeline is gone. `CameraPipeline`
-  now runs an always-on analysis `ImageReader` → `motion/MotionDetector` (frame-difference on a
-  32×24 luma grid) → `motion/RecordingPhaseController` (ARMED ⇄ RECORDING with a trailer tail).
+- **Motion-gated recording (phone-app only).** The always-record pipeline is gone.
+  `CameraGlPipeline` runs `motion/MotionDetector` (frame-difference on a 32×24 luma grid) off
+  the GL readback and gates the muxer on it, with a trailer tail (and now pre-roll — see above).
   `RecordingStatus.IDLE` now means "armed", so a phone with nothing moving reports
   `status: "idle"` on `/api/status` and shows as **Standby** on the controller's Fleet (which
   already handled non-recording that way — no controller change needed). Both `MotionDetector`
   and `RecordingPhaseController` have JVM unit tests. **Not yet verified on the Pixel 6** — the
   per-sensitivity thresholds are reasoned starting points; tuning against real lighting (and any
-  move to a real background-subtraction model, plus pre-roll — the `MediaCodec` pipeline is now in
-  place, a pre-motion frame ring isn't wired) is the follow-up.
+  move to a real background-subtraction model) is the follow-up. Pre-roll is wired (the pre-roll
+  ring in `CameraGlPipeline`).
 
 ## Where things live
 
@@ -105,8 +105,9 @@ section) but none of its code was reused.
 
 ## What's built and verified
 
-- **phone-app**: `PanopticonService` (foreground service) runs a Camera2 + `MediaCodec`/`MediaMuxer`
-  pipeline recording gaplessly-rotating segments, plus an embedded Ktor HTTP server implementing the pairing/
+- **phone-app**: `PanopticonService` (foreground service) runs `CameraGlPipeline` (Camera2 →
+  one `SurfaceTexture` → GPU fan-out to motion analysis + a continuous `MediaCodec` encoder →
+  motion-gated `MediaMuxer` with pre-roll), plus an embedded Ktor HTTP server implementing the pairing/
   device/status/config/mode/clips subset of `phone-http-api.md`. Compose UI: Home, Connect,
   Gallery. See `phone-app/README.md` for the full "what's here" / "what's deferred" breakdown.
 - **controller**: Go/Wails tray app with embedded SQLite (sqlc+goose managed, see below),
@@ -176,7 +177,7 @@ candidates for "the next slice":
   quirks that *were* re-verified (see `docs/QUIRKS.md`'s "Reconfirmed on Pixel 6" section for the
   pattern to follow).
 - ~~**Motion-gated recording.**~~ **Implemented** (phone-app only) — see "Slices added since the
-  initial handoff" above. Remaining: on-device threshold tuning, pre-roll, a real
+  initial handoff" above. Remaining: on-device threshold tuning, a real
   background-subtraction model.
 
 - **Unpair / force-unpair (controller only).** `internal/unpair` + `App.UnpairPhone` /

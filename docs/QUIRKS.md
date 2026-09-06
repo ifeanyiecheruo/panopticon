@@ -33,10 +33,10 @@ a low-end/old-API check - see "Foreground service" below for what it caught that
 fail at the very first capture request submission, with nothing catchable at the call site.
 **What we did:** the original clip-rotation design fully tore down and recreated the
 `CameraCaptureSession` + encoder on every ~10s rotation - effectively a repeated stress test of
-session (re)configuration. (Gapless rotation later removed the per-rotation teardown; the session
-is now rebuilt only on an ARMED↔RECORDING transition, i.e. between motion events, in
-`runRecordingPhase()`.) We kept the old workaround anyway (configure → wait 500ms → check for an
-async failure signal, see `CameraPipeline.kt`).
+session (re)configuration. (Gapless rotation later removed the per-rotation teardown; with the
+GPU-fan-out pipeline the session is rebuilt only on an error or a mode change.) We kept the old
+workaround anyway (configure → wait 500ms → check for an async failure signal, see
+`CameraGlPipeline.kt`).
 **Actually observed (original per-rotation design):** over roughly 20 consecutive rotations (~3.5
 minutes of continuous recording) plus 2 full stop/restart cycles (triggered via `POST /api/mode`
 switching to `live` and back), **zero** async configure failures were logged - every session
@@ -45,21 +45,21 @@ configured and started cleanly on the first attempt. The retry path never fired.
 retry (it's cheap and a `CameraCaptureSession` is documented as capable of this failure mode in
 general), but this specific Pixel 6 + Exynos encoder pairing didn't exhibit it under normal
 conditions. Worth retesting under thermal/memory pressure if it ever becomes suspect again.
-**Where:** `phone-app/app/src/main/kotlin/com/panopticon/phoneapp/camera/CameraPipeline.kt`
-(`runRecordingPhase()`).
+**Where:** `phone-app/app/src/main/kotlin/com/panopticon/phoneapp/camera/CameraGlPipeline.kt`
+(`openSessionAndRequest()`).
 
 #### Camera2 calls did not throw synchronously here, but the defensive wrapping stayed
 **Old prototype's claim:** `createCaptureSession`/`setRepeatingRequest`/etc. observed throwing
 `CameraAccessException` synchronously under HAL stress, not just via callbacks.
-**What we did:** every Camera2 call in `CameraPipeline` is wrapped in try/catch regardless
-(`openCameraDevice`, `createCaptureSession`, `runRecordingPhase`'s `setRepeatingRequest`/`start()`).
+**What we did:** every Camera2 call in `CameraGlPipeline` is wrapped in try/catch regardless
+(`openCameraDevice`, `createCaptureSession`, `openSessionAndRequest`'s `setRepeatingRequest`).
 **Actually observed:** no synchronous throws seen in this slice's testing - the only exception
 logged during the whole session was an expected `kotlinx.coroutines.JobCancellationException`
 when `stop()` cancelled the run loop's coroutine job during a mode switch (working as intended,
 not a HAL failure).
 **Conclusion:** not reproduced here either, same caveat as above - kept as defensive wrapping
 since it costs nothing and the old finding was itself real (just device-specific).
-**Where:** `CameraPipeline.kt`.
+**Where:** `CameraGlPipeline.kt`.
 
 #### `KEY_I_FRAME_INTERVAL` IS honored, tightly, on this device (and on-demand sync frames work)
 **Old prototype's claim (Pixel 9a):** `MediaFormat.KEY_I_FRAME_INTERVAL` was honored wildly
@@ -69,7 +69,7 @@ assumptions.
 encoder with `KEY_I_FRAME_INTERVAL = 1` and, at each rotation boundary, additionally requests an
 immediate sync frame via `PARAMETER_KEY_REQUEST_SYNC_FRAME` - so this *is* a direct re-test of
 the old claim.
-**What we measured** (`CameraPipeline.logKeyframeCadence()` reads real keyframe timestamps from
+**What we measured** (`CameraGlPipeline.logKeyframeCadence()` reads real keyframe timestamps from
 each finished segment via `MediaExtractor`): across many 10s segments the deltas were
 `[1027, 997, 997, 997, ...]` (ms) essentially every time, run after run - the Pixel 6's
 `ExynosC2H264EncComponent` places a keyframe within ~1ms of once per second, and the on-demand
@@ -78,7 +78,7 @@ sync-frame request lands the rotation keyframe within a few ms of the deadline.
 device/encoder to drive segment boundaries directly. Still budget for the old finding on other
 SoCs - which is exactly why rotation also falls back to "next natural keyframe" if the sync-frame
 request is ignored.
-**Where:** `CameraPipeline.kt` (`createEncoder()`, `drainLoop()`, `logKeyframeCadence()`).
+**Where:** `CameraGlPipeline.kt` (`createEncoder()`, `drainLoop()`, `logKeyframeCadence()`).
 
 #### Gapless segment rotation: MediaRecorder can't, MediaCodec+MediaMuxer can (everywhere the camera feeds an encoder at all)
 **Goal:** one encoder alive for a whole motion event, rolling its output `.mp4` with no
@@ -93,42 +93,41 @@ teardown, so consecutive ~10s segments of continuous motion have no ~1-2s sessio
   (Spreadtrum, API 28) `setMaxFileSize` on a SURFACE H264 recorder makes the encoder write only
   the ~32-byte container header then stall (`MediaRecorder error extra=-1007`).
 
-**MediaCodec + MediaMuxer (the shipped approach):** one `MediaCodec` AVC encoder (surface
-input) runs untouched for the whole RECORDING phase; the `MediaMuxer` is what rotates. At each
-interval we request a sync frame (`PARAMETER_KEY_REQUEST_SYNC_FRAME`) and on the next
-`BUFFER_FLAG_KEY_FRAME` we `stop()`/`release()` the old muxer, open a new one on the next file
-(re-`addTrack` from the cached output `MediaFormat`), and write that keyframe as sample 0.
-**Verified on the Pixel 6 at the real 10s interval:** every segment boundary within ±3ms
-(`start[k+1] ≈ start[k] + dur[k]`), clean ~1s GOP, valid playable files, no errors, indefinitely.
+**MediaCodec + MediaMuxer, encoder surface input (superseded):** one `MediaCodec` AVC encoder
+whose input surface is a camera stream, running untouched; the `MediaMuxer` rotates at a
+keyframe. Gapless on the Pixel 6 (`start[k+1] ≈ start[k] + dur[k]`, ±3ms). But it needs the
+camera session to target **both** an analysis `ImageReader` (`YUV_420_888` 320x240) and the
+encoder-surface video stream, and **the BLU G5's Unisoc SC9863A HAL rejects two concurrent
+streams**: `Camera3-Device: sendRequestsBatch: Unable to submit capture request N to HAL
+device: Function not implemented (-38)` → the device errors out and disconnects, encoder never
+gets a frame. (Same root cause as MediaRecorder failing there - it's the two-stream config, not
+the encoder.) A video-only session records fine there; ARMED (analysis-only) and still-image
+calibration work too - it's *only* the two concurrent streams.
 
-**The BLU G5's Unisoc SC9863A HAL can't run the analysis stream + the video stream at once.**
-With a session targeting both an analysis `ImageReader` (`YUV_420_888` 320x240) and the video
-(encoder input) stream, `Camera3-Device: sendRequestsBatch: Unable to submit capture request N
-to HAL device: Function not implemented (-38)` → the device drops into an error state and
-disconnects, so the encoder never gets a frame. (This is why MediaRecorder failed there too -
-same two-stream config.) **A video-only session records fine** (verified: ~4MB 10s segments,
-valid keyframes, gapless muxer rotation). ARMED (analysis-only) and still-image calibration also
-work - it's *only* the two concurrent streams that this HAL rejects.
-**Fix:** the first time RECORDING gets no encoder output, `CameraPipeline` remembers (a
-`panopticon_camera` SharedPref) that this device can't co-configure the two and switches to a
-**video-only burst** mode: RECORDING runs a fixed `VIDEO_ONLY_BURST_MS` (30s) with no live
-motion detection, then re-arms and re-checks. Segments inside a burst are still gapless; on
-continuous motion the cost is one ~2s session-rebuild gap per burst. A capable device that
-*has* recorded co-configured (the Pixel 6) never latches this, even on a transient hiccup.
-**Where:** `phone-app/app/src/main/kotlin/com/panopticon/phoneapp/camera/CameraPipeline.kt`
-(`runRecordingPhase()`, `createEncoder()`, `drainLoop()`, `rollMuxer()`, `finalizeMuxer()`).
+**GPU texture fan-out (the shipped approach):** **one** camera stream → a `SurfaceTexture`. A GL
+thread samples that external-OES texture per frame and renders it twice: a small downscaled copy
+to an FBO for `glReadPixels` (frame-difference motion detection) *and* the full frame to an EGL
+window surface on `MediaCodec.createInputSurface()`. The encoder runs continuously; a
+motion-gated `MediaMuxer` (primed from an in-RAM pre-roll ring of encoded access units) is what
+writes to disk, rotating at a keyframe. **Verified sustained on both devices** - a 10-min soak
+(`GlSoakTest`) on the BLU G5 ran clean: 24 fps camera==rendered==encoded with zero dropped
+frames, 59 MediaMuxer rotations, 0 GL errors, flat memory; and the real pipeline records
+gapless (`start[k+1] - start[k] - dur[k]` within ~8ms on the BLU, ~1ms on the Pixel), with
+pre-roll, on both. Single stream = the BLU's two-stream rejection is simply avoided.
+**Where:** `phone-app/app/src/main/kotlin/com/panopticon/phoneapp/camera/CameraGlPipeline.kt`;
+`app/src/debug/.../GlSoakTest.kt`.
 
 #### Unsupported-encoder-size guard ran successfully, but its failure mode (black frames) was not reproduced
 **Old prototype's claim:** requesting a recording size the AVC encoder can't actually handle
 (despite the camera declaring it) silently produces a black output surface, no error.
-**What we did:** `CameraPipeline.pickRecordingSize()` cross-references the camera's
+**What we did:** `CameraGlPipeline.pickRecordingSize()` cross-references the camera's
 `StreamConfigurationMap` sizes against `MediaCodecInfo.VideoCapabilities.isSizeSupported()` before
 ever recording, same approach as the old `recordingSizes()`.
 **Actually observed:** on this Pixel 6, the intersection logic ran on every camera open and always
 resolved to 1280x720 (both camera and encoder agree it's supported) - we never hit a case where
 the two capability sets disagreed, so **the actual black-frame failure mode was not reproduced or
 exercised** here. The guard is present but untested against a real disagreement.
-**Where:** `CameraPipeline.kt` (`pickRecordingSize()`).
+**Where:** `CameraGlPipeline.kt` (`pickRecordingSize()`).
 
 #### A thumbnail came back black - explained by test-environment lighting, not a codec bug
 While verifying `GET /api/clips/:filename/thumbnail` end-to-end, the extracted JPEG frame was
@@ -301,7 +300,7 @@ original write-ups:
 - `CONTROL_MODE=USE_SCENE_MODE` silently overrides the individual 3A controls
 - `CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES` reports duplicate values
 - A `CaptureRequest` template mismatch broke calibration carry-through between modes - this
-  project's `CameraPipeline` does consistently build from `TEMPLATE_RECORD` (following the old
+  project's `CameraGlPipeline` does consistently build from `TEMPLATE_RECORD` (following the old
   lesson proactively), but since this slice's `live` mode is a stub with no real capture pipeline
   of its own, there's nothing yet to actually cross-check consistency against.
 - The HAL only honors roughly every other explicit sync-frame request
@@ -309,13 +308,12 @@ original write-ups:
 - In-place bitrate changes are silently ignored
 - Concurrent `MediaCodec` access crashes natively, and a decoder that's thrown once throws forever
 - **Two concurrent camera surfaces for record + motion sampling** - the old prototype's claim
-  (Pixel 9a / Tensor): they never configure. **Device-dependent, now confirmed both ways.**
-  `CameraPipeline`'s RECORDING session co-configures an analysis `ImageReader` (`YUV_420_888`,
-  ~QVGA) with the `MediaCodec` encoder input surface (`createCaptureSession(listOf(
-  analysis.surface, encSurface), ...)`, `TEMPLATE_RECORD`): the **Pixel 6** delivers to both
-  cleanly, indefinitely; the **BLU G5** (Unisoc SC9863A) rejects it - `sendRequestsBatch` returns
-  `-ENOSYS` and the device errors out. `CameraPipeline` learns this per-device and falls back to
-  a video-only burst mode there (see "Gapless segment rotation" above).
+  (Pixel 9a / Tensor): they never configure. **Device-dependent, confirmed both ways** - the
+  Pixel 6 co-configures `[YUV analysis ImageReader + encoder surface]` fine indefinitely; the
+  BLU G5 (Unisoc SC9863A) rejects it (`sendRequestsBatch` → `-ENOSYS`, device errors out). The
+  shipping pipeline (`CameraGlPipeline`) sidesteps this entirely by using **one** camera stream
+  (a `SurfaceTexture`) and fanning it out to the analysis FBO + the encoder on the GPU - see
+  "GPU texture fan-out" above.
 - CORS needs explicit header exposure for hls.js (adopted defensively in `PanopticonHttpServer.kt`
   for ranged clip downloads generally - `exposeHeader(Content-Range/Content-Length)` - but not
   verified against an actual browser `fetch()`/hls.js client, only via `curl`, since there's no

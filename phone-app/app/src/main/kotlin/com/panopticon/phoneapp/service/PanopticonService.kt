@@ -14,7 +14,7 @@ import androidx.core.app.NotificationCompat
 import com.panopticon.phoneapp.MainActivity
 import com.panopticon.phoneapp.PanopticonApplication
 import com.panopticon.phoneapp.R
-import com.panopticon.phoneapp.camera.CameraPipeline
+import com.panopticon.phoneapp.camera.CameraGlPipeline
 import com.panopticon.phoneapp.http.PanopticonHttpServer
 import com.panopticon.phoneapp.state.AppMode
 import com.panopticon.phoneapp.state.RecordingStatus
@@ -31,7 +31,7 @@ private const val NOTIFICATION_ID = 1001
 class PanopticonService : Service() {
 
     private lateinit var app: PanopticonApplication
-    private var cameraPipeline: CameraPipeline? = null
+    private var cameraPipeline: CameraGlPipeline? = null
     private var httpServer: PanopticonHttpServer? = null
 
     override fun onCreate() {
@@ -113,7 +113,7 @@ class PanopticonService : Service() {
         // decides when a segment is actually written.
         app.appState.setRecordingStatus(RecordingStatus.IDLE)
         app.appState.setMotionActive(false)
-        cameraPipeline = CameraPipeline(
+        cameraPipeline = CameraGlPipeline(
             context = applicationContext,
             segmentsDir = app.segmentStore.segmentsDir,
             appConfig = app.appConfig,
