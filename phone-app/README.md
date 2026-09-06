@@ -8,9 +8,9 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 ## What's here
 
 - **`PanopticonService`** - foreground, `START_STICKY` service. Opens the back camera via
-  Camera2, runs a **motion-gated** recording pipeline (rotating ~10s H.264 *segments* via
-  `MediaRecorder`, written only while motion is present plus a short tail), and runs an embedded
-  Ktor/Netty HTTP server.
+  Camera2, runs a **motion-gated** recording pipeline (a persistent `MediaCodec` H.264 encoder
+  feeding a `MediaMuxer` that rotates ~10s *segments* gaplessly, written only while motion is
+  present plus a short tail), and runs an embedded Ktor/Netty HTTP server.
 - **Motion gate** - an always-on analysis stream (small YUV `ImageReader`) feeds a
   frame-difference `MotionDetector`; its verdict drives a `RecordingPhaseController` state
   machine (ARMED &lt;-&gt; RECORDING, with a trailer tail after motion stops). `motionSensitivity`
@@ -51,15 +51,12 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   small global shifts), and slow scene drift. The per-sensitivity thresholds in the code are
   starting points chosen by reasoning, **not measured against the Pixel 6 in real lighting** -
   that tuning (and any move to a real background-subtraction model) is follow-up work. Also **no
-  pre-roll**: a segment starts at motion-detection time, since `MediaRecorder` can't back-date a
-  buffer (pre-roll is tied to the future `MediaCodec`+`MediaMuxer` switch).
+  pre-roll**: a segment starts at motion-detection time. The `MediaCodec` pipeline makes pre-roll
+  feasible (keep a ring of pre-motion encoded frames) but it isn't wired up.
 - **`live` mode is a stub.** `POST /api/mode {"mode":"live"}` flips the mode flag and tears down
   the recording pipeline (RECORD/LIVE stay mutually exclusive, per the architecture doc) but
   there's no real HLS encoder/relay behind it.
 - **No audio track** - video only, avoids `RECORD_AUDIO` permission entirely.
-- **`MediaRecorder`, not raw `MediaCodec`+`MediaMuxer`** - simpler for this slice; means no
-  control over keyframe interval or explicit sync-frame requests (`MediaRecorder` doesn't expose
-  either). See `docs/QUIRKS.md` for what this meant for reconfirming old keyframe-cadence findings.
 - **Calibration sweep is long and rare.** Every output size × every camera × ~14 zoom steps,
   with a fresh `CameraDevice` per resolution (some HALs disconnect the device on plain session
   recycling - see `docs/QUIRKS.md`). Tens of minutes on a phone with many resolutions and
@@ -76,11 +73,12 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   `adb shell am broadcast` on devices whose Compose UI uiautomator/screencap can't touch.
 - **Full `CameraCaptureSession` teardown+recreate on every ARMED&lt;-&gt;RECORDING transition**
   (i.e. between separate motion events) rather than a lighter in-place surface swap. Segment
-  rotation *within* one motion event is gapless - one `MediaRecorder` stays alive and rolls its
-  output file via `setNextOutputFile` (`setMaxFileSize`-triggered; `setMaxDuration` merely stops
-  the encoder on oriole). A device whose HAL can't do that (probed in ~2s, then remembered in
-  SharedPreferences) falls back to the pre-gapless path: tear down + rebuild per ~10s segment,
-  with the ~1-2s gap back. The analysis `ImageReader` persists across session churn.
+  rotation *within* one motion event is gapless: one `MediaCodec` encoder runs untouched for the
+  whole RECORDING phase and the `MediaMuxer` is swapped at a keyframe (sync-frame requested at
+  the interval boundary) to start the next file - `start[k+1] == start[k] + dur[k]` on the
+  Pixel 6. If the encoder produces no output within 4s (the BLU G5's camera→encoder path is
+  broken - see QUIRKS.md), the pipeline reports `cameraHealthy=false` and retries. The analysis
+  `ImageReader` persists across session churn.
 - **Bottom nav bar instead of the mock's left icon rail + top status pill** - visual language
   (dark/teal theme, `ui/theme/Theme.kt`) carried over; exact chrome layout wasn't a priority for
   this slice.
@@ -129,5 +127,5 @@ To reach the HTTP API from your dev machine: `adb -s <serial> forward tcp:8080 t
 tab, which shows an invite code/URL, then `POST http://127.0.0.1:8080/api/pair?invite=<code>`
 with a JSON body `{"publicKey": "...", "name": "...", "kind": "..."}`).
 
-See `../docs/QUIRKS.md` for Camera2/MediaRecorder/HTTP-server findings from building this, and
+See `../docs/QUIRKS.md` for Camera2/MediaCodec/HTTP-server findings from building this, and
 which of the old prototype's quirks were reconfirmed vs. only carried forward.

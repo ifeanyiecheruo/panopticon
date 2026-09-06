@@ -49,22 +49,24 @@ already lives elsewhere and would drift.
   Verified against the real Pixel 6 archive: migration `002` + backfill on the existing
   `data/panopticon.db` collapsed its 15 contiguous segments into one clip.
 
-- **Gapless segment rotation (phone-app only).** `CameraPipeline` no longer tears the capture
-  session down between segments. One `MediaRecorder` + one `CameraCaptureSession` live for the
-  whole RECORDING phase; `setMaxFileSize` (~one rotation interval of video) drives rotation and
-  `MAX_FILESIZE_APPROACHING` → `setNextOutputFile` → `NEXT_OUTPUT_FILE_STARTED` rolls the output
-  file without stopping the encoder. `setMaxDuration` was tried first and rejected — on oriole
-  it *stops* the encoder rather than rolling. **Verified on the Pixel 6:** within one motion
-  event consecutive segments are exactly contiguous (`start[k+1] == start[k] + dur[k]`, 0ms
-  gap), no `recorder.stop()` failures, files play. Only the ARMED→RECORDING transition between
-  *separate* motion events still costs ~1.5s (session rebuild) — that boundary is a real motion
-  stop and legitimately ends a clip. With rotation gapless, `GroupingGapMs` /
-  `SegmentGrouping.GAP_MS` dropped 3000 → **500ms**. A HAL that can't roll files (the BLU G5's
-  Spreadtrum encoder errors on `setMaxFileSize`) is caught by a ~2.5s fail-fast probe + a
-  mid-recording watchdog and permanently falls back to the pre-gapless per-segment-rebuild path
-  (decision remembered in a `panopticon_camera` SharedPref). The BLU's video recording is
-  separately, pre-existingly broken (empty ~3KB files on the legacy path too) — not a
-  regression from this change.
+- **Gapless segment rotation (phone-app only).** `CameraPipeline` was moved off `MediaRecorder`
+  to a **`MediaCodec` H.264 encoder + a rotating `MediaMuxer`**. One encoder (surface input)
+  runs untouched for the whole RECORDING phase; the muxer is what rotates — at each ~10s
+  boundary we request a sync frame and, on the next `BUFFER_FLAG_KEY_FRAME`, `stop()` the old
+  muxer, open a new one on the next file (re-`addTrack` from the cached output `MediaFormat`),
+  and write that keyframe as sample 0. Per-segment PTS rebased to 0; each segment's `createdAtMs`
+  is chained from the recording's start PTS so `endMs[k] == createdAtMs[k+1]`. `MediaRecorder`
+  can't do this — `setMaxDuration` *stops* the encoder rather than rolling, and `setMaxFileSize`
+  + `setNextOutputFile` (which does roll on oriole) is broken on the BLU G5's Spreadtrum
+  encoder. **Verified on the Pixel 6 at the real 10s interval:** consecutive segments contiguous
+  to ±3ms, clean ~1s GOP, valid playable files, no errors, indefinitely. Only the
+  ARMED→RECORDING transition between *separate* motion events still costs ~1.5s (session
+  rebuild) — a real motion stop that legitimately ends a clip. With rotation gapless,
+  `GroupingGapMs` / `SegmentGrouping.GAP_MS` dropped 3000 → **500ms**. The **BLU G5 still can't
+  record video** — its encoder emits zero output from a camera surface on `MediaCodec` too (a
+  camera→encoder fault below the API layer; its still-image calibration path is unaffected).
+  `CameraPipeline` detects "no encoder output in 4s", reports `cameraHealthy=false`, retries,
+  and writes no files — not a regression (MediaRecorder produced empty ~3KB stubs there).
 
 - **Motion-gated recording (phone-app only).** The always-record pipeline is gone. `CameraPipeline`
   now runs an always-on analysis `ImageReader` → `motion/MotionDetector` (frame-difference on a
@@ -74,8 +76,8 @@ already lives elsewhere and would drift.
   already handled non-recording that way — no controller change needed). Both `MotionDetector`
   and `RecordingPhaseController` have JVM unit tests. **Not yet verified on the Pixel 6** — the
   per-sensitivity thresholds are reasoned starting points; tuning against real lighting (and any
-  move to a real background-subtraction model, plus pre-roll once the `MediaCodec`+`MediaMuxer`
-  switch happens) is the follow-up.
+  move to a real background-subtraction model, plus pre-roll — the `MediaCodec` pipeline is now in
+  place, a pre-motion frame ring isn't wired) is the follow-up.
 
 ## Where things live
 
@@ -101,8 +103,8 @@ section) but none of its code was reused.
 
 ## What's built and verified
 
-- **phone-app**: `PanopticonService` (foreground service) runs a Camera2 + `MediaRecorder`
-  pipeline recording rotating clips, plus an embedded Ktor HTTP server implementing the pairing/
+- **phone-app**: `PanopticonService` (foreground service) runs a Camera2 + `MediaCodec`/`MediaMuxer`
+  pipeline recording gaplessly-rotating segments, plus an embedded Ktor HTTP server implementing the pairing/
   device/status/config/mode/clips subset of `phone-http-api.md`. Compose UI: Home, Connect,
   Gallery. See `phone-app/README.md` for the full "what's here" / "what's deferred" breakdown.
 - **controller**: Go/Wails tray app with embedded SQLite (sqlc+goose managed, see below),

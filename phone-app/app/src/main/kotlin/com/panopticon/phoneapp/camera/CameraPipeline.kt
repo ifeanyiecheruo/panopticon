@@ -7,10 +7,13 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.media.ImageReader
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaExtractor
 import android.media.MediaFormat
-import android.media.MediaRecorder
+import android.media.MediaMuxer
+import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -26,10 +29,10 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.yield
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
@@ -40,49 +43,51 @@ private const val TAG = "CameraPipeline"
 /** How often the phase loop wakes to check for an ARMED<->RECORDING transition. */
 private const val PHASE_POLL_MS = 100L
 
-/** SharedPreferences flag: this device failed the gapless-rotation probe, always
- *  use the per-segment-rebuild path. */
-private const val PREF_GAPLESS_DISABLED = "gapless_rotation_disabled"
+/** Target encoder bitrate for the recording stream. */
+private const val ENCODER_BIT_RATE = 4_000_000
+
+/** Encoder GOP length. Also the coarsest granularity a rotation can land on if a
+ *  device ignores our on-demand sync-frame request. */
+private const val I_FRAME_INTERVAL_SEC = 1
+
+/** dequeueOutputBuffer timeout (µs). Short so the drain loop still checks the
+ *  recording phase promptly. */
+private const val DEQUEUE_TIMEOUT_US = 10_000L
+
+/** If the encoder emits no output at all for this long after a recording session
+ *  is configured, treat the camera/encoder as unhealthy and let runLoop rebuild. */
+private const val FIRST_OUTPUT_TIMEOUT_MS = 4_000L
 
 /**
- * Camera2 + MediaRecorder pipeline for the back camera, now **motion-gated**:
+ * Camera2 + **MediaCodec/MediaMuxer** pipeline for the back camera, **motion-gated**:
  * an always-on analysis stream (a small YUV `ImageReader`) feeds [MotionDetector],
- * whose verdict drives [RecordingPhaseController]. While ARMED the session
- * carries only the analysis surface and nothing is written; the first frame
- * with motion flips to RECORDING, which reconfigures the session to add a
- * `MediaRecorder` surface and records H.264. Recording is held for a trailer
- * window after motion last stopped, then it disarms.
+ * whose verdict drives [RecordingPhaseController]. While ARMED the session carries
+ * only the analysis surface and nothing is written; the first frame with motion
+ * flips to RECORDING, which reconfigures the session to add the encoder's input
+ * surface. Recording is held for a trailer window after motion last stopped.
  *
- * **Gapless segment rotation.** One `MediaRecorder` + one `CameraCaptureSession`
- * stay alive for the whole RECORDING phase (one motion event). `setMaxFileSize`
- * (sized to ~one rotation interval of video) drives rotation:
- * `MEDIA_RECORDER_INFO_MAX_FILESIZE_APPROACHING` is our cue to hand over the next
- * file with `setNextOutputFile`, the recorder rolls into it at 100% without
- * stopping the encoder or reconfiguring the session, and
- * `MEDIA_RECORDER_INFO_NEXT_OUTPUT_FILE_STARTED` tells us the previous file is
- * finalised. So consecutive segments of one motion event are contiguous (no
- * ~1-2s teardown/rebuild gap). `setMaxDuration` is NOT usable for this - on
- * oriole it stops the encoder instead of rolling.
+ * **Gapless segment rotation.** One `MediaCodec` H.264 encoder (surface input)
+ * runs for the whole RECORDING phase - it is never stopped or reconfigured. The
+ * `MediaMuxer` writing its output to the current `.mp4` is what rotates: at each
+ * ~[rotationIntervalMs] boundary we ask the encoder for a sync frame
+ * (`PARAMETER_KEY_REQUEST_SYNC_FRAME`); on the next `BUFFER_FLAG_KEY_FRAME`
+ * output buffer we `stop()`/`release()` the old muxer, open a new one on the next
+ * file (re-`addTrack` from the cached output `MediaFormat`, which carries the
+ * SPS/PPS), and write that keyframe as sample 0 of the new segment. The encoder
+ * never pauses, so consecutive segments of one motion event are contiguous - no
+ * ~1-2s session-rebuild gap, on every device. Per-segment sample PTS are
+ * rebased to 0; each segment's wall-clock `createdAtMs` is chained from the
+ * recording's start PTS so `endMs[k] == createdAtMs[k+1]`.
  *
- * Some HALs can't do this at all (the BLU G5's Spreadtrum encoder errors out on
- * `setMaxFileSize` + `setNextOutputFile` and writes nothing). A fail-fast probe
- * (real bytes within ~2s of `start()`?) plus the mid-recording error/watchdog
- * checks catch that; the first time any fires, the pipeline falls back to
- * `runRecordingPhaseLegacy` (tear down + rebuild per ~10s segment - the ~1-2s
- * rotation gap is back, but it works everywhere) and remembers the decision in
- * SharedPreferences so the probe runs at most once per device.
+ * (The ARMED->RECORDING transition between *separate* motion events still tears
+ * the session down - only rotation *within* a motion event is gapless. That
+ * boundary is a real motion stop and legitimately ends a clip.)
  *
- * (The ARMED->RECORDING transition between *separate* motion events always tears
- * the session down - only rotation *within* a motion event is ever gapless.)
- *
- * Simplifications still in force for this slice (documented, not accidental):
+ * Simplifications still in force (documented, not accidental):
  *  - **Frame-difference motion only** - no background model / CV library. See
  *    [MotionDetector]; thresholds are un-tuned starting points.
- *  - **No pre-roll.** A segment starts at motion-detection time - `MediaRecorder`
- *    can't back-date a buffer. Pre-roll is tied to the future
- *    `MediaCodec`+`MediaMuxer` switch.
- *  - **Full `CameraCaptureSession` teardown+recreate** on every ARMED<->RECORDING
- *    transition (but NOT between segments any more - see above).
+ *  - **No pre-roll** yet. The MediaCodec pipeline makes it feasible (feed a ring
+ *    of pre-motion frames) but it isn't wired up.
  *  - **No audio track** - video only, avoids `RECORD_AUDIO` entirely.
  */
 class CameraPipeline(
@@ -116,17 +121,21 @@ class CameraPipeline(
     private var analysisReader: ImageReader? = null
     private var recordingSize: Size = Size(1280, 720)
 
-    // ---- Continuous-recording state (one MediaRecorder for the whole RECORDING phase) ----
-    // Touched only on the camera work thread, except rollEvents/recorderError which the
-    // MediaRecorder callback (main Looper) writes and the work thread drains.
-    private var mediaRecorder: MediaRecorder? = null
-    private val segmentFiles = ArrayList<File>()   // index k -> the k-th output file
-    private val segmentStartMs = ArrayList<Long>() // index k -> wall-clock start of segmentFiles[k]
-    private var rollsPublished = 0                 // segments 0..rollsPublished-1 already handed off
-    private val rollEvents = ConcurrentLinkedQueue<Long>() // wall-clock ms of each NEXT_OUTPUT_FILE_STARTED
-    private val armNextRequested = AtomicBoolean(false)    // set by MAX_FILESIZE_APPROACHING
-    private val recorderError = AtomicBoolean(false)
-    private val encoderBitRate = 4_000_000
+    // ---- Recording state (one encoder for the whole RECORDING phase; the muxer
+    // rotates). Touched only on the camera work thread. ----
+    private var encoder: MediaCodec? = null
+    private var encoderInputSurface: Surface? = null
+    private var muxer: MediaMuxer? = null
+    private var muxerVideoTrack = -1
+    private var muxerStarted = false
+    private var trackFormat: MediaFormat? = null     // encoder's real output format (carries csd-0/csd-1)
+    private var segFile: File? = null                // the segment currently being muxed
+    private var segFirstPtsUs = -1L                  // PTS of the first sample written to segFile
+    private var segLastPtsUs = 0L                    // PTS of the most recent sample written to segFile
+    private var recStartPtsUs = -1L                  // PTS of the first sample of the whole recording
+    private var recStartWallMs = 0L                  // wall clock at that first sample
+    private var pendingRoll = false                  // rotation is due; waiting for a keyframe to land it
+    private val frameDurationMs = 1000L / 30
 
     fun start() {
         if (running) return
@@ -214,145 +223,195 @@ class CameraPipeline(
         }
     }
 
-    // ---- RECORDING ----
-    //
-    // Preferred path: one recorder + one session for the whole motion event,
-    // rolling output files gaplessly with setNextOutputFile. Fallback (for HALs
-    // that can't do that - e.g. the BLU G5's Spreadtrum encoder errors out on
-    // setMaxFileSize+setNextOutputFile): tear down and rebuild per ~10s segment,
-    // the pre-gapless behaviour, which reintroduces the ~1-2s rotation gap but
-    // works everywhere. The decision is probed once and remembered on disk, so a
-    // weak device pays the ~2s probe cost only on its very first motion event ever.
-
-    private val camPrefs = context.applicationContext.getSharedPreferences("panopticon_camera", Context.MODE_PRIVATE)
-    @Volatile private var gaplessRotationDisabled = camPrefs.getBoolean(PREF_GAPLESS_DISABLED, false)
-
-    private fun disableGaplessRotation(reason: String) {
-        Log.w(TAG, "gapless segment rotation not supported here; using per-segment rebuild: $reason")
-        gaplessRotationDisabled = true
-        camPrefs.edit().putBoolean(PREF_GAPLESS_DISABLED, true).apply()
-    }
+    // ---- RECORDING: persistent encoder, rotating muxer ----
 
     private suspend fun runRecordingPhase() {
         onPhaseChanged(true)
-        if (gaplessRotationDisabled) {
-            runRecordingPhaseLegacy()
-            return
+        val device = cameraDevice ?: throw IllegalStateException("camera closed")
+        val analysis = analysisReader ?: throw IllegalStateException("analysis reader missing")
+
+        resetRecordingState()
+        Log.i(TAG, "recording: ${recordingSize.width}x${recordingSize.height}")
+        if (!createEncoder()) throw IllegalStateException("could not create the video encoder")
+        val encSurface = encoderInputSurface ?: throw IllegalStateException("encoder has no input surface")
+
+        val failed = AtomicBoolean(false)
+        val session = createCaptureSession(device, listOf(analysis.surface, encSurface), failed)
+        delay(500)
+        if (failed.get() || !running) {
+            session.close()
+            throw IllegalStateException("recording session failed asynchronously")
         }
+        val request = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+            addTarget(encSurface)
+            addTarget(analysis.surface)
+        }.build()
+        session.setRepeatingRequest(request, null, callbackHandler)
+        captureSession = session
+
+        segFile = File(segmentsDir, segmentFileName()) // first segment; muxer opens on FORMAT_CHANGED
+
         try {
-            runRecordingPhaseGapless()
-        } catch (e: GaplessRotationUnsupported) {
-            disableGaplessRotation(e.message ?: "unknown")
-            runCatching { finishRecording() }
-            if (running && phaseController.phase == RecordingPhaseController.Phase.RECORDING) {
-                runRecordingPhaseLegacy()
-            }
-        }
-    }
-
-    private class GaplessRotationUnsupported(message: String) : Exception(message)
-
-    private suspend fun runRecordingPhaseGapless() {
-        if (!beginRecording()) throw IllegalStateException("could not start recording after retries")
-
-        // Fail-fast probe: a healthy encoder appends a steady stream (~1MB in a
-        // couple of seconds at this bitrate). A HAL that can't do size-based
-        // rollover tends to write only the container header (~32B) then stall -
-        // catch that here rather than after a full watchdog interval of a dead
-        // recording. Two samples: enough bytes AND still growing.
-        val probeFile = segmentFiles.firstOrNull()
-        delay(1_500)
-        val len1 = probeFile?.length() ?: 0L
-        if (recorderError.get()) throw GaplessRotationUnsupported("MediaRecorder error right after start")
-        delay(1_000)
-        val len2 = probeFile?.length() ?: 0L
-        if (recorderError.get()) throw GaplessRotationUnsupported("MediaRecorder error right after start")
-        if (len2 < 64 * 1024 || len2 <= len1) {
-            throw GaplessRotationUnsupported("encoder not producing data (${len1}B -> ${len2}B in 1s)")
-        }
-
-        // Rotation is size-driven: setMaxFileSize fires MAX_FILESIZE_APPROACHING
-        // (~90%), we hand over the next file, and the recorder rolls into it at
-        // 100% without stopping. (setMaxDuration was tried first - on oriole it
-        // *stops* the encoder rather than rolling, so it can't be used here.)
-        // We only arm when a roll is actually near, so a short motion event never
-        // leaves a pending setNextOutputFile for recorder.stop() to choke on.
-        var armed = false
-        var armedAtMs = 0L
-        try {
-            while (running && phaseController.phase == RecordingPhaseController.Phase.RECORDING) {
-                if (recorderError.get()) throw GaplessRotationUnsupported("MediaRecorder error mid-recording")
-
-                var rolled = false
-                while (true) {
-                    val rollAt = rollEvents.poll() ?: break
-                    handleRoll(rollAt)
-                    armed = false
-                    rolled = true
-                }
-
-                val now = System.currentTimeMillis()
-                val activeStart = segmentStartMs.getOrNull(rollsPublished) ?: now
-                val armDue = armNextRequested.getAndSet(false) ||
-                    now - activeStart > rotationIntervalMs * 3 / 2 // backup if APPROACHING never comes
-                if (!armed && armDue) {
-                    mediaRecorder?.let { armNextFile(it) }
-                    armed = true
-                    armedAtMs = now
-                }
-                // Watchdog: once armed, the 100% roll should land within one more
-                // interval. If not, this HAL isn't honouring setNextOutputFile
-                // rollover - fall back to the per-segment-rebuild path.
-                if (armed && !rolled && now - armedAtMs > rotationIntervalMs * 2) {
-                    throw GaplessRotationUnsupported("armed setNextOutputFile but no rollover in ${rotationIntervalMs * 2}ms")
-                }
-                delay(PHASE_POLL_MS)
-            }
+            drainLoop()
         } finally {
             finishRecording()
         }
     }
 
-    /**
-     * Pre-gapless rotation: build recorder + session, record one segment for
-     * rotationIntervalMs (or until motion stops), tear it all down, repeat. Used
-     * only when [runRecordingPhaseGapless] has proven the device can't roll
-     * files. Has the ~1-2s teardown gap between segments this whole change set
-     * out to remove - but it works on every HAL.
-     */
-    private suspend fun runRecordingPhaseLegacy() {
+    /** Pulls encoded buffers, muxes them, and rotates the muxer at each interval.
+     *  Runs until motion stops (phase leaves RECORDING) or the pipeline stops. */
+    private suspend fun drainLoop() {
+        val enc = encoder ?: return
+        val info = MediaCodec.BufferInfo()
+        val rotationUs = rotationIntervalMs * 1000
+        val startedAt = System.currentTimeMillis()
+        var sawOutput = false
+
         while (running && phaseController.phase == RecordingPhaseController.Phase.RECORDING) {
-            if (!beginLegacySegment()) throw IllegalStateException("could not start a recording segment after retries")
-            val deadline = System.currentTimeMillis() + rotationIntervalMs
-            while (running &&
-                phaseController.phase == RecordingPhaseController.Phase.RECORDING &&
-                System.currentTimeMillis() < deadline
-            ) {
-                delay(PHASE_POLL_MS)
+            yield() // cancellation checkpoint; no-op cost on this single-thread dispatcher
+            when (val idx = enc.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)) {
+                MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                    if (!sawOutput && System.currentTimeMillis() - startedAt > FIRST_OUTPUT_TIMEOUT_MS) {
+                        throw IllegalStateException("encoder produced no output ${FIRST_OUTPUT_TIMEOUT_MS}ms after start")
+                    }
+                }
+                MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    trackFormat = enc.outputFormat
+                    startMuxer()
+                }
+                else -> if (idx >= 0) {
+                    sawOutput = true
+                    handleEncodedBuffer(enc, idx, info, rotationUs, allowRoll = true)
+                }
             }
-            finishLegacySegment()
         }
     }
 
     /**
-     * A `NEXT_OUTPUT_FILE_STARTED` was observed at [atMs]: segment `rollsPublished`
-     * is finalised and segment `rollsPublished + 1` is now recording. Publish the
-     * finished one.
+     * Writes one encoded buffer to the current muxer. When [allowRoll] and a
+     * rotation is pending, a keyframe buffer triggers the muxer swap first (so
+     * the keyframe becomes sample 0 of the new segment). Returns true on EOS.
      */
-    private fun handleRoll(atMs: Long) {
-        mediaRecorder ?: return
-        val completedIdx = rollsPublished
-        val activeIdx = completedIdx + 1
-        if (activeIdx >= segmentFiles.size) {
-            Log.w(TAG, "roll observed but no armed file at idx $activeIdx")
-            return
-        }
-        while (segmentStartMs.size <= activeIdx) segmentStartMs.add(atMs)
+    private fun handleEncodedBuffer(
+        enc: MediaCodec,
+        index: Int,
+        info: MediaCodec.BufferInfo,
+        rotationUs: Long,
+        allowRoll: Boolean,
+    ): Boolean {
+        val isConfig = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
+        val isKey = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+        val isEos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
 
-        val doneFile = segmentFiles[completedIdx]
-        val startMs = segmentStartMs[completedIdx]
-        publishSegment(doneFile, startMs, atMs - startMs)
-        rollsPublished++
+        if (!isConfig && info.size > 0 && muxerStarted) {
+            val buf = enc.getOutputBuffer(index)
+            if (buf != null) {
+                if (allowRoll && pendingRoll && isKey) rollMuxer()
+
+                if (segFirstPtsUs < 0) {
+                    segFirstPtsUs = info.presentationTimeUs
+                    if (recStartPtsUs < 0) {
+                        recStartPtsUs = info.presentationTimeUs
+                        recStartWallMs = System.currentTimeMillis()
+                    }
+                }
+
+                buf.position(info.offset)
+                buf.limit(info.offset + info.size)
+                val rebased = MediaCodec.BufferInfo().apply {
+                    set(0, info.size, info.presentationTimeUs - segFirstPtsUs, info.flags)
+                }
+                muxer?.writeSampleData(muxerVideoTrack, buf, rebased)
+                segLastPtsUs = info.presentationTimeUs
+
+                if (allowRoll && !pendingRoll && info.presentationTimeUs - segFirstPtsUs >= rotationUs) {
+                    requestSyncFrame(enc)
+                    pendingRoll = true
+                }
+            }
+        }
+        enc.releaseOutputBuffer(index, false)
+        return isEos
+    }
+
+    private fun requestSyncFrame(enc: MediaCodec) {
+        runCatching {
+            enc.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
+        }.onFailure { Log.w(TAG, "request sync frame failed", it) }
+    }
+
+    private fun createEncoder(): Boolean {
+        val size = recordingSize
+        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, size.width, size.height).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            setInteger(MediaFormat.KEY_BIT_RATE, ENCODER_BIT_RATE)
+            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_SEC)
+        }
+        return try {
+            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            encoderInputSurface = codec.createInputSurface()
+            codec.start()
+            encoder = codec
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "createEncoder failed", e)
+            runCatching { encoder?.release() }
+            encoder = null
+            runCatching { encoderInputSurface?.release() }
+            encoderInputSurface = null
+            false
+        }
+    }
+
+    private fun startMuxer() {
+        val fmt = trackFormat ?: return
+        val file = segFile ?: return
+        if (muxerStarted) return
+        val mx = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        muxerVideoTrack = mx.addTrack(fmt)
+        mx.start()
+        muxer = mx
+        muxerStarted = true
+    }
+
+    /** Finalises the current segment file and opens a fresh muxer on the next
+     *  one. Called from the drain loop when a keyframe lands after a rotation
+     *  became due - the encoder is untouched, so there is no gap. */
+    private fun rollMuxer() {
+        finalizeMuxer(publish = true)
+        segFile = File(segmentsDir, segmentFileName())
+        segFirstPtsUs = -1L
+        segLastPtsUs = 0L
+        pendingRoll = false
+        startMuxer()
+    }
+
+    private fun finalizeMuxer(publish: Boolean) {
+        val mx = muxer
+        val file = segFile
+        val firstPts = segFirstPtsUs
+        val lastPts = segLastPtsUs
+        muxer = null
+        muxerStarted = false
+        muxerVideoTrack = -1
+
+        // A muxer with zero samples fails to stop and leaves a moov-less, broken
+        // .mp4 - only publish on a clean stop with real samples, else delete.
+        var stopped = false
+        if (mx != null) {
+            stopped = runCatching { mx.stop() }.onFailure { Log.w(TAG, "muxer.stop() threw", it) }.isSuccess
+            runCatching { mx.release() }
+        }
+        if (file == null) return
+        if (publish && stopped && firstPts >= 0 && file.exists() && file.length() > 0L) {
+            val createdAtMs = recStartWallMs + (firstPts - recStartPtsUs) / 1000
+            val durationMs = (lastPts - firstPts) / 1000 + frameDurationMs
+            publishSegment(file, createdAtMs, durationMs)
+        } else if (file.exists()) {
+            runCatching { file.delete() }
+        }
     }
 
     private fun publishSegment(file: File, startedAtMs: Long, durationMs: Long) {
@@ -364,6 +423,71 @@ class CameraPipeline(
         Log.i(TAG, "segment ${file.name}: start=$startedAtMs dur=${durationMs}ms size=${file.length()}B")
         logKeyframeCadence(file)
         onSegmentFinished(file, startedAtMs, durationMs.coerceAtLeast(0L), recordingSize.width, recordingSize.height)
+    }
+
+    /**
+     * Tears down the RECORDING phase: signals end-of-stream on the encoder,
+     * drains and muxes the tail, finalises the last (partial) segment, and
+     * releases the encoder + session. Idempotent / safe when nothing is
+     * recording. Called on motion-stop, on `stop()`, and from the runLoop error
+     * path.
+     */
+    private fun finishRecording() {
+        val enc = encoder ?: return
+        encoder = null
+
+        runCatching { captureSession?.stopRepeating() }
+        runCatching { enc.signalEndOfInputStream() }
+        drainTail(enc)
+        finalizeMuxer(publish = true)
+
+        runCatching { captureSession?.close() }
+        captureSession = null
+        runCatching { enc.stop() }
+        runCatching { enc.release() }
+        runCatching { encoderInputSurface?.release() }
+        encoderInputSurface = null
+        resetRecordingState()
+    }
+
+    /** Best-effort drain of whatever the encoder still holds after EOS, bounded
+     *  so teardown can't hang on a stuck codec. */
+    private fun drainTail(enc: MediaCodec) {
+        val info = MediaCodec.BufferInfo()
+        val deadline = System.currentTimeMillis() + 800
+        while (System.currentTimeMillis() < deadline) {
+            val idx = runCatching { enc.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US) }.getOrNull() ?: return
+            when {
+                idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    // Cache the format but don't open a muxer here - if the format
+                    // only arrives during teardown there's no useful segment to
+                    // write, and starting one just leaves a broken file.
+                    trackFormat = enc.outputFormat
+                }
+                idx == MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+                idx >= 0 -> {
+                    val eos = runCatching {
+                        handleEncodedBuffer(enc, idx, info, rotationIntervalMs * 1000, allowRoll = false)
+                    }.getOrDefault(true)
+                    if (eos) return
+                }
+            }
+        }
+    }
+
+    private fun resetRecordingState() {
+        encoder = null
+        encoderInputSurface = null
+        muxer = null
+        muxerVideoTrack = -1
+        muxerStarted = false
+        trackFormat = null
+        segFile = null
+        segFirstPtsUs = -1L
+        segLastPtsUs = 0L
+        recStartPtsUs = -1L
+        recStartWallMs = 0L
+        pendingRoll = false
     }
 
     // ---- Analysis stream ----
@@ -450,99 +574,6 @@ class CameraPipeline(
         }
     }
 
-    /**
-     * Builds the one MediaRecorder + one capture session ([analysisReader] +
-     * recorder surfaces) that stay alive for the whole RECORDING phase, starts
-     * recording, and arms the first rollover file. Keeps the old prototype's
-     * confirmed-quirk workaround: configure -> wait 500ms -> check for an async
-     * failure before trusting the session and calling `recorder.start()`.
-     * Retries up to 3x with a fresh recorder+session each attempt.
-     */
-    private suspend fun beginRecording(): Boolean {
-        var attempt = 0
-        while (attempt < 3 && running) {
-            attempt++
-            val device = cameraDevice ?: return false
-            val analysis = analysisReader ?: return false
-
-            resetRotationState()
-            val recorder = buildContinuousRecorder()
-            if (recorder == null) {
-                delay(300)
-                continue
-            }
-            val recorderSurface = recorder.surface
-            val sessionFailed = AtomicBoolean(false)
-
-            val session = try {
-                createCaptureSession(device, listOf(analysis.surface, recorderSurface), sessionFailed)
-            } catch (e: Exception) {
-                Log.e(TAG, "createCaptureSession threw (attempt $attempt)", e)
-                recorder.release()
-                delay(300)
-                continue
-            }
-
-            delay(500)
-            if (sessionFailed.get() || !running) {
-                Log.w(TAG, "session failed asynchronously after configure (attempt $attempt)")
-                session.close()
-                recorder.release()
-                delay(300)
-                continue
-            }
-
-            try {
-                val request = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                    addTarget(recorderSurface)
-                    addTarget(analysis.surface)
-                }.build()
-                session.setRepeatingRequest(request, null, callbackHandler)
-                recorder.start()
-                segmentStartMs.add(System.currentTimeMillis()) // start of segmentFiles[0]
-            } catch (e: Exception) {
-                Log.e(TAG, "setRepeatingRequest/start failed (attempt $attempt)", e)
-                session.close()
-                recorder.release()
-                delay(300)
-                continue
-            }
-
-            captureSession = session
-            mediaRecorder = recorder
-            return true
-        }
-        return false
-    }
-
-    private fun resetRotationState() {
-        // Drop any files a previous failed beginRecording() attempt created but
-        // never started writing to.
-        for (i in rollsPublished until segmentFiles.size) {
-            val f = segmentFiles[i]
-            if (!f.exists() || f.length() == 0L) runCatching { f.delete() }
-        }
-        segmentFiles.clear()
-        segmentStartMs.clear()
-        rollsPublished = 0
-        rollEvents.clear()
-        armNextRequested.set(false)
-        recorderError.set(false)
-    }
-
-    /** Hands the recorder the file to roll into when the current one hits its
-     *  size cap. Called once a roll is imminent (see runRecordingPhase). */
-    private fun armNextFile(recorder: MediaRecorder) {
-        val next = File(segmentsDir, segmentFileName())
-        try {
-            recorder.setNextOutputFile(next)
-            segmentFiles.add(next)
-        } catch (e: Exception) {
-            Log.w(TAG, "setNextOutputFile failed; rotation may pause until the watchdog rebuilds", e)
-            runCatching { next.delete() }
-        }
-    }
-
     private suspend fun createCaptureSession(
         device: CameraDevice,
         surfaces: List<Surface>,
@@ -571,190 +602,12 @@ class CameraPipeline(
         }
     }
 
-    /**
-     * The single recorder for a RECORDING phase. Writes segmentFiles[0]; every
-     * subsequent file is handed over live via [armNextFile]. `setMaxFileSize`
-     * drives rotation - `MAX_FILESIZE_APPROACHING` (~90%) is our "arm the next
-     * file now" cue and `NEXT_OUTPUT_FILE_STARTED` the "previous file is done"
-     * one. Returns null on setup failure so the caller can retry.
-     */
-    private fun buildContinuousRecorder(): MediaRecorder? {
-        val f0 = File(segmentsDir, segmentFileName())
-        val size = recordingSize
-        @Suppress("DEPRECATION")
-        val recorder = MediaRecorder()
-        return try {
-            recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            recorder.setOutputFile(f0.absolutePath)
-            recorder.setVideoEncodingBitRate(encoderBitRate)
-            recorder.setVideoFrameRate(30)
-            recorder.setVideoSize(size.width, size.height)
-            recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            // Rotate by size, ~one rotationIntervalMs of video at the target
-            // bitrate. Only setMaxFileSize rolls into setNextOutputFile;
-            // setMaxDuration was tried and merely stops the encoder on oriole.
-            recorder.setMaxFileSize((encoderBitRate.toLong() / 8L) * (rotationIntervalMs / 1000L))
-            recorder.setOnInfoListener { _, what, _ ->
-                when (what) {
-                    MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_APPROACHING ->
-                        armNextRequested.set(true)
-                    MediaRecorder.MEDIA_RECORDER_INFO_NEXT_OUTPUT_FILE_STARTED ->
-                        rollEvents.add(System.currentTimeMillis())
-                    // MAX_FILESIZE_REACHED: if a next file was armed the roll is
-                    // automatic and *_STARTED follows; if not, the recorder stops
-                    // and the runRecordingPhase watchdog rebuilds.
-                }
-            }
-            recorder.setOnErrorListener { _, what, extra ->
-                Log.e(TAG, "MediaRecorder error what=$what extra=$extra")
-                recorderError.set(true)
-            }
-            // MediaRecorder exposes no keyframe/I-frame-interval control (MediaCodec-only);
-            // we can only measure what the device's default encoder produces. See
-            // logKeyframeCadence() and QUIRKS.md.
-            recorder.prepare()
-            segmentFiles.add(f0)
-            recorder
-        } catch (e: Exception) {
-            Log.e(TAG, "buildContinuousRecorder failed", e)
-            runCatching { recorder.release() }
-            runCatching { f0.delete() }
-            null
-        }
-    }
-
     private fun segmentFileName(): String {
         val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(java.util.Date())
         val suffix = (Math.random() * 0xffff).toInt().toString(16).padStart(4, '0')
         // On-disk name keeps the historical "clip_" prefix: reconcile() scans by
         // .mp4 extension, not prefix, and there's no reason to churn it.
         return "clip_${ts}_$suffix.mp4"
-    }
-
-    /**
-     * Tears down the RECORDING phase's recorder + session: drains any rollover
-     * events still queued, stops the recorder, publishes the final (partial)
-     * segment, and deletes the armed-but-never-started file. Safe to call with
-     * nothing recording. Called on motion-stop, on `stop()`, and from the
-     * runLoop error path.
-     */
-    private fun finishRecording() {
-        if (legacyFile != null) { // legacy per-segment path is active
-            finishLegacySegment()
-            return
-        }
-        val recorder = mediaRecorder ?: return
-        mediaRecorder = null
-
-        // Segments that rolled since the last poll are real, fully-written files -
-        // publish them, but don't arm anything new.
-        while (true) {
-            val rollAt = rollEvents.poll() ?: break
-            runCatching { handleRoll(rollAt) }
-        }
-
-        val activeIdx = rollsPublished
-        try { recorder.stop() } catch (e: Exception) { Log.w(TAG, "recorder.stop() threw (short/empty segment?)", e) }
-        try { recorder.release() } catch (e: Exception) { Log.w(TAG, "recorder.release() threw", e) }
-        captureSession?.let { runCatching { it.close() } }
-        captureSession = null
-
-        // The active file at teardown: publish it if it has content.
-        segmentFiles.getOrNull(activeIdx)?.let { activeFile ->
-            val startMs = segmentStartMs.getOrNull(activeIdx) ?: System.currentTimeMillis()
-            publishSegment(activeFile, startMs, System.currentTimeMillis() - startMs)
-        }
-        // Any file armed via setNextOutputFile but never started is a 0-byte stub.
-        for (i in (activeIdx + 1) until segmentFiles.size) {
-            runCatching { segmentFiles[i].delete() }
-        }
-        resetRotationState()
-    }
-
-    // ---- Legacy per-segment rotation (fallback for HALs that can't roll files) ----
-
-    private var legacyFile: File? = null
-    private var legacyStartMs = 0L
-
-    private suspend fun beginLegacySegment(): Boolean {
-        var attempt = 0
-        while (attempt < 3 && running) {
-            attempt++
-            val device = cameraDevice ?: return false
-            val analysis = analysisReader ?: return false
-
-            val recorder = buildLegacyRecorder()
-            if (recorder == null) {
-                delay(300)
-                continue
-            }
-            val recorderSurface = recorder.surface
-            val sessionFailed = AtomicBoolean(false)
-            val session = try {
-                createCaptureSession(device, listOf(analysis.surface, recorderSurface), sessionFailed)
-            } catch (e: Exception) {
-                Log.e(TAG, "legacy createCaptureSession threw (attempt $attempt)", e)
-                recorder.release(); legacyFile = null; delay(300); continue
-            }
-            delay(500)
-            if (sessionFailed.get() || !running) {
-                session.close(); recorder.release(); legacyFile = null; delay(300); continue
-            }
-            try {
-                val request = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                    addTarget(recorderSurface)
-                    addTarget(analysis.surface)
-                }.build()
-                session.setRepeatingRequest(request, null, callbackHandler)
-                recorder.start()
-            } catch (e: Exception) {
-                Log.e(TAG, "legacy setRepeatingRequest/start failed (attempt $attempt)", e)
-                session.close(); recorder.release(); legacyFile = null; delay(300); continue
-            }
-            captureSession = session
-            mediaRecorder = recorder
-            legacyStartMs = System.currentTimeMillis()
-            return true
-        }
-        return false
-    }
-
-    private fun buildLegacyRecorder(): MediaRecorder? {
-        val file = File(segmentsDir, segmentFileName())
-        val size = recordingSize
-        @Suppress("DEPRECATION")
-        val recorder = MediaRecorder()
-        return try {
-            recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            recorder.setOutputFile(file.absolutePath)
-            recorder.setVideoEncodingBitRate(encoderBitRate)
-            recorder.setVideoFrameRate(30)
-            recorder.setVideoSize(size.width, size.height)
-            recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            recorder.prepare()
-            legacyFile = file
-            recorder
-        } catch (e: Exception) {
-            Log.e(TAG, "buildLegacyRecorder failed", e)
-            runCatching { recorder.release() }
-            runCatching { file.delete() }
-            null
-        }
-    }
-
-    private fun finishLegacySegment() {
-        val recorder = mediaRecorder ?: return
-        mediaRecorder = null
-        val file = legacyFile
-        legacyFile = null
-        val startMs = legacyStartMs
-        try { recorder.stop() } catch (e: Exception) { Log.w(TAG, "legacy recorder.stop() threw (short segment?)", e) }
-        try { recorder.release() } catch (e: Exception) { Log.w(TAG, "legacy recorder.release() threw", e) }
-        captureSession?.let { runCatching { it.close() } }
-        captureSession = null
-        if (file != null) publishSegment(file, startMs, System.currentTimeMillis() - startMs)
     }
 
     private fun closeSessionAndDevice() {
@@ -767,8 +620,8 @@ class CameraPipeline(
     }
 
     /**
-     * Camera-declared sizes intersected with what the AVC encoder actually
-     * supports (`isSizeSupported`) - defends against the old prototype's
+     * Camera-declared recordable sizes intersected with what the AVC encoder
+     * actually supports (`isSizeSupported`) - defends against the old prototype's
      * "unsupported encoder size silently black-frames" quirk. Falls back to
      * 1280x720, else the largest agreed size.
      */
@@ -776,7 +629,7 @@ class CameraPipeline(
         val id = backCameraId() ?: return Size(1280, 720)
         val chars = cameraManager.getCameraCharacteristics(id)
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val cameraSizes = map?.getOutputSizes(MediaRecorder::class.java)?.toList() ?: emptyList()
+        val cameraSizes = map?.getOutputSizes(MediaCodec::class.java)?.toList() ?: emptyList()
 
         val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
         val avcInfo = codecList.codecInfos.firstOrNull { info ->
@@ -794,9 +647,9 @@ class CameraPipeline(
     }
 
     /**
-     * Diagnostic-only (logcat): reads back actual keyframe timestamps to check
-     * the old prototype's "KEY_I_FRAME_INTERVAL isn't honored reliably"
-     * finding against this device. Doesn't change behavior.
+     * Diagnostic-only (logcat): reads back actual keyframe timestamps from each
+     * finished segment via `MediaExtractor` and logs the deltas - a cheap check
+     * on the encoder's real GOP cadence vs. the requested [I_FRAME_INTERVAL_SEC].
      */
     private fun logKeyframeCadence(file: File) {
         try {
