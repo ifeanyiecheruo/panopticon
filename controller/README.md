@@ -110,7 +110,8 @@ rows, and the Gallery/Trash screens reading them back correctly.
 - `internal/syncer` — per-phone background poll loop (`syncPollInterval` in `main.go`, 30s by
   default). Downloads new segments + thumbnails, and as each one lands assigns it to a clip:
   it extends the phone's open clip when the segment starts within `dbstore.GroupingGapMs`
-  (3000ms) of that clip's end, otherwise it opens a new clip. Advances the sync cursor only
+  (500ms — the phone rolls segment files gaplessly) of that clip's end, otherwise it opens a
+  new clip. Advances the sync cursor only
   after each segment is durably written, assigned, and indexed (crash-safe/idempotent), and
   treats a 404 on download as a normal "already evicted" skip.
 - `internal/trayapp` — `getlantern/systray` Open/Quit menu; runs on its own goroutine

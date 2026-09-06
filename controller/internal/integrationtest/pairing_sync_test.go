@@ -402,20 +402,22 @@ func waitForSyncedSegments(t *testing.T, store *dbstore.Store, phoneID string, w
 }
 
 // TestSyncLoop_GroupsContiguousSegments is the end-to-end sync verification for
-// the segments→clips grouping: the mock phone is seeded with three back-to-back
-// segments (each starting well within the 3s threshold of the previous one's
-// end), and after the syncer runs they must collapse into a single clip whose
-// segment files + thumbnails are all on disk, with the cursor advanced so a
-// second run re-downloads nothing.
+// the segments→clips grouping: the mock phone is seeded with three gaplessly-
+// rolled segments (each starting ~100ms after the previous one's end, well
+// within GroupingGapMs), and after the syncer runs they must collapse into a
+// single clip whose segment files + thumbnails are all on disk, with the cursor
+// advanced so a second run re-downloads nothing.
 func TestSyncLoop_GroupsContiguousSegments(t *testing.T) {
 	srv, fp := newFakePhoneServer(t, "GOOD-CODE")
 	store, dirs := newTestStore(t)
 
 	now := time.Now().UnixMilli()
+	// Each fake segment is 1000ms long; starting them 1100ms apart is a ~100ms
+	// inter-segment gap.
 	fp.segments = []fakeSegment{
 		{filename: "seg_1.mp4", createdAtMs: now - 20000, data: []byte("A")},
-		{filename: "seg_2.mp4", createdAtMs: now - 17500, data: []byte("BB")},
-		{filename: "seg_3.mp4", createdAtMs: now - 15000, data: []byte("CCC")},
+		{filename: "seg_2.mp4", createdAtMs: now - 18900, data: []byte("BB")},
+		{filename: "seg_3.mp4", createdAtMs: now - 17800, data: []byte("CCC")},
 	}
 
 	address := strings.TrimPrefix(srv.URL, "http://")
@@ -476,12 +478,13 @@ func TestSyncLoop_SplitsOnGap(t *testing.T) {
 	store, dirs := newTestStore(t)
 
 	now := time.Now().UnixMilli()
+	// Two runs of two gaplessly-rolled segments (~100ms apart); a2 ends at
+	// now-27900 and b1 starts at now-20000, a ~7.9s motion-stop gap between them.
 	fp.segments = []fakeSegment{
 		{filename: "seg_a1.mp4", createdAtMs: now - 30000, data: []byte("A")},
-		{filename: "seg_a2.mp4", createdAtMs: now - 27500, data: []byte("BB")},
-		// run a2 ends at now-26500; run b1 starts at now-20000 -> ~6.5s gap.
+		{filename: "seg_a2.mp4", createdAtMs: now - 28900, data: []byte("BB")},
 		{filename: "seg_b1.mp4", createdAtMs: now - 20000, data: []byte("CCC")},
-		{filename: "seg_b2.mp4", createdAtMs: now - 17500, data: []byte("DDDD")},
+		{filename: "seg_b2.mp4", createdAtMs: now - 18900, data: []byte("DDDD")},
 	}
 
 	address := strings.TrimPrefix(srv.URL, "http://")

@@ -41,19 +41,30 @@ already lives elsewhere and would drift.
   group table (`active`/`trashed`/`purged` lifecycle + aggregate span/size/count); migration
   `002` copies existing rows over and a one-time `RegroupUnassignedSegments` backfill groups
   them. The syncer assigns each downloaded segment to the phone's open clip when it starts
-  within `dbstore.GroupingGapMs` (**3000ms** — loose on purpose, see below) of that clip's end,
-  else opens a new clip. Both galleries (controller Preact + phone Compose) show one item per
-  clip; the controller's `ClipPlayer` walks a clip's segments as a playlist and auto-advances to
-  the next clip on end. Trash/restore/delete act on the whole clip. `regroup_test.go`,
-  `SegmentGroupingTest.kt`, and reworked integration tests (`TestSyncLoop_GroupsContiguousSegments`
-  / `_SplitsOnGap`) cover it. **Not yet run against the real ~4k-segment Pixel 6 archive.** The
-  3000ms threshold is deliberately loose: `CameraPipeline` currently tears the whole capture
-  session down and back up on every ~10s rotation (`delay(500)` settle included), dropping
-  ~1–2s each time, so a tighter gap would wrongly split one continuous motion event. The
-  immediately-following slice is **gapless rotation** — keep one `MediaRecorder` +
-  `CameraCaptureSession` per motion event and roll files with `setMaxDuration` +
-  `OnInfoListener` + `setNextOutputFile()` — after which the threshold drops to ~500ms on both
-  sides (`dbstore.GroupingGapMs` and `SegmentGrouping.GAP_MS`).
+  within `dbstore.GroupingGapMs` (**500ms**) of that clip's end, else opens a new clip. Both
+  galleries (controller Preact + phone Compose) show one item per clip; the controller's
+  `ClipPlayer` walks a clip's segments as a playlist and auto-advances to the next clip on end.
+  Trash/restore/delete act on the whole clip. `regroup_test.go`, `SegmentGroupingTest.kt`, and
+  reworked integration tests (`TestSyncLoop_GroupsContiguousSegments` / `_SplitsOnGap`) cover it.
+  Verified against the real Pixel 6 archive: migration `002` + backfill on the existing
+  `data/panopticon.db` collapsed its 15 contiguous segments into one clip.
+
+- **Gapless segment rotation (phone-app only).** `CameraPipeline` no longer tears the capture
+  session down between segments. One `MediaRecorder` + one `CameraCaptureSession` live for the
+  whole RECORDING phase; `setMaxFileSize` (~one rotation interval of video) drives rotation and
+  `MAX_FILESIZE_APPROACHING` → `setNextOutputFile` → `NEXT_OUTPUT_FILE_STARTED` rolls the output
+  file without stopping the encoder. `setMaxDuration` was tried first and rejected — on oriole
+  it *stops* the encoder rather than rolling. **Verified on the Pixel 6:** within one motion
+  event consecutive segments are exactly contiguous (`start[k+1] == start[k] + dur[k]`, 0ms
+  gap), no `recorder.stop()` failures, files play. Only the ARMED→RECORDING transition between
+  *separate* motion events still costs ~1.5s (session rebuild) — that boundary is a real motion
+  stop and legitimately ends a clip. With rotation gapless, `GroupingGapMs` /
+  `SegmentGrouping.GAP_MS` dropped 3000 → **500ms**. A HAL that can't roll files (the BLU G5's
+  Spreadtrum encoder errors on `setMaxFileSize`) is caught by a ~2.5s fail-fast probe + a
+  mid-recording watchdog and permanently falls back to the pre-gapless per-segment-rebuild path
+  (decision remembered in a `panopticon_camera` SharedPref). The BLU's video recording is
+  separately, pre-existingly broken (empty ~3KB files on the legacy path too) — not a
+  regression from this change.
 
 - **Motion-gated recording (phone-app only).** The always-record pipeline is gone. `CameraPipeline`
   now runs an always-on analysis `ImageReader` → `motion/MotionDetector` (frame-difference on a

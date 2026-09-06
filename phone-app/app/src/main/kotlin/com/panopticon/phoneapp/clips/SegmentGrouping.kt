@@ -7,10 +7,11 @@ package com.panopticon.phoneapp.clips
  */
 
 /** Max gap (nextSegment.createdAtMs - runningEndMs) for two segments to be the
- * same clip. Loose for now because segment rotation currently drops ~1-2s on
- * every ~10s file; drops to ~500 once gapless rotation lands. Keep in sync with
- * the controller's dbstore.GroupingGapMs. */
-const val GAP_MS = 3_000L
+ * same clip. Segment rotation is gapless now (MediaRecorder.setNextOutputFile),
+ * so this only has to clear timing jitter while staying well under the >=5s
+ * motion-stop/trailer gap. Keep in sync with the controller's
+ * dbstore.GroupingGapMs. */
+const val GAP_MS = 500L
 
 /** A contiguous run of segments - one Gallery row. */
 data class Clip(val segments: List<SegmentEntry>) {

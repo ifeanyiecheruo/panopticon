@@ -30,11 +30,13 @@ import (
 )
 
 // GroupingGapMs is the max gap (segment.createdAtMs - previous.endMs) for two
-// segments to count as one contiguous clip. Loose for now because the current
-// recording pipeline drops ~1-2s on every ~10s segment rotation; drops to
-// ~500 once gapless rotation (setNextOutputFile) lands. The syncer and the
+// segments to count as one contiguous clip. The phone rotates segment files
+// gaplessly now (MediaRecorder.setNextOutputFile - the encoder never stops), so
+// back-to-back segments of one motion event are only milliseconds apart; this
+// just has to clear the observed jitter while staying well under the >=5s
+// motion-stop/trailer gap that legitimately ends a clip. The syncer and the
 // one-time backfill both use this.
-const GroupingGapMs int64 = 3000
+const GroupingGapMs int64 = 500
 
 // Store wraps the SQLite connection and provides typed accessors. All
 // methods are safe for concurrent use (database/sql pools connections

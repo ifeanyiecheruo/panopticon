@@ -74,10 +74,13 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 - **Debug-only `adb` calibration trigger.** `src/debug/…/DebugCalibrationReceiver` (declared in
   `src/debug/AndroidManifest.xml`, never in release) drives a sweep via
   `adb shell am broadcast` on devices whose Compose UI uiautomator/screencap can't touch.
-- **Full `CameraCaptureSession` teardown+recreate on every segment rotation and every ARMED&lt;-&gt;RECORDING
-  transition** rather than a lighter in-place surface swap - simpler to reason about, doubles as a
-  session-reconfigure stress test. The analysis `ImageReader` persists across those; only the
-  session and `MediaRecorder` churn.
+- **Full `CameraCaptureSession` teardown+recreate on every ARMED&lt;-&gt;RECORDING transition**
+  (i.e. between separate motion events) rather than a lighter in-place surface swap. Segment
+  rotation *within* one motion event is gapless - one `MediaRecorder` stays alive and rolls its
+  output file via `setNextOutputFile` (`setMaxFileSize`-triggered; `setMaxDuration` merely stops
+  the encoder on oriole). A device whose HAL can't do that (probed in ~2s, then remembered in
+  SharedPreferences) falls back to the pre-gapless path: tear down + rebuild per ~10s segment,
+  with the ~1-2s gap back. The analysis `ImageReader` persists across session churn.
 - **Bottom nav bar instead of the mock's left icon rail + top status pill** - visual language
   (dark/teal theme, `ui/theme/Theme.kt`) carried over; exact chrome layout wasn't a priority for
   this slice.

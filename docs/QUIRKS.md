@@ -31,27 +31,28 @@ a low-end/old-API check - see "Foreground service" below for what it caught that
 #### `CameraCaptureSession` teardown+recreate does NOT reproduce the old "configure-then-fail-async" quirk here
 **Old prototype's claim (Pixel 9a):** a session can report `onConfigured` successfully and then
 fail at the very first capture request submission, with nothing catchable at the call site.
-**What we did:** this slice's clip-rotation design (`CameraPipeline.beginSegment()`) fully tears
-down and recreates the `CameraCaptureSession` + `MediaRecorder` on every ~10s clip rotation -
-effectively a repeated stress test of session (re)configuration. We kept the old workaround
-anyway (configure → wait 500ms → check for an async failure signal → retry up to 3x, see
-`CameraPipeline.kt`), instrumented to log every retry.
-**Actually observed:** over roughly 20 consecutive rotations (~3.5 minutes of continuous
-recording) plus 2 full stop/restart cycles (triggered via `POST /api/mode` switching to `live`
-and back), **zero** async configure failures were logged - every session configured and started
-cleanly on the first attempt. The retry path never fired.
+**What we did:** the original clip-rotation design fully tore down and recreated the
+`CameraCaptureSession` + `MediaRecorder` on every ~10s rotation - effectively a repeated stress
+test of session (re)configuration. (Gapless rotation later removed the per-rotation teardown; the
+session is now rebuilt only on an ARMED↔RECORDING transition, i.e. between motion events, in
+`beginRecording()`.) We kept the old workaround anyway (configure → wait 500ms → check for an
+async failure signal → retry up to 3x, see `CameraPipeline.kt`), instrumented to log every retry.
+**Actually observed (original per-rotation design):** over roughly 20 consecutive rotations (~3.5
+minutes of continuous recording) plus 2 full stop/restart cycles (triggered via `POST /api/mode`
+switching to `live` and back), **zero** async configure failures were logged - every session
+configured and started cleanly on the first attempt. The retry path never fired.
 **Conclusion:** not reproduced on this device/encoder combination. We're keeping the defensive
 retry (it's cheap and a `CameraCaptureSession` is documented as capable of this failure mode in
 general), but this specific Pixel 6 + Exynos encoder pairing didn't exhibit it under normal
 conditions. Worth retesting under thermal/memory pressure if it ever becomes suspect again.
 **Where:** `phone-app/app/src/main/kotlin/com/panopticon/phoneapp/camera/CameraPipeline.kt`
-(`beginSegment()`).
+(`beginRecording()`).
 
 #### Camera2 calls did not throw synchronously here, but the defensive wrapping stayed
 **Old prototype's claim:** `createCaptureSession`/`setRepeatingRequest`/etc. observed throwing
 `CameraAccessException` synchronously under HAL stress, not just via callbacks.
 **What we did:** every Camera2 call in `CameraPipeline` is wrapped in try/catch regardless
-(`openCameraDevice`, `createCaptureSession`, `beginSegment`'s `setRepeatingRequest`/`start()`).
+(`openCameraDevice`, `createCaptureSession`, `beginRecording`'s `setRepeatingRequest`/`start()`).
 **Actually observed:** no synchronous throws seen in this slice's testing - the only exception
 logged during the whole session was an expected `kotlinx.coroutines.JobCancellationException`
 when `stop()` cancelled the run loop's coroutine job during a mode switch (working as intended,
@@ -80,7 +81,33 @@ almost exactly once per second, with negligible jitter (<35ms), unprompted.
 interval match the old finding's MediaCodec-based setup, treat this as "different pipeline, no
 problem seen" rather than "the old bug is fixed." A future MediaCodec-based live pipeline for this
 project should still budget for the old finding being real on *some* devices.
-**Where:** `CameraPipeline.kt` (`logKeyframeCadence()`, `buildRecorder()`).
+**Where:** `CameraPipeline.kt` (`logKeyframeCadence()`, `buildContinuousRecorder()`).
+
+#### `MediaRecorder.setMaxDuration` STOPS the encoder; only `setMaxFileSize` rolls into `setNextOutputFile`
+**Context:** the gapless-segment-rotation change keeps one `MediaRecorder` alive for a whole
+motion event and rolls its output file with `setNextOutputFile`, so consecutive ~10s segments
+have no ~1-2s session-rebuild gap between them. The obvious trigger is `setMaxDuration` (roll
+every N ms).
+**Actually observed on the Pixel 6 (`oriole`, API 36):** with `setMaxDuration(N)` set and a next
+file armed via `setNextOutputFile`, hitting the duration limit produced **no**
+`MEDIA_RECORDER_INFO_NEXT_OUTPUT_FILE_STARTED` and **no** `MAX_DURATION_REACHED` roll - the
+encoder just stopped writing at ~N ms (file had ~N ms of video, ~3 keyframes) while our
+coroutine sat waiting for a rollover that never came. Switching the trigger to
+`setMaxFileSize(bytesForOneInterval)` and arming on `MEDIA_RECORDER_INFO_MAX_FILESIZE_APPROACHING`
+(~90%) worked immediately: clean rolls every file, `NEXT_OUTPUT_FILE_STARTED` on each, published
+segments exactly contiguous (`start[k+1] == start[k] + dur[k]`), no `recorder.stop()` failures.
+**Conclusion:** for MediaRecorder file rolling, `setMaxFileSize` is the only trigger that feeds
+`setNextOutputFile`; `setMaxDuration` is a hard stop. Segment length is therefore governed by
+bytes (≈ bitrate × time), which is close enough to time-based for near-CBR H.264 during motion.
+**The BLU G5 (Spreadtrum, API 28) can't do it at all** - with `setMaxFileSize` set on a SURFACE
+H264 recorder its encoder writes only the ~32-byte container header then stalls and eventually
+throws `MediaRecorder error extra=-1007`. So the gapless path is *probed* (real bytes within
+~2.5s of `start()`?) and, on failure, the pipeline permanently falls back to the pre-gapless
+per-segment-rebuild path and records the decision in a `panopticon_camera` SharedPref so the
+probe runs at most once per device. (The BLU's video recording is separately broken - it
+produces ~3KB empty files on the legacy path too - but that predates this change.)
+**Where:** `phone-app/app/src/main/kotlin/com/panopticon/phoneapp/camera/CameraPipeline.kt`
+(`buildContinuousRecorder()`, `runRecordingPhaseGapless()`, `runRecordingPhaseLegacy()`).
 
 #### Unsupported-encoder-size guard ran successfully, but its failure mode (black frames) was not reproduced
 **Old prototype's claim:** requesting a recording size the AVC encoder can't actually handle

@@ -56,5 +56,5 @@ state** (near-meaningless at ~10s granularity): everything already synced become
 clip. Right after the migration, `Open()` calls `RegroupUnassignedSegments(GroupingGapMs)`
 (`regroup.go`) once to assign a `clip_id` to every carried-over segment and create the `clips`
 rows — greedy single pass per phone in time order, grouping segments whose gap is
-`<= GroupingGapMs` (3000ms). It's idempotent: it only touches `clip_id = ''`, so it's a no-op
+`<= GroupingGapMs` (500ms). It's idempotent: it only touches `clip_id = ''`, so it's a no-op
 on every subsequent boot.
