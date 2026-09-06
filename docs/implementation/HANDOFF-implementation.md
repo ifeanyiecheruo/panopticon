@@ -1,6 +1,6 @@
 # Panopticon implementation handoff
 
-Status as of 2026-09-05: both `phone-app/` and `controller/` exist as working, cross-verified
+Status as of 2026-09-06: both `phone-app/` and `controller/` exist as working, cross-verified
 **thin vertical slices** — pair → record → sync a clip → view it, phone and controller talking
 to each other over the real HTTP contract, tested against a real Pixel 6. This doc is the
 starting point for whoever picks this up next (a fresh session, most likely) to build out the
@@ -70,6 +70,20 @@ already lives elsewhere and would drift.
   (`start[k+1] - start[k] - dur[k]` within ~8ms BLU / ~1ms Pixel), with pre-roll, motion-gated,
   on both. With rotation gapless, `GroupingGapMs` / `SegmentGrouping.GAP_MS` are **500ms**.
 
+- **SegmentStore in-memory index / Gallery delete performance (phone-app only).** The segment
+  index is one JSON blob in SharedPreferences (dir/keys still literally say "clip" — see
+  `phone-app/README.md`). The old code re-parsed it on every read and re-serialised + rewrote the
+  whole blob on every add/delete, on the main thread; with a clip now spanning many segments,
+  deleting a few clips back to back stacked enough full-blob round-trips + regroups to ANR the
+  BLU G5 and OOM from repeated large allocations (the Pixel 6 hit the same wall with more
+  deletes). Now: `SegmentStore` holds the parsed index in memory as the authoritative copy, reads
+  hit it directly, mutations update the map and schedule **one coalesced background flush**;
+  `deleteAll(filenames)` does N map/file removals + one flush regardless of N; `GalleryScreen`
+  loads via `LaunchedEffect` and deletes on `Dispatchers.IO` behind a busy flag that no-ops
+  re-entrant taps. A hard kill losing an unflushed mutation is harmless — `reconcile()` on next
+  launch drops entries whose file is gone and re-probes untracked files. Verified on the BLU G5
+  (delete a 35-segment clip, then hammer delete 8× — no skipped frames, no ANR, no crash).
+
 - **Motion-gated recording (phone-app only).** The always-record pipeline is gone.
   `CameraGlPipeline` runs `motion/MotionDetector` (frame-difference on a 32×24 luma grid) off
   the GL readback and gates the muxer on it, with a trailer tail (and now pre-roll — see above).
@@ -107,9 +121,9 @@ section) but none of its code was reused.
 
 - **phone-app**: `PanopticonService` (foreground service) runs `CameraGlPipeline` (Camera2 →
   one `SurfaceTexture` → GPU fan-out to motion analysis + a continuous `MediaCodec` encoder →
-  motion-gated `MediaMuxer` with pre-roll), plus an embedded Ktor HTTP server implementing the pairing/
-  device/status/config/mode/clips subset of `phone-http-api.md`. Compose UI: Home, Connect,
-  Gallery. See `phone-app/README.md` for the full "what's here" / "what's deferred" breakdown.
+  motion-gated `MediaMuxer` with pre-roll), plus an embedded Ktor HTTP server implementing the
+  pairing/device/status/config/mode/**segments** subset of `phone-http-api.md`. Compose UI: Home,
+  Connect, Gallery. See `phone-app/README.md` for the full "what's here" / "what's deferred" breakdown.
 - **controller**: Go/Wails tray app with embedded SQLite (sqlc+goose managed, see below),
   pairing (Add-phone), a background sync loop, Fleet/Phone-detail/Gallery/Trash screens in
   TypeScript+JSX on Preact. See `controller/README.md` for the same breakdown.
