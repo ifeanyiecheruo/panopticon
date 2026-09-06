@@ -101,14 +101,22 @@ interval we request a sync frame (`PARAMETER_KEY_REQUEST_SYNC_FRAME`) and on the
 **Verified on the Pixel 6 at the real 10s interval:** every segment boundary within ±3ms
 (`start[k+1] ≈ start[k] + dur[k]`), clean ~1s GOP, valid playable files, no errors, indefinitely.
 
-**The BLU G5 still can't record video** - its `MediaCodec` encoder produces **zero** output
-buffers (not even the codec-config buffer) from a live camera surface, exactly as MediaRecorder
-did. This is a camera→encoder fault *below* the encoder-API layer, not something an API choice
-fixes; its still-image calibration path works because that's a different pipeline. `CameraPipeline`
-detects "no encoder output 4s after start", reports `cameraHealthy=false`, and retries - it
-writes no files rather than the empty ~3KB stubs earlier versions left.
+**The BLU G5's Unisoc SC9863A HAL can't run the analysis stream + the video stream at once.**
+With a session targeting both an analysis `ImageReader` (`YUV_420_888` 320x240) and the video
+(encoder input) stream, `Camera3-Device: sendRequestsBatch: Unable to submit capture request N
+to HAL device: Function not implemented (-38)` → the device drops into an error state and
+disconnects, so the encoder never gets a frame. (This is why MediaRecorder failed there too -
+same two-stream config.) **A video-only session records fine** (verified: ~4MB 10s segments,
+valid keyframes, gapless muxer rotation). ARMED (analysis-only) and still-image calibration also
+work - it's *only* the two concurrent streams that this HAL rejects.
+**Fix:** the first time RECORDING gets no encoder output, `CameraPipeline` remembers (a
+`panopticon_camera` SharedPref) that this device can't co-configure the two and switches to a
+**video-only burst** mode: RECORDING runs a fixed `VIDEO_ONLY_BURST_MS` (30s) with no live
+motion detection, then re-arms and re-checks. Segments inside a burst are still gapless; on
+continuous motion the cost is one ~2s session-rebuild gap per burst. A capable device that
+*has* recorded co-configured (the Pixel 6) never latches this, even on a transient hiccup.
 **Where:** `phone-app/app/src/main/kotlin/com/panopticon/phoneapp/camera/CameraPipeline.kt`
-(`createEncoder()`, `drainLoop()`, `rollMuxer()`, `finalizeMuxer()`).
+(`runRecordingPhase()`, `createEncoder()`, `drainLoop()`, `rollMuxer()`, `finalizeMuxer()`).
 
 #### Unsupported-encoder-size guard ran successfully, but its failure mode (black frames) was not reproduced
 **Old prototype's claim:** requesting a recording size the AVC encoder can't actually handle
@@ -300,14 +308,14 @@ original write-ups:
 - The automatic keyframe timer and explicit requests fight each other
 - In-place bitrate changes are silently ignored
 - Concurrent `MediaCodec` access crashes natively, and a decoder that's thrown once throws forever
-- ~~**Two concurrent camera surfaces for record + motion sampling never configure**~~ - the old
-  prototype's claim (Pixel 9a / Tensor). **Not reproduced on the Pixel 6.** `CameraPipeline`'s
-  RECORDING-phase session co-configures an analysis `ImageReader` (`YUV_420_888`, ~QVGA) with the
-  `MediaCodec` encoder input surface (`createCaptureSession(listOf(analysis.surface, encSurface),
-  ...)`, `TEMPLATE_RECORD`) and it configures + delivers to both cleanly, indefinitely, on the
-  Pixel 6. Not verified on the BLU G5 - but there the *encoder* produces no output regardless of
-  surface count (see "Gapless segment rotation" above), so the two-surface question is moot on
-  that device.
+- **Two concurrent camera surfaces for record + motion sampling** - the old prototype's claim
+  (Pixel 9a / Tensor): they never configure. **Device-dependent, now confirmed both ways.**
+  `CameraPipeline`'s RECORDING session co-configures an analysis `ImageReader` (`YUV_420_888`,
+  ~QVGA) with the `MediaCodec` encoder input surface (`createCaptureSession(listOf(
+  analysis.surface, encSurface), ...)`, `TEMPLATE_RECORD`): the **Pixel 6** delivers to both
+  cleanly, indefinitely; the **BLU G5** (Unisoc SC9863A) rejects it - `sendRequestsBatch` returns
+  `-ENOSYS` and the device errors out. `CameraPipeline` learns this per-device and falls back to
+  a video-only burst mode there (see "Gapless segment rotation" above).
 - CORS needs explicit header exposure for hls.js (adopted defensively in `PanopticonHttpServer.kt`
   for ranged clip downloads generally - `exposeHeader(Content-Range/Content-Length)` - but not
   verified against an actual browser `fetch()`/hls.js client, only via `curl`, since there's no

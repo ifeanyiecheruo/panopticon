@@ -62,11 +62,13 @@ already lives elsewhere and would drift.
   to ±3ms, clean ~1s GOP, valid playable files, no errors, indefinitely. Only the
   ARMED→RECORDING transition between *separate* motion events still costs ~1.5s (session
   rebuild) — a real motion stop that legitimately ends a clip. With rotation gapless,
-  `GroupingGapMs` / `SegmentGrouping.GAP_MS` dropped 3000 → **500ms**. The **BLU G5 still can't
-  record video** — its encoder emits zero output from a camera surface on `MediaCodec` too (a
-  camera→encoder fault below the API layer; its still-image calibration path is unaffected).
-  `CameraPipeline` detects "no encoder output in 4s", reports `cameraHealthy=false`, retries,
-  and writes no files — not a regression (MediaRecorder produced empty ~3KB stubs there).
+  `GroupingGapMs` / `SegmentGrouping.GAP_MS` dropped 3000 → **500ms**. The **BLU G5**'s Unisoc
+  HAL can't run the analysis (motion) stream and the video stream at once (`sendRequestsBatch`
+  → `-ENOSYS`; that's what broke MediaRecorder there too). `CameraPipeline` learns this on the
+  first failed RECORDING and switches that device to a **video-only burst** mode: RECORDING runs
+  a fixed 30s with no live motion detection, then re-arms and re-checks — segments inside a
+  burst are still gapless, continuous motion costs one ~2s gap per burst. The BLU records real
+  ~4MB 10s segments this way (was: nothing / empty stubs).
 
 - **Motion-gated recording (phone-app only).** The always-record pipeline is gone. `CameraPipeline`
   now runs an always-on analysis `ImageReader` → `motion/MotionDetector` (frame-difference on a

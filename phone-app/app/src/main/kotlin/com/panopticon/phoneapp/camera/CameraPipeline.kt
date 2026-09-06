@@ -58,6 +58,17 @@ private const val DEQUEUE_TIMEOUT_US = 10_000L
  *  is configured, treat the camera/encoder as unhealthy and let runLoop rebuild. */
 private const val FIRST_OUTPUT_TIMEOUT_MS = 4_000L
 
+/** SharedPreferences flag: this device's camera HAL can't run the analysis
+ *  (motion) stream and the video stream concurrently, so RECORDING drops the
+ *  analysis stream and runs bounded bursts (see [CameraPipeline]). */
+private const val PREF_NO_ANALYSIS_WITH_VIDEO = "no_analysis_with_video"
+
+/** In video-only RECORDING (analysis stream dropped - see above) there is no
+ *  live motion-stop signal, so a burst runs this long, then the pipeline
+ *  re-arms and re-checks for motion. Segments *within* a burst are still
+ *  gapless; only the burst boundary costs a session rebuild. */
+private const val VIDEO_ONLY_BURST_MS = 30_000L
+
 /**
  * Camera2 + **MediaCodec/MediaMuxer** pipeline for the back camera, **motion-gated**:
  * an always-on analysis stream (a small YUV `ImageReader`) feeds [MotionDetector],
@@ -82,6 +93,16 @@ private const val FIRST_OUTPUT_TIMEOUT_MS = 4_000L
  * (The ARMED->RECORDING transition between *separate* motion events still tears
  * the session down - only rotation *within* a motion event is gapless. That
  * boundary is a real motion stop and legitimately ends a clip.)
+ *
+ * **Weak-HAL fallback.** Some camera HALs (the BLU G5's Unisoc SC9863A) reject a
+ * capture request that targets the analysis (YUV) stream *and* the video stream
+ * at once - `sendRequestsBatch` returns `-ENOSYS` and the device drops into an
+ * error state. The first time RECORDING gets no encoder output, the pipeline
+ * remembers (SharedPref) that this device can't co-configure the two, and from
+ * then on RECORDING uses a **video-only** session with no live motion detection:
+ * it records a fixed [VIDEO_ONLY_BURST_MS] burst (segments still rotate gaplessly
+ * inside it), then re-arms to re-check for motion. Continuous motion then costs
+ * one ~1.5s session-rebuild gap per burst instead of being fully gapless.
  *
  * Simplifications still in force (documented, not accidental):
  *  - **Frame-difference motion only** - no background model / CV library. See
@@ -112,6 +133,13 @@ class CameraPipeline(
     private val phaseController = RecordingPhaseController(trailerMs)
     @Volatile private var detector = MotionDetector(appConfig.get().motionSensitivity)
     @Volatile private var lastMotionReported = false
+
+    private val camPrefs = context.applicationContext.getSharedPreferences("panopticon_camera", Context.MODE_PRIVATE)
+    /** This HAL can't run the analysis stream + video stream together (see class doc). */
+    @Volatile private var noAnalysisWithVideo = camPrefs.getBoolean(PREF_NO_ANALYSIS_WITH_VIDEO, false)
+    /** A co-configured (analysis + video) recording session has run cleanly at least once, so a
+     *  later "no encoder output" is a transient glitch, not a HAL limit - don't latch video-only. */
+    @Volatile private var coConfiguredRecordingWorked = false
 
     private var runLoopJob: Job? = null
     private var running = false
@@ -231,12 +259,16 @@ class CameraPipeline(
         val analysis = analysisReader ?: throw IllegalStateException("analysis reader missing")
 
         resetRecordingState()
-        Log.i(TAG, "recording: ${recordingSize.width}x${recordingSize.height}")
+        // videoOnly: this HAL can't co-configure analysis + video, so we record a
+        // bounded burst with no live motion detection and re-arm afterwards.
+        val videoOnly = noAnalysisWithVideo
+        Log.i(TAG, "recording: ${recordingSize.width}x${recordingSize.height}${if (videoOnly) " (video-only burst)" else ""}")
         if (!createEncoder()) throw IllegalStateException("could not create the video encoder")
         val encSurface = encoderInputSurface ?: throw IllegalStateException("encoder has no input surface")
 
+        val targets = if (videoOnly) listOf(encSurface) else listOf(analysis.surface, encSurface)
         val failed = AtomicBoolean(false)
-        val session = createCaptureSession(device, listOf(analysis.surface, encSurface), failed)
+        val session = createCaptureSession(device, targets, failed)
         delay(500)
         if (failed.get() || !running) {
             session.close()
@@ -244,35 +276,60 @@ class CameraPipeline(
         }
         val request = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
             addTarget(encSurface)
-            addTarget(analysis.surface)
+            if (!videoOnly) addTarget(analysis.surface)
         }.build()
         session.setRepeatingRequest(request, null, callbackHandler)
         captureSession = session
 
         segFile = File(segmentsDir, segmentFileName()) // first segment; muxer opens on FORMAT_CHANGED
 
+        val burstDeadline = if (videoOnly) System.currentTimeMillis() + VIDEO_ONLY_BURST_MS else Long.MAX_VALUE
         try {
-            drainLoop()
+            drainLoop(burstDeadline)
+            if (!videoOnly) coConfiguredRecordingWorked = true // reached only if drainLoop didn't throw
+        } catch (e: NoEncoderOutput) {
+            // The camera never fed the encoder. If this was the co-configured
+            // (analysis + video) session and one has never worked on this device,
+            // the HAL likely can't do that combo - remember it and let runLoop
+            // rebuild into a video-only burst.
+            if (!videoOnly && !noAnalysisWithVideo && !coConfiguredRecordingWorked) {
+                Log.w(TAG, "no encoder output with analysis+video; switching this device to video-only bursts")
+                noAnalysisWithVideo = true
+                camPrefs.edit().putBoolean(PREF_NO_ANALYSIS_WITH_VIDEO, true).apply()
+            }
+            throw e
         } finally {
             finishRecording()
         }
+
+        // A video-only burst ended on its deadline (not on motion-stop, which we
+        // can't see). Re-arm so the next ARMED pass re-samples motion.
+        if (videoOnly && running && phaseController.phase == RecordingPhaseController.Phase.RECORDING) {
+            phaseController.disarm()
+        }
     }
 
+    private class NoEncoderOutput(message: String) : IllegalStateException(message)
+
     /** Pulls encoded buffers, muxes them, and rotates the muxer at each interval.
-     *  Runs until motion stops (phase leaves RECORDING) or the pipeline stops. */
-    private suspend fun drainLoop() {
+     *  Runs until motion stops (phase leaves RECORDING), [deadlineMs] passes, or
+     *  the pipeline stops. */
+    private suspend fun drainLoop(deadlineMs: Long) {
         val enc = encoder ?: return
         val info = MediaCodec.BufferInfo()
         val rotationUs = rotationIntervalMs * 1000
         val startedAt = System.currentTimeMillis()
         var sawOutput = false
 
-        while (running && phaseController.phase == RecordingPhaseController.Phase.RECORDING) {
+        while (running &&
+            phaseController.phase == RecordingPhaseController.Phase.RECORDING &&
+            System.currentTimeMillis() < deadlineMs
+        ) {
             yield() // cancellation checkpoint; no-op cost on this single-thread dispatcher
             when (val idx = enc.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)) {
                 MediaCodec.INFO_TRY_AGAIN_LATER -> {
                     if (!sawOutput && System.currentTimeMillis() - startedAt > FIRST_OUTPUT_TIMEOUT_MS) {
-                        throw IllegalStateException("encoder produced no output ${FIRST_OUTPUT_TIMEOUT_MS}ms after start")
+                        throw NoEncoderOutput("encoder produced no output ${FIRST_OUTPUT_TIMEOUT_MS}ms after start")
                     }
                 }
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {

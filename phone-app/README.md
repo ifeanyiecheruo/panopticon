@@ -76,9 +76,11 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   rotation *within* one motion event is gapless: one `MediaCodec` encoder runs untouched for the
   whole RECORDING phase and the `MediaMuxer` is swapped at a keyframe (sync-frame requested at
   the interval boundary) to start the next file - `start[k+1] == start[k] + dur[k]` on the
-  Pixel 6. If the encoder produces no output within 4s (the BLU G5's camera→encoder path is
-  broken - see QUIRKS.md), the pipeline reports `cameraHealthy=false` and retries. The analysis
-  `ImageReader` persists across session churn.
+  Pixel 6. A HAL that can't run the analysis stream + video stream together (the BLU G5's Unisoc
+  SC9863A - see QUIRKS.md) is detected on the first failed RECORDING and switched to a
+  **video-only burst** mode: fixed 30s bursts, no live motion detection, re-arm between them
+  (gapless within a burst, one ~2s gap per burst). The analysis `ImageReader` persists across
+  session churn.
 - **Bottom nav bar instead of the mock's left icon rail + top status pill** - visual language
   (dark/teal theme, `ui/theme/Theme.kt`) carried over; exact chrome layout wasn't a priority for
   this slice.
