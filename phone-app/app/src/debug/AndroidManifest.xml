@@ -11,5 +11,8 @@
         <receiver
             android:name=".debug.DebugCalibrationReceiver"
             android:exported="true" />
+        <receiver
+            android:name=".debug.DebugGlSoakReceiver"
+            android:exported="true" />
     </application>
 </manifest>
