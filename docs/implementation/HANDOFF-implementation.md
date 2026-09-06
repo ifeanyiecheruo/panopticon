@@ -18,11 +18,14 @@ already lives elsewhere and would drift.
   per camera. A new `standby` mode (RECORD is sticky) frees the camera for it. controller
   decodes the full per-resolution map, shows the per-camera summary in Phone detail (button
   disabled + reason while the phone is recording), and has `calibration.EffectiveRect` (requested
-  zoom+centre → honoured crop). **Verified on the BLU G5 (API 28, legacy path).** **Still to
-  do:** the Pixel 6 run (it was USB-disconnected during this pass — the `CONTROL_ZOOM_RATIO` /
-  logical-multi-camera path); and the controller-side **zoom-rect picker UI** that consumes
-  `EffectiveRect` (deferred — it hangs off Live preview). See `docs/QUIRKS.md`'s "Calibration
-  zoom probe" for the real BLU G5 findings + the two weak-HAL quirks the probe now works around.
+  zoom+centre → honoured crop). **Verified end to end on the Pixel 6 (API 36 — `CONTROL_ZOOM_RATIO`
+  + logical multi-camera; probe correctly located the ultrawide→wide handoff at 1.15×) and the
+  BLU G5 (API 28 — legacy `SCALER_CROP_REGION` path).** **Still to do:** a lit resolution-chart
+  run to trust `qualityCollapseRatio`, and the controller-side **zoom-rect picker UI** that
+  consumes `EffectiveRect` (deferred — it hangs off Live preview). See `docs/QUIRKS.md`'s
+  "Calibration zoom probe" for the device findings + the weak-HAL quirks the probe works around
+  (API-gated-key `NoSuchFieldError`, session-recycle device disconnect, `ImageReader.close()`
+  SIGSEGV race, front-camera control-interleaving readback corruption).
 
 - **Motion-gated recording (phone-app only).** The always-record pipeline is gone. `CameraPipeline`
   now runs an always-on analysis `ImageReader` → `motion/MotionDetector` (frame-difference on a

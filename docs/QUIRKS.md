@@ -106,9 +106,9 @@ found the black-frame bug." Re-verify visually in normal lighting if this ever n
 
 ### Calibration zoom probe
 
-The empirical zoom probe (`phone-app`'s `calibration/CalibrationRunner`) was built and run on
-the **BLU G5 (Android 9 / API 28)**. The Pixel 6 was physically disconnected from USB for this
-pass — its run (the `CONTROL_ZOOM_RATIO` / logical-multi-camera path) is still pending.
+The empirical zoom probe (`phone-app`'s `calibration/CalibrationRunner`) was built and run to
+completion on both the **Pixel 6 (API 36)** — `CONTROL_ZOOM_RATIO` + logical-multi-camera path —
+and the **BLU G5 (API 28)** — legacy `SCALER_CROP_REGION` path. Findings below.
 
 #### An API-gated `CaptureResult`/`CaptureRequest` key throws `NoSuchFieldError` even behind a runtime `SDK_INT` guard
 **What we assumed:** wrapping a use of `CaptureResult.CONTROL_ZOOM_RATIO` (API 30) in
@@ -126,6 +126,21 @@ inside the SDK check — so older devices never touch the missing field.
 **Where:** `calibration/ZoomApiCompat.kt`, `calibration/CalibrationRunner.kt` (`hasZoomRatio` /
 `hasActivePhysicalId`).
 
+#### Releasing an `ImageReader` while a frame callback is in flight is a native `SIGSEGV` (Pixel 6)
+**What we assumed:** wrapping the `onImageAvailable` body in `try/catch` + a lock is enough to
+release the reader safely from another thread when a resolution's probe finishes.
+**What actually happens (Pixel 6, mid-sweep, ~resolution 16/24):** `reader.close()` on the
+sweep coroutine thread unmaps the native `YUV_420_888` plane buffer while an `onImageAvailable`
+callback on the reader's Handler thread is still inside `buffer.get(bytes)` → `Fatal signal 11
+(SIGSEGV), code 1 (SEGV_MAPERR) ... in tid PanopticonCalib`. A `catch` can't save you from a
+native memory fault; the process just dies (and `START_STICKY` restarts the service, losing the
+run). Not seen on the BLU G5 — its slower frame rate made the window much smaller.
+**What we do:** teardown order is now `stopRepeating()` → set a `readerClosing` flag under the
+frame lock → `setOnImageAvailableListener(null)` → post a no-op to the callback Handler and
+await it (guarantees any running callback has returned, since that thread is serial) → only
+then `session.close()` / `reader.close()`.
+**Where:** `calibration/CalibrationRunner.kt` (`probeResolution`, the `finally` block).
+
 #### Closing a `CameraCaptureSession` and opening the next one on the same still-open `CameraDevice` disconnects the device entirely (BLU G5)
 **What we assumed:** keep one `CameraDevice` open for a camera and cycle
 `ImageReader` + `CameraCaptureSession` per output resolution.
@@ -142,24 +157,60 @@ camera reports busy briefly on this device), and a per-run 1.2 s grace delay cov
 pipeline's still-in-flight teardown when calibration is entered straight from RECORD.
 **Where:** `calibration/CalibrationRunner.kt` (`probeCamera`, `openCameraDeviceWithRetry`).
 
-#### Frame-sharpness (variance-of-Laplacian) is only meaningful in a lit scene
-Same root cause as the black-thumbnail note above: the BLU G5 run was in a near-dark room, so
-the per-zoom sharpness values were 5–40 (noise floor) and `qualityCollapseRatio` fired at the
-2nd–3rd zoom step for the back camera — an artefact of the dark test scene, **not** a real
-digital-zoom quality cliff. The metric and its `~0.6 × baseline` threshold need re-checking
-against a normally-lit scene before any conclusion is drawn from `qualityCollapseRatio`.
+#### Interleaving `CONTROL_ZOOM_RATIO` and `SCALER_CROP_REGION` in one session's repeating request corrupts the readback (Pixel 6 front camera)
+**What we did first:** the per-zoom "position honoured?" sub-probe swapped the session's
+*repeating* request to an off-centre `SCALER_CROP_REGION`, then the next step swapped it back to
+`CONTROL_ZOOM_RATIO`.
+**What actually happens (Pixel 6, camera 1 / front):** the primary readback went junk —
+`requested 1.19× → reported 1.0×`, `requested 1.43× → reported 1.19×` (lagging one step),
+`ratioHonored = false` almost everywhere, `positionHonored = false` with six fail ratios. The
+back camera (0) was fine; the front camera can't cleanly alternate the two zoom controls on the
+repeating stream.
+**What we do:** the repeating request now holds *one* control for the whole resolution, and
+**both the primary readback and the position sub-probe are one-shot `session.capture()` calls**
+(`captureOneShot`) whose `TotalCaptureResult` is guaranteed to belong to that request. With
+that, the front camera reads back clean (`reported ≈ requested` across 1.0–10.0×,
+`positionHonored = true`). Lesson for any future Camera2 probing: don't infer a value from
+"latest result of a churning repeating request" — capture the exact request and read *its*
+result.
+**Where:** `calibration/CalibrationRunner.kt` (`captureOneShot`, `probeResolution`).
+
+#### Frame-sharpness (variance-of-Laplacian) is only trustworthy against a lit, textured target
+The sharpness values are tiny (single/low-double digits) unless the camera sees a genuinely
+lit, detailed scene — "lights on in the room" isn't enough if the phone is face-down or aimed
+at a blank surface. On both device runs `qualityCollapseRatio` fired somewhere in the 1.3–4.9×
+band, but the underlying `sharpnessRelToBaseline` curve was noisy enough that the *exact* ratio
+shouldn't be trusted; the *shape* (digital zoom softens as you push past ~2–3× on the Pixel 6
+main sensor, faster on the fixed-focus front camera) is real. Re-run against a resolution chart
+before quoting a number.
 **Where:** `calibration/ZoomMath.varianceOfLaplacian` / `deriveQualityCollapse`.
 
-#### BLU G5 findings (API 28, legacy `SCALER_CROP_REGION` path)
-Both cameras are single physical sensors — `crossoverMethod = "single-camera"`, everything is
-digital zoom, `SCALER_AVAILABLE_MAX_DIGITAL_ZOOM = 2.0`, no `CONTROL_ZOOM_RATIO_RANGE`.
-`SCALER_CROPPING_TYPE = FREEFORM` and, matching that, **an off-centre crop rect's position
-*was* honoured** at every probed ratio (`positionHonored = true`, no `positionFailRatios`) —
-i.e. this device does *not* reproduce the old prototype's "SCALER_CROP_REGION position isn't
-honoured" finding. Reported crop area tracked the request cleanly across all 24 YUV output
-sizes (2 of 24 on the back camera captured only 1–3 of 14 zoom steps — the two smallest sizes,
-right after camera open; the resilience path kept the run going and the per-camera summary is
-derived from the richest resolution).
+#### Device findings
+
+**Pixel 6 (API 36), camera 0 / back — logical multi-camera, physicals `2` + `3`:**
+`CONTROL_ZOOM_RATIO_RANGE = 0.67–7.0`, `SCALER_CROPPING_TYPE = CENTER_ONLY`. The probe
+**empirically located the optical→digital handoff at 1.15×**: `LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID`
+is `3` (ultrawide, `LENS_FOCAL_LENGTH` 2.35 mm) for requested ratios ≤ 0.96×, flips to `2`
+(main wide, 6.81 mm) at 1.15× and stays there to 7.0× — so `opticalRange 0.67–1.15`,
+`digitalRange 1.15–7.0`. **Every requested ratio was honoured** (`reportedRatio ≈ requested`
+across the whole range), and — despite `CENTER_ONLY` cropping — the off-centre position probe
+came back honoured with the one-shot capture fix. 24/24 YUV output sizes, all 14 zoom steps.
+
+**Pixel 6, camera 1 / front — single sensor:** `CONTROL_ZOOM_RATIO_RANGE = 1.0–10.0`,
+all-digital (`crossoverMethod = "single-camera"`). Every ratio honoured 1.0–10.0×, position
+honoured, 24/24 sizes. (This is the camera whose readback was junk before the one-shot fix —
+see above.)
+
+**BLU G5 (API 28), both cameras — single physical sensor, legacy `SCALER_CROP_REGION` path:**
+`crossoverMethod = "single-camera"`, `SCALER_AVAILABLE_MAX_DIGITAL_ZOOM = 2.0`, no
+`CONTROL_ZOOM_RATIO_RANGE`. `SCALER_CROPPING_TYPE = FREEFORM`; reported crop area tracked the
+request cleanly across all 24 sizes and **the off-centre crop's position was honoured** at
+every ratio.
+
+**Net:** the old prototype's "`SCALER_CROP_REGION` position isn't honoured, and the device lies
+about it" finding **did not reproduce** on either device once the probe stopped corrupting its
+own readback. Worth re-checking with a tighter position tolerance and on more hardware before
+calling it settled.
 
 ### Carried forward, not yet re-verified in this project
 
@@ -168,15 +219,17 @@ multi-camera; calibration and motion-gated recording now exist but the specific 
 still haven't been re-tested against the Pixel 6) - see `panopticon-prototype/QUIRKS.md` for the
 original write-ups:
 
-- `SCALER_CROP_REGION` position isn't honored, and the device lies about it — the new
-  calibration probe measures exactly this (`positionHonored` / `positionFailRatios` per camera).
-  **Not reproduced on the BLU G5** (FREEFORM cropping, position honoured); **still to run on the
-  Pixel 6**, which is the device the old finding came from a sibling of.
+- `SCALER_CROP_REGION` position isn't honored, and the device lies about it — the calibration
+  probe measures exactly this (`positionHonored` / `positionFailRatios` per camera). **Did not
+  reproduce** on the Pixel 6 or the BLU G5 (see "Device findings" in the zoom-probe section);
+  keep it on the list until re-checked with a tighter tolerance and on more hardware.
 - Digital zoom quality collapses well below the declared max, invisible to crop-region metadata —
-  the probe's `qualityCollapseRatio` targets this, but needs a lit scene to mean anything (see
-  the zoom-probe section above); **not yet meaningfully measured on either device.**
-- Crop readback is unreliable — the probe reads `SCALER_CROP_REGION` back from every
-  `TotalCaptureResult`; on the BLU G5 it tracked the request cleanly. **Pixel 6 pending.**
+  the probe's `qualityCollapseRatio` targets this. The *shape* showed up on both devices
+  (softening past ~2–3×) but the exact ratio needs a lit resolution-chart run to trust (see the
+  zoom-probe section).
+- Crop readback is unreliable — the probe reads `SCALER_CROP_REGION` back from a one-shot
+  capture of the exact request; clean on both devices once it stopped reading stale
+  repeating-request results.
 - Manual controls aren't reliably honored at all
 - `AE_MODE_OFF` (manual exposure) needs `MANUAL_SENSOR`, despite being independently selectable
 - `CONTROL_AE_LOCK` is a metering freeze, not a manual-exposure dial

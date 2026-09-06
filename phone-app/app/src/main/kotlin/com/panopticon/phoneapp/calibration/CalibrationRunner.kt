@@ -306,8 +306,10 @@ class CalibrationRunner(
         val reader = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2)
         val frameHolder = FrameHolder()
         val frameLock = Any()
+        var readerClosing = false
         reader.setOnImageAvailableListener({ r ->
             synchronized(frameLock) {
+                if (readerClosing) return@synchronized
                 val img = runCatching { r.acquireLatestImage() }.getOrNull() ?: return@synchronized
                 try {
                     val plane = img.planes[0]
@@ -342,31 +344,42 @@ class CalibrationRunner(
             for (ratio in ratios) {
                 if (lost.get()) break
                 val requestedCrop = ZoomMath.centeredCropForRatio(activeRect, ratio)
-                val ok = try {
-                    val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-                    builder.addTarget(reader.surface)
+
+                // Primary probe: the repeating request holds one control the
+                // whole time (either CONTROL_ZOOM_RATIO or a centred crop -
+                // never both, and the position sub-probe below is a one-shot so
+                // it never disturbs this stream; mixing the two paths in the
+                // repeating request corrupts the Pixel 6 front camera's
+                // readback - see docs/QUIRKS.md).
+                fun primaryRequest(): CaptureRequest {
+                    val b = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                    b.addTarget(reader.surface)
                     if (lockAe) {
-                        builder.set(CaptureRequest.CONTROL_AE_LOCK, true)
-                        builder.set(CaptureRequest.CONTROL_AWB_LOCK, true)
+                        b.set(CaptureRequest.CONTROL_AE_LOCK, true)
+                        b.set(CaptureRequest.CONTROL_AWB_LOCK, true)
                     }
-                    if (hasZoomRatio) {
-                        ZoomRatioApi30.setRequest(builder, ratio)
-                    } else {
-                        builder.set(CaptureRequest.SCALER_CROP_REGION, requestedCrop.toRect())
-                    }
-                    session.setRepeatingRequest(builder.build(), captureCallback, callbackHandler)
-                    true
+                    if (hasZoomRatio) ZoomRatioApi30.setRequest(b, ratio)
+                    else b.set(CaptureRequest.SCALER_CROP_REGION, requestedCrop.toRect())
+                    return b.build()
+                }
+
+                val primary = try {
+                    val req = primaryRequest()
+                    session.setRepeatingRequest(req, captureCallback, callbackHandler)
+                    delay(settle)
+                    // One-shot capture of the same request: its result is
+                    // guaranteed to reflect *this* zoom, not a stale one.
+                    captureOneShot(session, req) ?: resultHolder.get()
                 } catch (e: Exception) {
                     lost.set(true)
                     Log.w(TAG, "request for ${ratio}x failed; abandoning this resolution", e)
-                    false
+                    null
                 }
-                if (!ok) break
-                delay(settle)
+                if (primary == null && lost.get()) break
                 settle = PER_SAMPLE_SETTLE_MS
                 lockAe = true
 
-                val result = resultHolder.get()
+                val result = primary
                 val frame = frameHolder.get()
 
                 val reportedRatio = if (hasZoomRatio && result != null) ZoomRatioApi30.readResult(result) else null
@@ -386,9 +399,9 @@ class CalibrationRunner(
                 var positionReportedNorm: RectNorm? = null
                 var positionHonored: Boolean? = null
 
-                // ---- off-centre crop-region probe (position honoured?): reuse the
-                //      repeating request, just overlay an off-centre crop and read
-                //      back what the HAL reports. Metadata only - no frame needed. ----
+                // ---- off-centre crop-region probe (position honoured?): a
+                //      one-shot capture so the primary repeating stream is
+                //      untouched. Metadata only - no frame needed. ----
                 if (ratio in positionProbeRatios && ratio > 1.02f && !lost.get()) {
                     try {
                         val offCrop = ZoomMath.offsetCropForRatio(activeRect, ratio, 0.6f, 0.6f)
@@ -397,9 +410,8 @@ class CalibrationRunner(
                         pb.set(CaptureRequest.CONTROL_AE_LOCK, true)
                         pb.set(CaptureRequest.CONTROL_AWB_LOCK, true)
                         pb.set(CaptureRequest.SCALER_CROP_REGION, offCrop.toRect())
-                        session.setRepeatingRequest(pb.build(), captureCallback, callbackHandler)
-                        delay(PER_SAMPLE_SETTLE_MS)
-                        val pReported = resultHolder.get()?.get(CaptureResult.SCALER_CROP_REGION)?.toIntRect()
+                        val pResult = captureOneShot(session, pb.build())
+                        val pReported = pResult?.get(CaptureResult.SCALER_CROP_REGION)?.toIntRect()
                         positionRequestedNorm = ZoomMath.normalize(offCrop, activeRect)
                         positionReportedNorm = pReported?.let { ZoomMath.normalize(it, activeRect) }
                         positionHonored = ZoomMath.positionHonored(offCrop, pReported, tolPx = activeRect.width / 50)
@@ -426,7 +438,17 @@ class CalibrationRunner(
                 run.stepCheckIndex = samples.size
             }
         } finally {
+            // Release order matters: stop new frames, block the listener, wait
+            // for any in-flight callback to finish on the callback thread, THEN
+            // free the reader - otherwise `close()` unmaps a native buffer a
+            // callback is still reading and the process takes a SIGSEGV
+            // (reproduced on the Pixel 6). See docs/QUIRKS.md.
             runCatching { session.stopRepeating() }
+            synchronized(frameLock) { readerClosing = true }
+            runCatching { reader.setOnImageAvailableListener(null, callbackHandler) }
+            val drained = java.util.concurrent.CountDownLatch(1)
+            callbackHandler.post { drained.countDown() }
+            runCatching { drained.await(1, java.util.concurrent.TimeUnit.SECONDS) }
             runCatching { session.close() }
             runCatching { reader.close() }
         }
@@ -572,6 +594,42 @@ class CalibrationRunner(
                 cont.resumeWithException(e)
             }
         }
+
+    /**
+     * Submits [request] once and returns its `TotalCaptureResult` (or null on
+     * failure / timeout). Used so a sample's readback is guaranteed to belong
+     * to that sample's request, not whatever the repeating stream last landed.
+     */
+    private suspend fun captureOneShot(
+        session: CameraCaptureSession,
+        request: CaptureRequest,
+        timeoutMs: Long = 1500,
+    ): TotalCaptureResult? {
+        return kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+            suspendCancellableCoroutine { cont ->
+                try {
+                    session.capture(request, object : CameraCaptureSession.CaptureCallback() {
+                        override fun onCaptureCompleted(
+                            s: CameraCaptureSession,
+                            req: CaptureRequest,
+                            result: TotalCaptureResult,
+                        ) {
+                            if (cont.isActive) cont.resume(result)
+                        }
+                        override fun onCaptureFailed(
+                            s: CameraCaptureSession,
+                            req: CaptureRequest,
+                            failure: android.hardware.camera2.CaptureFailure,
+                        ) {
+                            if (cont.isActive) cont.resume(null)
+                        }
+                    }, callbackHandler)
+                } catch (e: Exception) {
+                    if (cont.isActive) cont.resumeWithException(e)
+                }
+            }
+        }
+    }
 
     private suspend fun createSession(
         device: CameraDevice,

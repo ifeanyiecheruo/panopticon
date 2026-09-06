@@ -63,10 +63,11 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   recycling - see `docs/QUIRKS.md`). Tens of minutes on a phone with many resolutions and
   cameras; it's meant to be run once, phone stood down. The `MAX_RESOLUTIONS_PER_CAMERA` cap is
   a safety net, not a normal limit.
-- **Frame-sharpness metric needs a lit scene.** `qualityCollapseRatio` is meaningless in a dark
-  room (the BLU G5 verification run was; see `docs/QUIRKS.md`). Verified so far only on the
-  BLU G5 (API 28, legacy `SCALER_CROP_REGION` path) - the Pixel 6 / `CONTROL_ZOOM_RATIO` /
-  multi-camera path is still to run.
+- **Frame-sharpness metric needs a lit, textured target.** `qualityCollapseRatio`'s exact value
+  isn't trustworthy without a resolution-chart run (see `docs/QUIRKS.md`); the softening trend
+  is real. Verified end to end on the **Pixel 6** (API 36 - `CONTROL_ZOOM_RATIO` + logical
+  multi-camera; probe located the ultrawide→wide handoff at 1.15x) and the **BLU G5** (API 28 -
+  legacy `SCALER_CROP_REGION` path).
 - **Debug-only `adb` calibration trigger.** `src/debug/…/DebugCalibrationReceiver` (declared in
   `src/debug/AndroidManifest.xml`, never in release) drives a sweep via
   `adb shell am broadcast` on devices whose Compose UI uiautomator/screencap can't touch.
