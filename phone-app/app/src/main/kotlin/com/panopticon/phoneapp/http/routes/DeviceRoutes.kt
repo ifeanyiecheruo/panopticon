@@ -43,16 +43,16 @@ data class ConfigResponse(
     val motionSensitivity: String,
     val storageCapBytes: Long,
     val ringBufferMaxAgeMs: Long,
-    val rotationDegrees: Int,
 )
 
+// `rotationDegrees` is a camera-pipeline setting - read/written via
+// GET/POST /api/camera/state, not here (phone-http-api.md).
 @Serializable
 data class ConfigPatch(
     val deviceName: String? = null,
     val motionSensitivity: String? = null,
     val storageCapBytes: Long? = null,
     val ringBufferMaxAgeMs: Long? = null,
-    val rotationDegrees: Int? = null,
 )
 
 fun Route.deviceRoutes(
@@ -114,7 +114,6 @@ fun Route.deviceRoutes(
                     motionSensitivity = cfg.motionSensitivity,
                     storageCapBytes = cfg.storageCapBytes,
                     ringBufferMaxAgeMs = cfg.ringBufferMaxAgeMs,
-                    rotationDegrees = cfg.rotationDegrees,
                 ),
             )
         }
@@ -127,7 +126,6 @@ fun Route.deviceRoutes(
                     motionSensitivity = patch.motionSensitivity ?: current.motionSensitivity,
                     storageCapBytes = patch.storageCapBytes ?: current.storageCapBytes,
                     ringBufferMaxAgeMs = patch.ringBufferMaxAgeMs ?: current.ringBufferMaxAgeMs,
-                    rotationDegrees = patch.rotationDegrees ?: current.rotationDegrees,
                 )
             }
             call.respond(
@@ -136,7 +134,6 @@ fun Route.deviceRoutes(
                     motionSensitivity = updated.motionSensitivity,
                     storageCapBytes = updated.storageCapBytes,
                     ringBufferMaxAgeMs = updated.ringBufferMaxAgeMs,
-                    rotationDegrees = updated.rotationDegrees,
                 ),
             )
         }

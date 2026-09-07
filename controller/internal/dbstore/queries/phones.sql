@@ -13,6 +13,9 @@ FROM phones WHERE id = ?;
 -- name: UpdatePhoneLastSeen :exec
 UPDATE phones SET last_seen_ms = ? WHERE id = ?;
 
+-- name: UpdatePhoneName :exec
+UPDATE phones SET name = ? WHERE id = ?;
+
 -- name: AdvanceSyncCursor :exec
 UPDATE phones SET sync_cursor_ms = ? WHERE id = ?;
 

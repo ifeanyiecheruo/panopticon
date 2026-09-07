@@ -9,7 +9,9 @@
 // POST /api/calibration/start, GET /api/calibration/status,
 // DELETE /api/calibration/:runId, GET /api/calibration/result,
 // GET /api/cameras, POST /api/cameras/active, GET /api/camera/capabilities,
-// GET/POST /api/camera/state.
+// GET/POST /api/camera/state, POST /api/live/start, DELETE /api/live/stop,
+// GET /live/live.m3u8 + GET /live/live-<n>.ts (a real HLS stream of a small
+// physics sim, muxed by ffmpeg — see live.go).
 //
 // Usage: go run ./cmd/mockphone [-addr :8091] [-invite XYZF-EBDO-ORMS]
 package main
@@ -59,6 +61,12 @@ type server struct {
 	model        string
 	mode         string // "record" | "standby" | "live" - RECORD blocks calibration
 
+	// Editable device config (GET/POST /api/config).
+	motionSensitivity  string
+	storageCapBytes    int64
+	ringBufferMaxAgeMs int64
+	rotationDegrees    int
+
 	// Calibration: a sweep is faked as a short timed "running" window, after
 	// which /status reports "completed" and /result serves a canned body.
 	calRunID      string
@@ -71,6 +79,9 @@ type server struct {
 	activeCameraID       string
 	manualControlEnabled bool
 	controlKeys          map[string]any
+
+	// Live HLS stream (physics sim -> ffmpeg -> rolling .ts). See live.go.
+	live liveStream
 }
 
 func main() {
@@ -86,6 +97,9 @@ func main() {
 		manufacturer:   "Google",
 		model:          "Pixel 6",
 		mode:           "record",
+		motionSensitivity:  "medium",
+		storageCapBytes:    64_000_000_000,
+		ringBufferMaxAgeMs: 604_800_000,
 		calSweepDurMs:  6000,
 		activeCameraID: "0",
 		controlKeys:    map[string]any{},
@@ -109,6 +123,9 @@ func main() {
 	mux.HandleFunc("/api/cameras/active", s.withAuth(s.handleCamerasActive))
 	mux.HandleFunc("/api/camera/capabilities", s.withAuth(s.handleCameraCapabilities))
 	mux.HandleFunc("/api/camera/state", s.withAuth(s.handleCameraState))
+	mux.HandleFunc("/api/live/start", s.withAuth(s.handleLiveStart))
+	mux.HandleFunc("/api/live/stop", s.withAuth(s.handleLiveStop))
+	mux.HandleFunc("/live/", s.withAuth(s.handleLiveMedia))
 
 	log.Printf("mockphone listening on %s (invite=%s, manufacturer=%s model=%s, %d seeded segments)",
 		*addr, *invite, s.manufacturer, s.model, *numSegments)
@@ -271,22 +288,32 @@ func (s *server) handleMode(w http.ResponseWriter, r *http.Request) {
 		Mode string `json:"mode"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	leftLive := false
 	switch body.Mode {
 	case "record", "standby":
+		leftLive = s.mode == "live"
 		s.mode = body.Mode
 	case "live":
 		if s.mode == "record" {
+			s.mu.Unlock()
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "stop recording first: POST /api/mode {\"mode\":\"standby\"}"})
 			return
 		}
 		s.mode = "live"
 	default:
+		s.mu.Unlock()
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be record|standby|live"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"mode": s.mode})
+	mode := s.mode
+	s.mu.Unlock()
+
+	if leftLive {
+		s.stopLive()
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"mode": mode})
 }
 
 func (s *server) handleDevice(w http.ResponseWriter, r *http.Request) {
@@ -298,12 +325,39 @@ func (s *server) handleDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if r.Method == http.MethodPost {
+		var patch struct {
+			DeviceName         *string `json:"deviceName"`
+			MotionSensitivity  *string `json:"motionSensitivity"`
+			StorageCapBytes    *int64  `json:"storageCapBytes"`
+			RingBufferMaxAgeMs *int64  `json:"ringBufferMaxAgeMs"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad config body"})
+			return
+		}
+		if patch.DeviceName != nil {
+			s.deviceName = *patch.DeviceName
+		}
+		if patch.MotionSensitivity != nil {
+			s.motionSensitivity = *patch.MotionSensitivity
+		}
+		if patch.StorageCapBytes != nil {
+			s.storageCapBytes = *patch.StorageCapBytes
+		}
+		if patch.RingBufferMaxAgeMs != nil {
+			s.ringBufferMaxAgeMs = *patch.RingBufferMaxAgeMs
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deviceName":         s.deviceName,
-		"motionSensitivity":  "medium",
-		"storageCapBytes":    64_000_000_000,
-		"ringBufferMaxAgeMs": 604_800_000,
-		"rotationDegrees":    0,
+		"motionSensitivity":  s.motionSensitivity,
+		"storageCapBytes":    s.storageCapBytes,
+		"ringBufferMaxAgeMs": s.ringBufferMaxAgeMs,
 	})
 }
 
@@ -391,6 +445,8 @@ func (s *server) handleCameraCapabilities(w http.ResponseWriter, r *http.Request
 		"awbModes":                  []int{0, 1, 2, 5, 6},
 		"videoStabilizationModes":   []int{0, 1},
 		"opticalStabilizationModes": []int{0, 1},
+		"maxAeRegions":              3,
+		"maxAfRegions":              1,
 		"physicalCameraIds":         physicalIDs,
 		"croppingType":              "FREEFORM",
 		"activeArrayWidth":          4032,
@@ -402,9 +458,20 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		var body struct {
 			ManualControlEnabled *bool          `json:"manualControlEnabled"`
+			RotationDegrees      *int           `json:"rotationDegrees"`
 			Keys                 map[string]any `json:"keys"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.RotationDegrees != nil {
+			switch *body.RotationDegrees {
+			case 0, 90, 180, 270:
+			default:
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": "must be one of 0/90/180/270", "key": "rotationDegrees",
+				})
+				return
+			}
+		}
 		// Reject obviously bad keys so the controller's 400-path is exercised.
 		if body.Keys != nil {
 			if z, ok := body.Keys["zoomRatio"].(float64); ok && (z < 1.0 || z > 8.0) {
@@ -433,6 +500,9 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 		if body.ManualControlEnabled != nil {
 			s.manualControlEnabled = *body.ManualControlEnabled
 		}
+		if body.RotationDegrees != nil {
+			s.rotationDegrees = *body.RotationDegrees
+		}
 		if body.Keys != nil {
 			s.controlKeys = body.Keys
 		}
@@ -449,7 +519,7 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cameraId":             s.activeCameraID,
-		"rotationDegrees":      0,
+		"rotationDegrees":      s.rotationDegrees,
 		"manualControlEnabled": s.manualControlEnabled,
 		"keys":                 keys,
 	})

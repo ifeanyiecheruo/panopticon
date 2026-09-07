@@ -35,6 +35,20 @@ object CameraControlValidation {
             }
         }
 
+        keys.aeRegionNorm?.let { c ->
+            if (caps.maxAeRegions <= 0) return Error("aeRegionNorm", "this camera has no AE metering regions")
+            val sane = c.l in 0f..1f && c.t in 0f..1f && c.r in 0f..1f && c.b in 0f..1f &&
+                c.r > c.l && c.b > c.t
+            if (!sane) return Error("aeRegionNorm", "must be a sub-rect of 0..1 with r>l and b>t, got $c")
+        }
+
+        keys.afRegionNorm?.let { c ->
+            if (caps.maxAfRegions <= 0) return Error("afRegionNorm", "this camera has no AF metering regions")
+            val sane = c.l in 0f..1f && c.t in 0f..1f && c.r in 0f..1f && c.b in 0f..1f &&
+                c.r > c.l && c.b > c.t
+            if (!sane) return Error("afRegionNorm", "must be a sub-rect of 0..1 with r>l and b>t, got $c")
+        }
+
         keys.aeExposureCompensation?.let { ec ->
             val r = caps.aeCompensationRange
             if (ec < r.lo || ec > r.hi) {

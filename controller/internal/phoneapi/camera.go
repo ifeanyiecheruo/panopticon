@@ -74,6 +74,8 @@ type CameraCapabilities struct {
 	AWBModes                  []int       `json:"awbModes"`
 	VideoStabilizationModes   []int       `json:"videoStabilizationModes"`
 	OpticalStabilizationModes []int       `json:"opticalStabilizationModes"`
+	MaxAERegions              int         `json:"maxAeRegions"`
+	MaxAFRegions              int         `json:"maxAfRegions"`
 	PhysicalCameraIDs         []string    `json:"physicalCameraIds"`
 	CroppingType              string      `json:"croppingType"`
 	ActiveArrayWidth          int         `json:"activeArrayWidth"`
@@ -88,11 +90,13 @@ type CameraControlKeys struct {
 	CropRegionNorm            *RectNorm `json:"cropRegionNorm"`
 	AEExposureCompensation    *int      `json:"aeExposureCompensation"`
 	AELock                    *bool     `json:"aeLock"`
+	AERegionNorm              *RectNorm `json:"aeRegionNorm"`
 	ManualExposure            *bool     `json:"manualExposure"`
 	SensorExposureTimeNs      *int64    `json:"sensorExposureTimeNs"`
 	SensorSensitivityISO      *int      `json:"sensorSensitivityIso"`
 	ManualFocus               *bool     `json:"manualFocus"`
 	LensFocusDistanceDiopters *float64  `json:"lensFocusDistanceDiopters"`
+	AFRegionNorm              *RectNorm `json:"afRegionNorm"`
 	AWBMode                   *int      `json:"awbMode"`
 	ManualWhiteBalance        *bool     `json:"manualWhiteBalance"`
 	WBRedGain                 *float64  `json:"wbRedGain"`
@@ -110,10 +114,13 @@ type CameraStateResponse struct {
 }
 
 // CameraStatePatch is POST /api/camera/state's body. Keys, when non-nil,
-// replaces the applied set wholesale (send the full desired set).
+// replaces the applied set wholesale (send the full desired set). Any subset of
+// the three fields may be sent; omitted fields are left unchanged on the phone.
 type CameraStatePatch struct {
 	ManualControlEnabled *bool              `json:"manualControlEnabled,omitempty"`
-	Keys                 *CameraControlKeys `json:"keys,omitempty"`
+	// RotationDegrees is the preview/record frame rotation (0/90/180/270).
+	RotationDegrees *int               `json:"rotationDegrees,omitempty"`
+	Keys            *CameraControlKeys `json:"keys,omitempty"`
 }
 
 type activeCameraRequest struct {

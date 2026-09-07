@@ -4,24 +4,33 @@ import {
   StartCalibration,
   GetCalibrationProgress,
   CancelCalibration,
+  SetRecording,
   UnpairPhone,
   ForceUnpairPhone,
   type PhoneDetailView,
   type CalibrationProgress,
 } from '../api';
-import { fmtBytes, statusLabel } from '../lib/format';
-import { BackIcon, GalleryIcon } from '../lib/icons';
+import { statusLabel } from '../lib/format';
+import { BatteryIcon } from '../components/BatteryIcon';
 import { CameraControls } from '../components/CameraControls';
+import { PhoneCommandBar } from '../components/PhoneCommandBar';
+import { ConfigForm } from '../components/ConfigForm';
+import { StatusPanel } from '../components/StatusPanel';
+import { useLivePreview } from '../components/LivePreview';
 
 interface PhoneDetailProps {
+  onPhoneChanged?: () => void;
   phoneId: string;
-  onBack: () => void;
+  onDeselect: () => void;
   onViewGallery: () => void;
+  onUnpaired: () => void;
 }
 
-export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps) {
+export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, onPhoneChanged }: PhoneDetailProps) {
   const [detail, setDetail] = useState<PhoneDetailView | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const live = useLivePreview(phoneId);
 
   // Calibration re-run state.
   const [runId, setRunId] = useState<string | null>(null);
@@ -29,7 +38,11 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
   const [calibMsg, setCalibMsg] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Recording toggle.
+  const [recordBusy, setRecordBusy] = useState(false);
+
   // Unpair state.
+  const [unpairOpen, setUnpairOpen] = useState(false);
   const [unpairMode, setUnpairMode] = useState<null | 'confirm-unsynced' | 'confirm-force'>(null);
   const [unpairMsg, setUnpairMsg] = useState<string | null>(null);
   const [unpairBusy, setUnpairBusy] = useState(false);
@@ -54,8 +67,6 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
     }
   }, []);
 
-  // Poll the sweep while one is running; refresh the detail (and its
-  // calibration summary) once it settles.
   useEffect(() => {
     if (runId === null) return;
     stopPolling();
@@ -73,9 +84,7 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
         setRunId(null);
         stopPolling();
         setCalibMsg(
-          res.progress.status === 'completed'
-            ? 'Calibration complete.'
-            : `Calibration ${res.progress.status}.`,
+          res.progress.status === 'completed' ? 'Calibration complete.' : `Calibration ${res.progress.status}.`,
         );
         loadDetail();
       }
@@ -90,7 +99,7 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
     if (res.outcome === 'ok') {
       setRunId(res.runId || '');
     } else if (res.outcome === 'running') {
-      setRunId(''); // attach to the in-progress sweep (status endpoint takes no runId)
+      setRunId('');
       setCalibMsg(res.message || null);
     } else {
       setCalibMsg(res.message || 'Could not start calibration.');
@@ -106,13 +115,28 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
     }
   };
 
+  const toggleRecording = async () => {
+    if (!detail) return;
+    const next = detail.status?.mode !== 'record';
+    setRecordBusy(true);
+    try {
+      const r = await SetRecording(phoneId, next);
+      if (!r.ok) {
+        setCalibMsg(r.message || 'Could not change recording state.');
+      }
+      await loadDetail();
+    } finally {
+      setRecordBusy(false);
+    }
+  };
+
   const doUnpair = async (confirmed: boolean) => {
     setUnpairBusy(true);
     setUnpairMsg(null);
     try {
       const r = await UnpairPhone(phoneId, confirmed);
       if (r.ok) {
-        onBack();
+        onUnpaired();
         return;
       }
       if (r.outcome === 'needs_confirmation') {
@@ -120,7 +144,6 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
         setUnpairMsg(r.message ?? null);
         return;
       }
-      // unreachable / revoke_failed / other — stays paired; point at Force.
       setUnpairMode(null);
       setUnpairMsg(r.message || 'Could not unpair.');
     } finally {
@@ -132,7 +155,7 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
     setUnpairBusy(true);
     try {
       await ForceUnpairPhone(phoneId);
-      onBack();
+      onUnpaired();
     } finally {
       setUnpairBusy(false);
     }
@@ -140,28 +163,34 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
 
   if (error) {
     return (
-      <div className="body-scroll">
+      <div className="phone-detail">
+        <button className="back-link" onClick={onDeselect}>
+          Fleet overview
+        </button>
         <div className="empty-note">Error: {error}</div>
       </div>
     );
   }
 
   if (!detail) {
-    return <div className="body-scroll">Loading…</div>;
+    return (
+      <div className="phone-detail">
+        <div className="calib-sub">Loading…</div>
+      </div>
+    );
   }
 
   const p = detail.phone;
   const cal = detail.calibration;
   const running = runId !== null;
-  // Calibration and live preview both need exclusive camera access, which the
-  // phone only gives up when recording is explicitly stopped on the phone.
   const phoneRecording = detail.status?.mode === 'record';
 
   return (
-    <div className="body-scroll">
-      <button className="back-link" onClick={onBack}>
-        <BackIcon /> Back to Fleet
+    <div className="phone-detail">
+      <button className="back-link" onClick={onDeselect}>
+        Fleet overview
       </button>
+
       <div className="detail-header">
         <div className="avatar-circle">{(p.name || '?').slice(0, 1).toUpperCase()}</div>
         <div>
@@ -170,238 +199,155 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
             <span>
               {p.manufacturer} {p.model}
             </span>
-            {p.hasBattery && (
-              <span>
-                {p.batteryPercent}% battery{p.charging ? ' (charging)' : ''}
-              </span>
-            )}
-            <span className={`status-pill ${p.status === 'recording' ? 'recording' : p.status === 'unreachable' ? 'unreachable' : ''}`}>
+            <span
+              className={`status-pill ${
+                p.status === 'recording' ? 'recording' : p.status === 'unreachable' ? 'unreachable' : ''
+              }`}
+            >
               <span className="dot"></span>
               {statusLabel(p.status)}
             </span>
+            <BatteryIcon percent={p.batteryPercent} charging={p.charging} hasBattery={p.hasBattery} />
           </div>
         </div>
       </div>
 
-      <CameraControls phoneId={phoneId} phoneRecording={phoneRecording} />
+      <PhoneCommandBar
+        reachable={p.reachable}
+        phoneRecording={phoneRecording}
+        recordBusy={recordBusy}
+        onToggleRecording={toggleRecording}
+        live={live}
+        calibRunning={running}
+        calibLabel={cal.present ? 'Re-run calibration' : 'Run calibration'}
+        canCalibrate={!!cal.modelKey}
+        onCalibrate={startCalibration}
+        onViewGallery={onViewGallery}
+        unpairOpen={unpairOpen}
+        onToggleUnpair={() => setUnpairOpen((v) => !v)}
+      />
 
-      <div className="section-title">Sync</div>
-      <div className="card">
-        <div className="field-row">
-          <span className="k">Address</span>
-          <span className="v">{p.baseUrl}</span>
+      {(progress || calibMsg || running) && (
+        <div className="card" style={{ padding: '12px 14px' }}>
+          {progress && (
+            <>
+              <div className="calib-bar">
+                <i
+                  style={{
+                    width: `${
+                      progress.camerasTotal > 0
+                        ? Math.round((progress.camerasCompleted / progress.camerasTotal) * 100)
+                        : 0
+                    }%`,
+                  }}
+                />
+              </div>
+              <div className="calib-progress-line">
+                {progress.status === 'running'
+                  ? `camera ${progress.camerasCompleted}/${progress.camerasTotal}` +
+                    (progress.currentStep ? ` · ${progress.currentStep}` : '')
+                  : progress.status}
+              </div>
+            </>
+          )}
+          {calibMsg && <div className="calib-sub">{calibMsg}</div>}
+          {running && (
+            <button className="btn small danger" style={{ marginTop: '8px' }} onClick={cancelCalibration}>
+              Cancel
+            </button>
+          )}
         </div>
-        <div className="field-row">
-          <span className="k">Last seen</span>
-          <span className="v">{p.lastSeenMs ? new Date(p.lastSeenMs).toLocaleString() : '—'}</span>
-        </div>
-        <div className="field-row">
-          <span className="k">Sync cursor</span>
-          <span className="v">{p.syncCursorMs ? new Date(p.syncCursorMs).toLocaleString() : '—'}</span>
-        </div>
-        <div className="field-row">
-          <span className="k">Archived on disk</span>
-          <span className="v">{fmtBytes(p.diskUsageBytes)}</span>
-        </div>
-      </div>
+      )}
 
-      <div className="section-title">Calibration</div>
-      <div className="card">
-        <div className="calib-row">
-          <div>
-            {cal.present ? (
+      <CameraControls phoneId={phoneId} phoneRecording={phoneRecording} ctl={live} />
+
+      <div className="section-title">Configuration</div>
+      <ConfigForm
+        phoneId={phoneId}
+        config={detail.config}
+        configError={detail.configError}
+        onSaved={(cfg) => {
+          // The device name is the phone's name; a rename must reach the rest
+          // of the UI (Fleet list, Gallery chips), not just this screen.
+          if (cfg.deviceName && cfg.deviceName !== detail.phone.name) onPhoneChanged?.();
+          loadDetail();
+        }}
+      />
+
+      <div className="section-title">Status</div>
+      <StatusPanel phone={p} status={detail.status} statusError={detail.statusError} calibration={cal} />
+
+      {unpairOpen && (
+        <>
+          <div className="section-title">Danger zone</div>
+          <div className="card" style={{ padding: '14px' }}>
+            {unpairMode === null && (
               <>
-                <div className="calib-state">
-                  {cal.checksTotal > 0
-                    ? `${cal.checksPassed}/${cal.checksTotal} checks completed`
-                    : 'Calibrated'}
+                <div className="calib-sub" style={{ marginBottom: '10px' }}>
+                  Unpairing revokes this controller's token on the phone. Clips already synced stay in
+                  the Gallery as historical footage.
                 </div>
-                <div className="calib-sub">
-                  {cal.calibratedAtMs ? new Date(cal.calibratedAtMs).toLocaleString() : ''}
-                  {cal.viaOtherPhone && ` · via ${cal.sourcePhoneName || cal.sourcePhoneId}`}
+                <div className="confirm-actions">
+                  <button className="btn" onClick={() => doUnpair(false)} disabled={unpairBusy}>
+                    Unpair
+                  </button>
+                  <button
+                    className="btn danger"
+                    onClick={() => setUnpairMode('confirm-force')}
+                    disabled={unpairBusy}
+                  >
+                    Force unpair
+                  </button>
                 </div>
-              </>
-            ) : (
-              <>
-                <div className="calib-state needed">Calibration needed</div>
-                <div className="calib-sub">
-                  {cal.modelKey
-                    ? 'No cached data for this model — this phone would become its reference.'
-                    : 'This phone reported no manufacturer/model to key calibration by.'}
-                </div>
+                {unpairMsg && (
+                  <div className="calib-sub" style={{ marginTop: '10px' }}>
+                    {unpairMsg}
+                  </div>
+                )}
               </>
             )}
-          </div>
-          <button
-            className="btn small"
-            onClick={startCalibration}
-            disabled={running || !cal.modelKey || phoneRecording}
-            title={phoneRecording ? 'Stop recording on the phone first' : undefined}
-          >
-            {running ? 'Running…' : cal.present ? 'Re-run' : 'Run calibration'}
-          </button>
-        </div>
 
-        {phoneRecording && (
-          <div className="calib-sub" style={{ marginTop: '8px' }}>
-            Recording — calibration is unavailable until recording is stopped on the phone's own
-            screen.
-          </div>
-        )}
-
-        {cal.present && cal.cameras && cal.cameras.length > 0 && (
-          <div className="calib-cameras">
-            {cal.cameras.map((c) => (
-              <div className="calib-cam" key={c.cameraId}>
-                <div className="calib-cam-head">
-                  Camera {c.cameraId} · {c.facing}
-                </div>
-                <div className="calib-cam-grid">
-                  <span>optical</span>
-                  <span>
-                    {c.opticalRange.lo.toFixed(2)}×–{c.opticalRange.hi.toFixed(2)}×
-                  </span>
-                  <span>digital</span>
-                  <span>
-                    {c.digitalRange.lo.toFixed(2)}×–{c.digitalRange.hi.toFixed(2)}×
-                  </span>
-                  <span>crossover</span>
-                  <span>{c.crossoverRatio != null ? `${c.crossoverRatio.toFixed(2)}×` : '—'}</span>
-                  <span>zoom-rect position</span>
-                  <span className={c.positionHonored ? '' : 'calib-bad'}>
-                    {c.positionHonored
-                      ? 'honoured'
-                      : c.positionMetadataLied
-                        ? 'NOT honoured (metadata lied)'
-                        : 'NOT honoured'}
-                  </span>
-                  <span>quality collapse</span>
-                  <span className={c.qualityCollapseRatio != null ? 'calib-bad' : ''}>
-                    {c.qualityCollapseRatio != null ? `from ${c.qualityCollapseRatio.toFixed(2)}×` : 'not seen'}
-                  </span>
-                  <span>resolutions probed</span>
-                  <span>{c.resolutions}</span>
+            {unpairMode === 'confirm-unsynced' && (
+              <div className="confirm-box">
+                <p>{unpairMsg}</p>
+                <div className="confirm-actions">
+                  <button className="btn danger" onClick={() => doUnpair(true)} disabled={unpairBusy}>
+                    Unpair anyway
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setUnpairMode(null);
+                      setUnpairMsg(null);
+                    }}
+                    disabled={unpairBusy}
+                  >
+                    Keep paired
+                  </button>
                 </div>
               </div>
-            ))}
+            )}
+
+            {unpairMode === 'confirm-force' && (
+              <div className="confirm-box">
+                <p>
+                  Force unpair removes <b>{p.name}</b> locally even if it can't be reached. If the phone
+                  is offline it may keep a live token until you clear this controller from the phone's
+                  own screen. The unsynced-clips check is skipped.
+                </p>
+                <div className="confirm-actions">
+                  <button className="btn danger" onClick={doForceUnpair} disabled={unpairBusy}>
+                    Force unpair
+                  </button>
+                  <button className="btn" onClick={() => setUnpairMode(null)} disabled={unpairBusy}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-        )}
-
-        {progress && (
-          <>
-            <div className="calib-bar">
-              <i
-                style={{
-                  width: `${
-                    progress.camerasTotal > 0
-                      ? Math.round((progress.camerasCompleted / progress.camerasTotal) * 100)
-                      : 0
-                  }%`,
-                }}
-              />
-            </div>
-            <div className="calib-progress-line">
-              {progress.status === 'running'
-                ? `camera ${progress.camerasCompleted}/${progress.camerasTotal}` +
-                  (progress.currentStep ? ` · ${progress.currentStep}` : '') +
-                  (progress.progressWithinStep && progress.progressWithinStep.total > 0
-                    ? ` · check ${progress.progressWithinStep.index}/${progress.progressWithinStep.total}`
-                    : '')
-                : progress.status}
-            </div>
-          </>
-        )}
-        {calibMsg && <div className="calib-sub">{calibMsg}</div>}
-        {running && (
-          <button className="btn small danger" style={{ marginTop: '8px' }} onClick={cancelCalibration}>
-            Cancel
-          </button>
-        )}
-      </div>
-
-      <div className="section-title">GET /api/status</div>
-      <div className="card">
-        {detail.statusError ? (
-          <div className="field-row">
-            <span className="k">Error</span>
-            <span className="v">{detail.statusError}</span>
-          </div>
-        ) : (
-          <div className="raw-json">{JSON.stringify(detail.status, null, 2)}</div>
-        )}
-      </div>
-
-      <div className="section-title">GET /api/config</div>
-      <div className="card">
-        {detail.configError ? (
-          <div className="field-row">
-            <span className="k">Error</span>
-            <span className="v">{detail.configError}</span>
-          </div>
-        ) : (
-          <div className="raw-json">{JSON.stringify(detail.config, null, 2)}</div>
-        )}
-      </div>
-
-      <div className="section-title">This phone's clips</div>
-      <div className="card" style={{ padding: '14px' }}>
-        <button className="btn" onClick={onViewGallery}>
-          <GalleryIcon /> View in Gallery
-        </button>
-      </div>
-
-      <div className="section-title">Unpair</div>
-      <div className="card" style={{ padding: '14px' }}>
-        {unpairMode === null && (
-          <>
-            <div className="calib-sub" style={{ marginBottom: '10px' }}>
-              Unpairing revokes this controller's token on the phone. Clips already synced stay in
-              the Gallery as historical footage.
-            </div>
-            <div className="confirm-actions">
-              <button className="btn" onClick={() => doUnpair(false)} disabled={unpairBusy}>
-                Unpair
-              </button>
-              <button className="btn danger" onClick={() => setUnpairMode('confirm-force')} disabled={unpairBusy}>
-                Force unpair
-              </button>
-            </div>
-            {unpairMsg && <div className="calib-sub" style={{ marginTop: '10px' }}>{unpairMsg}</div>}
-          </>
-        )}
-
-        {unpairMode === 'confirm-unsynced' && (
-          <div className="confirm-box">
-            <p>{unpairMsg}</p>
-            <div className="confirm-actions">
-              <button className="btn danger" onClick={() => doUnpair(true)} disabled={unpairBusy}>
-                Unpair anyway
-              </button>
-              <button className="btn" onClick={() => { setUnpairMode(null); setUnpairMsg(null); }} disabled={unpairBusy}>
-                Keep paired
-              </button>
-            </div>
-          </div>
-        )}
-
-        {unpairMode === 'confirm-force' && (
-          <div className="confirm-box">
-            <p>
-              Force unpair removes <b>{p.name}</b> locally even if it can't be reached. If the phone
-              is offline it may keep a live token until you clear this controller from the phone's
-              own screen. The unsynced-clips check is skipped.
-            </p>
-            <div className="confirm-actions">
-              <button className="btn danger" onClick={doForceUnpair} disabled={unpairBusy}>
-                Force unpair
-              </button>
-              <button className="btn" onClick={() => setUnpairMode(null)} disabled={unpairBusy}>
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }

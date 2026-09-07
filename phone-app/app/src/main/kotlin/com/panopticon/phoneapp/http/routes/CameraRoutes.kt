@@ -100,18 +100,23 @@ fun Route.cameraRoutes(
                 call.respond(HttpStatusCode.UnprocessableEntity, ErrorBody("device reports no cameras"))
                 return@post
             }
+            if (patch.rotationDegrees != null && patch.rotationDegrees !in setOf(0, 90, 180, 270)) {
+                call.respond(HttpStatusCode.BadRequest, ControlErrorBody("must be one of 0/90/180/270", "rotationDegrees"))
+                return@post
+            }
             val caps = CameraCapabilitiesReader.read(androidContext, id)
             CameraControlValidation.validate(next.keys, caps)?.let { err ->
                 call.respond(HttpStatusCode.BadRequest, ControlErrorBody(err.reason, err.key))
                 return@post
             }
 
-            appConfig.update { it.copy(cameraControls = next) }
+            val nextRotation = patch.rotationDegrees ?: cfg.rotationDegrees
+            appConfig.update { it.copy(cameraControls = next, rotationDegrees = nextRotation) }
             onCameraConfigChanged(CameraConfigChange.CONTROLS)
             call.respond(
                 CameraStateResponse(
                     cameraId = id,
-                    rotationDegrees = cfg.rotationDegrees,
+                    rotationDegrees = nextRotation,
                     manualControlEnabled = next.manualControlEnabled,
                     keys = next.keys,
                 ),

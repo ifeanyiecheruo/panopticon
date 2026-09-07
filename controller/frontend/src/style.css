@@ -232,14 +232,10 @@ body{
 .live-video{width:100%; border-radius:10px; background:#000; aspect-ratio:16/9; display:block;}
 .live-video[hidden]{display:none;}
 
-/* Zoom-rect picker overlay on the live <video>. */
-.zoom-picker{position:absolute; inset:0; cursor:crosshair; touch-action:none;}
-.zoom-picker-box{position:absolute; border:1.5px solid var(--accent); background:rgba(90,200,190,.12);}
-.zoom-picker-pred{position:absolute; border:1.5px dashed #f5d90a; pointer-events:none;}
-.zoom-picker-pred.recentred{border-color:var(--warn);}
-.zoom-picker-bar{position:absolute; left:8px; bottom:8px; right:8px; display:flex; gap:8px; align-items:center;
-  flex-wrap:wrap; background:rgba(12,16,20,.82); border-radius:10px; padding:8px; cursor:default;}
-.zoom-picker-note{font-size:11px; color:var(--text-dim); flex:1 1 100%;}
+/* Zoom-rect picker overlay on the live <video> — sits BELOW the overlay-stack
+   ruler pills (z-index 4) so a drag on a pill doesn't start a box. */
+.zoom-picker{position:absolute; inset:0; cursor:crosshair; touch-action:none; z-index:2;}
+.zoom-picker-box{position:absolute; border:1.5px solid var(--accent); background:rgba(90,200,190,.12); pointer-events:none;}
 
 /* Camera section (Phone detail): switcher + manual adjusters. */
 .cam-chips{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px;}
@@ -279,3 +275,181 @@ body{
 .calib-cam-grid .calib-bad{color:var(--warn);}
 
 a{color:var(--accent);}
+
+/* ---- Fleet master-detail ---- */
+.fleet-split{display:flex; flex:1 1 auto; min-height:0;}
+.fleet-master{
+  flex:0 0 240px; display:flex; flex-direction:column; gap:4px;
+  border-right:1px solid var(--border-soft); padding:12px 10px; overflow-y:auto;
+}
+.fleet-master-head{
+  display:flex; align-items:center; justify-content:space-between;
+  font-family:"Consolas",monospace; font-size:10.5px; color:var(--text-faint);
+  padding:2px 4px 8px;
+}
+.fleet-row{
+  display:flex; flex-direction:column; align-items:flex-start; gap:7px;
+  padding:10px 11px; border-radius:10px; border:1px solid transparent;
+  background:var(--surface); color:var(--text); cursor:pointer; text-align:left; width:100%;
+}
+.fleet-row:hover{border-color:var(--accent-dim);}
+.fleet-row.active{background:var(--surface-2); border-color:var(--accent);}
+.fleet-row.is-unreachable{opacity:.65;}
+.fleet-row-name{font-size:13px; font-weight:600;}
+.fleet-row-meta{display:flex; align-items:center; gap:8px;}
+.fleet-detail{flex:1 1 auto; min-width:0; overflow-y:auto; padding:18px 26px 40px;}
+.fleet-summary{padding:26px;}
+.fleet-summary h1{margin:0 0 4px; font-size:19px;}
+.fleet-summary .sub{font-family:"Consolas",monospace; font-size:11.5px; color:var(--text-faint);}
+.fleet-summary .sub b{color:var(--accent);}
+
+/* ---- Phone detail ---- */
+.phone-detail{max-width:1000px;}
+.phone-detail .detail-header{margin-top:10px;}
+.phone-detail .detail-header .avatar-circle{margin:0; flex:0 0 auto;}
+.battery{vertical-align:middle;}
+
+.cmd-bar{
+  display:flex; flex-wrap:wrap; align-items:center; gap:8px;
+  padding:12px 0 14px; margin-bottom:6px; border-bottom:1px solid var(--border-soft);
+}
+.cmd-bar-spacer{flex:1 1 auto;}
+
+/* ---- Live preview ---- */
+.live-preview{display:flex; flex-direction:column; gap:8px;}
+.live-frame-idle{
+  width:100%; aspect-ratio:16/9; border-radius:12px; background:var(--surface);
+  border:1px dashed var(--border); display:flex; align-items:center; justify-content:center;
+  text-align:center; padding:16px; color:var(--text-faint); font-size:12px;
+}
+.live-frame-idle.error{color:var(--rec); border-color:var(--rec-dim);}
+
+/* ---- Phone-style camera controls (ported from docs/design/ux-mocks/phone-ux-mock.html
+   Preview screen — see docs/implementation/HANDOFF-phone-ux.md). Same narrow,
+   space-constrained layout as the phone: frosted overlay ruler on the video,
+   a drag-scroller mode bar below, pickers below that. ---- */
+.phonecam{max-width:440px;}
+.viewport-wrap{position:relative;}
+.viewport-wrap .live-video{width:100%; border-radius:12px; background:#000; aspect-ratio:16/9; object-fit:contain; display:block;}
+.viewport-wrap .live-video-wrap[hidden]{display:none;}
+
+/* Slow (2s) fade of the on-video controls once the pointer has left the
+   preview. The camera switcher is exempt — it must always be reachable, e.g.
+   to cycle back off a camera whose live stream failed. */
+.viewport-wrap .overlay-stack, .viewport-wrap .cam-badges{
+  transition:opacity 2s ease;
+}
+.viewport-wrap.idle .overlay-stack, .viewport-wrap.idle .cam-badges{
+  opacity:0; pointer-events:none;
+}
+
+.cam-badges{position:absolute; left:9px; top:9px; display:flex; gap:5px; z-index:4;}
+.cam-badge{
+  font-family:"Consolas",monospace; font-size:8.5px; letter-spacing:.08em; font-weight:600;
+  padding:3px 7px; border-radius:999px; background:rgba(0,0,0,.5); color:var(--text-dim);
+}
+.cam-badge.manual{color:var(--accent-ink); background:var(--accent);}
+.cam-badge.dim{color:rgba(233,243,238,.7); text-transform:none; letter-spacing:0;}
+
+.cam-cycle-btn{
+  position:absolute; bottom:9px; right:9px; z-index:4;
+  width:30px; height:30px; border-radius:999px; border:none;
+  background:rgba(8,18,16,.55); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  color:rgba(233,243,238,.85); display:flex; align-items:center; justify-content:center; cursor:pointer;
+}
+.cam-cycle-btn svg{width:15px; height:15px;}
+.cam-cycle-btn:disabled{opacity:.5; cursor:default;}
+
+/* one or more frosted ruler pills, stacked bottom-centre over the live video */
+.overlay-stack{
+  position:absolute; left:50%; bottom:12px; transform:translateX(-50%);
+  display:flex; flex-direction:column; gap:6px; z-index:4; width:236px;
+}
+.ctrl-slot{
+  height:34px; position:relative;
+  background:rgba(8,18,16,.55); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  border-radius:999px; touch-action:none;
+}
+.ctrl-slot.overlay{width:100%; display:flex; align-items:stretch;}
+.ruler-hold{position:relative; flex:1 1 auto; min-width:0;}
+.ruler-reset{
+  flex:0 0 24px; border:none; background:transparent; color:rgba(233,243,238,.55);
+  display:flex; align-items:center; justify-content:center; cursor:pointer;
+}
+.ruler-reset:hover{color:var(--accent);}
+.ruler-reset svg{width:13px; height:13px;}
+
+/* pixel-style ruler */
+.ruler{position:absolute; inset:0; cursor:ew-resize; touch-action:none;}
+.ruler-body{position:absolute; inset:0; display:flex; align-items:stretch;}
+.ruler-endicon{
+  flex:0 0 26px; display:flex; align-items:center; justify-content:center;
+  color:rgba(233,243,238,.55); z-index:2; pointer-events:none;
+}
+.ruler-endicon svg{width:12px; height:12px;}
+.ruler-track{
+  flex:1; position:relative; overflow:hidden;
+  -webkit-mask-image:linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
+  mask-image:linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
+}
+.ruler .strip{position:absolute; top:0; bottom:0; left:0;}
+.ruler .tick{position:absolute; top:50%; width:1px; height:6px; background:rgba(233,243,238,.22); border-radius:1px; transform:translateY(-50%);}
+.ruler .tick.minor{width:1.3px; height:11px; background:rgba(233,243,238,.4);}
+.ruler .tick.major{width:1.6px; height:17px; background:rgba(233,243,238,.65);}
+.ruler .thumb{
+  position:absolute; left:50%; top:6px; bottom:6px; width:3px; background:var(--accent);
+  transform:translateX(-50%); border-radius:2px; pointer-events:none; z-index:3;
+}
+
+/* categorical (non-slider) controls — a plain dropdown; the controller has the
+   room the phone doesn't */
+.pcam-select-row{display:flex; align-items:center; gap:10px; margin-top:12px;}
+.pcam-select-row > label{font-size:11.5px; color:var(--text-dim); flex:0 0 auto;}
+.pcam-select-row select{
+  flex:1 1 auto; min-width:0;
+  background:var(--surface-2); border:1px solid var(--border-soft); color:var(--text);
+  font-family:"Consolas",monospace; font-size:12px; padding:6px 9px; border-radius:8px;
+}
+.pcam-select-row select:focus{outline:none; border-color:var(--accent-dim);}
+
+/* drag-to-scroll mode bar */
+.hscroll{
+  position:relative; overflow-x:auto; overflow-y:hidden; cursor:grab;
+  scrollbar-width:none; -ms-overflow-style:none; user-select:none; -webkit-user-select:none;
+}
+.hscroll::-webkit-scrollbar{display:none;}
+.hscroll.dragging{cursor:grabbing;}
+.hscroll-track{display:flex; gap:8px; width:max-content;}
+.adjust-row{display:flex; align-items:stretch; gap:8px; margin-top:10px; min-width:0;}
+.adjust-row .adjust-scroll{flex:1 1 auto; min-width:0; margin-top:0;}
+.pcam-auto{
+  flex:0 0 auto; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
+  padding:6px 8px; border-radius:12px; border:1px solid var(--border); background:var(--surface-2);
+  color:var(--text-dim); cursor:pointer;
+}
+.pcam-auto svg{width:15px; height:15px;}
+.pcam-auto span{font-size:9.5px; white-space:nowrap;}
+.pcam-auto:not(:disabled):hover{border-color:var(--accent-dim); color:var(--text);}
+.pcam-auto:disabled{opacity:.45; cursor:default;}
+.adjust-scroll{margin-top:10px;}
+.adjust-btn{
+  flex:0 0 66px; display:flex; flex-direction:column; align-items:center; gap:3px;
+  padding:6px 4px; border-radius:12px; border:1px solid var(--border-soft); background:var(--surface);
+  color:var(--text-dim); cursor:pointer;
+}
+.adjust-btn svg{width:16px; height:16px;}
+.adjust-btn span{font-size:9.5px; letter-spacing:.02em; white-space:nowrap;}
+.adjust-btn.open{border-color:var(--accent-dim); color:var(--accent); background:rgba(79,227,201,.07);}
+.phonecam-hint{margin-top:10px;}
+
+/* ---- Editable config form ---- */
+.cfg-form{padding:12px 14px;}
+.cfg-row{display:grid; grid-template-columns:150px 1fr; align-items:center; gap:12px; margin:8px 0;}
+.cfg-row > label{font-size:12px; color:var(--text-dim);}
+.cfg-row input, .cfg-row select{
+  background:var(--surface-2); border:1px solid var(--border-soft); color:var(--text);
+  font-family:"Consolas",monospace; font-size:12.5px; padding:7px 9px; border-radius:8px; width:100%;
+}
+.cfg-row input:focus, .cfg-row select:focus{outline:none; border-color:var(--accent-dim);}
+.cfg-actions{display:flex; align-items:center; gap:8px; margin-top:12px; padding-top:10px; border-top:1px solid var(--border-soft);}
+

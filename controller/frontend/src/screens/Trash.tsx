@@ -1,41 +1,21 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useCallback, useEffect, useState } from 'preact/hooks';
 import { ListTrash, RestoreClip, DeleteClipPermanently, EmptyTrash, type ClipView } from '../api';
-import { groupByDay, clipKey } from '../lib/clips';
+import { groupByDay, clipKey, rangeKeys, stepKey } from '../lib/clips';
 import { fmtDuration } from '../lib/format';
-import { DayGroupList } from '../components/ClipTiles';
+import { DayGroupList, type ClickMods } from '../components/ClipTiles';
 import { ClipPlayer } from '../components/ClipPlayer';
 import { TrashIcon, RestoreIcon } from '../lib/icons';
 
-interface TrashProps {
-  trashSelected: string | null;
-  trashConfirmingEmpty: boolean;
-  onSelectClip: (key: string) => void;
-  onAutoSelect: (key: string) => void;
-  onOpenConfirmEmpty: () => void;
-  onCancelConfirmEmpty: () => void;
-  onEmptied: () => void;
-  onRestored: () => void;
-  onDeleted: () => void;
-}
-
-export function Trash({
-  trashSelected,
-  trashConfirmingEmpty,
-  onSelectClip,
-  onAutoSelect,
-  onOpenConfirmEmpty,
-  onCancelConfirmEmpty,
-  onEmptied,
-  onRestored,
-  onDeleted,
-}: TrashProps) {
+export function Trash() {
   const [clips, setClips] = useState<ClipView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [confirmingEmpty, setConfirmingEmpty] = useState(false);
 
-  // See Gallery.tsx: this component remounts on every navigate() call (the
-  // parent bumps a key), which is what re-triggers this fetch — mirroring
-  // the vanilla version's full re-render-and-refetch on every navigation,
-  // including toggling the empty-trash confirm dialog.
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [anchorKey, setAnchorKey] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -49,13 +29,59 @@ export function Trash({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reload]);
 
   useEffect(() => {
-    if (!trashSelected && clips && clips.length > 0) {
-      onAutoSelect(clipKey(clips[0]));
+    if (clips && clips.length > 0 && selectedKeys.size === 0) {
+      const k = clipKey(clips[0]);
+      setSelectedKeys(new Set([k]));
+      setAnchorKey(k);
     }
-  }, [clips, trashSelected, onAutoSelect]);
+  }, [clips, selectedKeys.size]);
+
+  const runBulk = useCallback(
+    async (fn: (phoneId: string, clipId: string) => Promise<unknown>) => {
+      if (!clips) return;
+      const ts = clips.filter((c) => selectedKeys.has(clipKey(c)));
+      if (ts.length === 0) return;
+      setBusy(true);
+      try {
+        for (const c of ts) await fn(c.phoneId, c.clipId);
+      } finally {
+        setBusy(false);
+      }
+      setSelectedKeys(new Set());
+      setAnchorKey(null);
+      setReload((r) => r + 1);
+    },
+    [clips, selectedKeys],
+  );
+
+  // Keyboard: arrows move/extend the selection, Delete permanently deletes it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
+      if (!clips || clips.length === 0) return;
+      const cur = anchorKey ?? ([...selectedKeys][0] || clipKey(clips[0]));
+      if (['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(e.key)) {
+        e.preventDefault();
+        const target = stepKey(clips, cur, e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1);
+        if (!target) return;
+        if (e.shiftKey) {
+          setSelectedKeys(rangeKeys(clips, anchorKey, target));
+        } else {
+          setSelectedKeys(new Set([target]));
+          setAnchorKey(target);
+        }
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && !confirmingEmpty) {
+        e.preventDefault();
+        void runBulk(DeleteClipPermanently);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [clips, selectedKeys, anchorKey, runBulk, confirmingEmpty]);
 
   if (error) {
     return (
@@ -69,29 +95,51 @@ export function Trash({
     return <div className="body-scroll">Loading…</div>;
   }
 
-  const effectiveSelected = trashSelected ?? (clips.length > 0 ? clipKey(clips[0]) : null);
-  const selected = clips.find((c) => clipKey(c) === effectiveSelected) || clips[0] || null;
-  const days = groupByDay(clips);
+  const orderedClips = clips;
+  const viewerKey = anchorKey && selectedKeys.has(anchorKey) ? anchorKey : [...selectedKeys][0] ?? null;
+  const viewer = orderedClips.find((c) => clipKey(c) === viewerKey) || null;
+  const days = groupByDay(orderedClips);
+  const count = selectedKeys.size;
+
+  const handleSelect = (key: string, mods: ClickMods) => {
+    if (mods.shift) {
+      setSelectedKeys(rangeKeys(orderedClips, anchorKey, key));
+      return;
+    }
+    if (mods.ctrl) {
+      const next = new Set(selectedKeys);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      setSelectedKeys(next);
+      setAnchorKey(key);
+      return;
+    }
+    setSelectedKeys(new Set([key]));
+    setAnchorKey(key);
+  };
 
   const handleConfirmEmpty = async () => {
-    await EmptyTrash();
-    onEmptied();
+    setBusy(true);
+    try {
+      await EmptyTrash();
+    } finally {
+      setBusy(false);
+    }
+    setConfirmingEmpty(false);
+    setSelectedKeys(new Set());
+    setAnchorKey(null);
+    setReload((r) => r + 1);
   };
-  const handleRestore = async () => {
-    if (!selected) return;
-    await RestoreClip(selected.phoneId, selected.clipId);
-    onRestored();
-  };
-  const handleDelete = async () => {
-    if (!selected) return;
-    await DeleteClipPermanently(selected.phoneId, selected.clipId);
-    onDeleted();
-  };
+
   const handleClipFinished = () => {
-    if (!selected) return;
-    const idx = clips.findIndex((c) => clipKey(c) === clipKey(selected));
-    const next = idx >= 0 ? clips[idx + 1] : undefined;
-    if (next) onAutoSelect(clipKey(next));
+    if (!viewer) return;
+    const idx = orderedClips.findIndex((c) => clipKey(c) === clipKey(viewer));
+    const next = idx >= 0 ? orderedClips[idx + 1] : undefined;
+    if (next) {
+      const k = clipKey(next);
+      setSelectedKeys(new Set([k]));
+      setAnchorKey(k);
+    }
   };
 
   return (
@@ -101,25 +149,31 @@ export function Trash({
           <h1>Trash</h1>
           <div className="sub">
             {clips.length} clip{clips.length === 1 ? '' : 's'}
+            {count > 1 && ` · ${count} selected`}
           </div>
         </div>
         <div className="header-actions">
-          <button className="btn danger" disabled={clips.length === 0} onClick={onOpenConfirmEmpty}>
+          <button
+            className="btn danger"
+            disabled={clips.length === 0 || busy}
+            onClick={() => setConfirmingEmpty(true)}
+          >
             <TrashIcon /> Empty trash
           </button>
         </div>
       </div>
-      {trashConfirmingEmpty && (
+      {confirmingEmpty && (
         <div className="body-scroll" style={{ paddingBottom: 0 }}>
           <div className="confirm-box">
             <p>
-              Permanently delete {clips.length} clip{clips.length === 1 ? '' : 's'}? This can't be undone.
+              Permanently delete {clips.length} clip{clips.length === 1 ? '' : 's'}? This can't be
+              undone.
             </p>
             <div className="confirm-actions">
-              <button className="btn danger" onClick={handleConfirmEmpty}>
+              <button className="btn danger" disabled={busy} onClick={handleConfirmEmpty}>
                 Delete all
               </button>
-              <button className="btn" onClick={onCancelConfirmEmpty}>
+              <button className="btn" onClick={() => setConfirmingEmpty(false)}>
                 Cancel
               </button>
             </div>
@@ -128,26 +182,23 @@ export function Trash({
       )}
       <div className="gallery-layout">
         <div className="viewer-pane">
-          {selected ? (
+          {viewer ? (
             <>
-              {/* No `controls` here — matches the pre-split trash viewer
-                  (its video element had preload/poster/src but no controls
-                  attribute, unlike the Gallery viewer). */}
-              <ClipPlayer clip={selected} onFinished={handleClipFinished} />
+              <ClipPlayer clip={viewer} onFinished={handleClipFinished} />
               <div className="viewer-meta">
                 <div>
-                  <div className="who">{selected.phoneName}</div>
+                  <div className="who">{viewer.phoneName}</div>
                   <div className="when">
-                    {new Date(selected.startedAtMs).toLocaleString()} · {fmtDuration(selected.durationMs)}
+                    {new Date(viewer.startedAtMs).toLocaleString()} · {fmtDuration(viewer.durationMs)}
                   </div>
                 </div>
               </div>
               <div className="viewer-actions">
-                <button className="btn" onClick={handleRestore}>
-                  <RestoreIcon /> Restore
+                <button className="btn" disabled={busy} onClick={() => runBulk(RestoreClip)}>
+                  <RestoreIcon /> {count > 1 ? `Restore ${count}` : 'Restore'}
                 </button>
-                <button className="btn danger" onClick={handleDelete}>
-                  <TrashIcon /> Delete
+                <button className="btn danger" disabled={busy} onClick={() => runBulk(DeleteClipPermanently)}>
+                  <TrashIcon /> {count > 1 ? `Delete ${count}` : 'Delete'}
                 </button>
               </div>
             </>
@@ -159,7 +210,7 @@ export function Trash({
           {days.length === 0 ? (
             <div className="empty-note">Trash is empty.</div>
           ) : (
-            <DayGroupList days={days} selectedKey={selected ? clipKey(selected) : null} onSelect={onSelectClip} />
+            <DayGroupList days={days} selectedKeys={selectedKeys} onSelect={handleSelect} />
           )}
         </div>
       </div>

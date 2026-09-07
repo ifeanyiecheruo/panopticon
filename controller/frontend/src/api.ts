@@ -19,6 +19,8 @@ export {
   StartCalibration,
   GetCalibrationProgress,
   CancelCalibration,
+  SetConfig,
+  SetRecording,
   StartLivePreview,
   StopLivePreview,
   UnpairPhone,
@@ -39,7 +41,9 @@ export type SegmentView = main.SegmentView;
 export type ParsedInvite = main.ParsedInvite;
 export type PhoneDetailView = main.PhoneDetailView;
 export type PhoneApiConfig = phoneapi.Config;
+export type PhoneApiConfigPatch = phoneapi.ConfigPatch;
 export type PhoneApiStatus = phoneapi.Status;
+export type ConfigResult = main.ConfigResult;
 export type CalibrationView = calibration.View;
 export type CalibrationStartResult = main.CalibrationStartResult;
 export type CalibrationProgressResult = main.CalibrationProgressResult;

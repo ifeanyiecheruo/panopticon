@@ -78,6 +78,14 @@ export function SetCameraControls(arg1, arg2) {
   return window['go']['main']['App']['SetCameraControls'](arg1, arg2);
 }
 
+export function SetConfig(arg1, arg2) {
+  return window['go']['main']['App']['SetConfig'](arg1, arg2);
+}
+
+export function SetRecording(arg1, arg2) {
+  return window['go']['main']['App']['SetRecording'](arg1, arg2);
+}
+
 export function ShowWindow() {
   return window['go']['main']['App']['ShowWindow']();
 }

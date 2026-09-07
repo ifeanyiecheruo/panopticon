@@ -74,6 +74,51 @@ export function RestoreIcon() {
   );
 }
 
+export function RecordIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <circle cx="12" cy="12" r="7" />
+    </svg>
+  );
+}
+
+export function StopIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
+  );
+}
+
+export function LiveIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none" />
+      <path d="M6.3 6.3a8 8 0 000 11.4M17.7 6.3a8 8 0 010 11.4" />
+      <path d="M3.5 3.5a13 13 0 000 17M20.5 3.5a13 13 0 010 17" opacity="0.5" />
+    </svg>
+  );
+}
+
+export function CalibrateIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+      <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function UnpairIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M9 7H7a5 5 0 000 10h2M15 7h2a5 5 0 013.5 8.5" />
+      <path d="M3 3l18 18" />
+    </svg>
+  );
+}
+
 export function CheckIcon() {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

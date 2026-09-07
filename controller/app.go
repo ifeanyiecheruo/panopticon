@@ -245,6 +245,64 @@ func (a *App) GetPhoneDetail(phoneID string) (PhoneDetailView, error) {
 	return detail, nil
 }
 
+// ---- Config (editable from Phone detail) ----
+
+type ConfigResult struct {
+	OK     bool             `json:"ok"`
+	Error  string           `json:"error,omitempty"`
+	Config *phoneapi.Config `json:"config,omitempty"`
+}
+
+// SetConfig batch-updates a phone's device config (POST /api/config) and returns
+// the full resulting document so the form can re-seed from it. (Frame rotation
+// is a camera setting - see SetCameraControls.)
+func (a *App) SetConfig(phoneID string, patch phoneapi.ConfigPatch) ConfigResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return ConfigResult{Error: err.Error()}
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+	cfg, err := client.SetConfig(a.ctxOrBackground(), patch)
+	if err != nil {
+		return ConfigResult{Error: err.Error()}
+	}
+	// The device name is the phone's name — keep the local pairing row in sync
+	// so it propagates through Fleet, Gallery filters and clip attribution.
+	if cfg.DeviceName != "" && cfg.DeviceName != phone.Name {
+		if err := a.store.UpdatePhoneName(phoneID, cfg.DeviceName); err != nil {
+			log.Printf("set config: rename phone %s: %v", phoneID, err)
+		}
+	}
+	return ConfigResult{OK: true, Config: &cfg}
+}
+
+// ---- Recording (start/stop from Phone detail's command bar) ----
+
+// SetRecording moves a phone into ("record") or out of ("standby") its
+// motion-gated recording pipeline. This is the one controller-initiated path
+// that *starts* recording; every camera-exclusive feature (live preview,
+// calibration) still requires the phone be taken to standby first.
+func (a *App) SetRecording(phoneID string, recording bool) CameraActionResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return CameraActionResult{Outcome: "other", Message: err.Error()}
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+	mode := "standby"
+	if recording {
+		mode = "record"
+	}
+	err = client.SetMode(a.ctxOrBackground(), mode)
+	switch {
+	case err == nil:
+		return CameraActionResult{OK: true, Outcome: "ok"}
+	case errors.Is(err, phoneapi.ErrUnreachable):
+		return CameraActionResult{Outcome: "unreachable", Message: "Could not reach the phone."}
+	default:
+		return CameraActionResult{Outcome: "other", Message: err.Error()}
+	}
+}
+
 // ---- Calibration (re-run driven from Phone detail) ----
 
 type CalibrationStartResult struct {

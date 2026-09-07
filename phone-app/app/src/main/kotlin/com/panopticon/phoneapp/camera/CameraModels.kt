@@ -80,6 +80,10 @@ data class CameraCapabilities(
     val videoStabilizationModes: List<Int> = emptyList(),
     /** `LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION` (deduped). 0 == OFF, 1 == ON. Empty == no OIS. */
     val opticalStabilizationModes: List<Int> = emptyList(),
+    /** `CONTROL_MAX_REGIONS_AE` - >0 means `aeRegionNorm` (spot metering) is supported. */
+    val maxAeRegions: Int = 0,
+    /** `CONTROL_MAX_REGIONS_AF` - >0 means `afRegionNorm` (tap-to-focus) is supported. */
+    val maxAfRegions: Int = 0,
     /** Physical sub-camera ids of a logical multi-camera (`chars.physicalCameraIds`), API 28+.
      *  Present only on the logical camera's own capabilities; a `"<logical>:<physical>"` entry
      *  carries the physical camera's ranges directly. */
@@ -105,11 +109,17 @@ data class CameraControlKeys(
     val aeExposureCompensation: Int? = null,
     /** AE metering freeze - not a manual-exposure dial (see docs/QUIRKS.md). */
     val aeLock: Boolean? = null,
+    /** Spot-metering rect (`CONTROL_AE_REGIONS`). Needs AE on, so it wins over
+     *  [manualExposure] at apply time. Gated on [CameraCapabilities.maxAeRegions]. */
+    val aeRegionNorm: RectNorm? = null,
     val manualExposure: Boolean? = null,
     val sensorExposureTimeNs: Long? = null,
     val sensorSensitivityIso: Int? = null,
     val manualFocus: Boolean? = null,
     val lensFocusDistanceDiopters: Float? = null,
+    /** Tap-to-focus rect (`CONTROL_AF_REGIONS` + continuous AF). Needs AF on, so
+     *  it wins over [manualFocus] at apply time. Gated on [CameraCapabilities.maxAfRegions]. */
+    val afRegionNorm: RectNorm? = null,
     /** `CONTROL_AWB_MODE` (auto / a preset like incandescent / daylight / …). See [CameraCapabilities.awbModes].
      *  Mutually exclusive with [manualWhiteBalance] at apply time - manual gains win. */
     val awbMode: Int? = null,
@@ -154,5 +164,9 @@ data class CameraStateResponse(
 @Serializable
 data class CameraStatePatch(
     val manualControlEnabled: Boolean? = null,
+    /** Preview/record frame rotation, one of 0/90/180/270. Persisted in
+     * `DeviceConfig`, not in [CameraControlSpec] - it's a pipeline-orientation
+     * setting, not an auto/manual control key. */
+    val rotationDegrees: Int? = null,
     val keys: CameraControlKeys? = null,
 )

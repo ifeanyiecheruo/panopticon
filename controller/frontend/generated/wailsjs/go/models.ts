@@ -419,6 +419,40 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ConfigResult {
+	    ok: boolean;
+	    error?: string;
+	    config?: phoneapi.Config;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.error = source["error"];
+	        this.config = this.convertValues(source["config"], phoneapi.Config);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class LivePreviewResult {
 	    ok: boolean;
 	    outcome: string;
@@ -639,6 +673,8 @@ export namespace phoneapi {
 	    awbModes: number[];
 	    videoStabilizationModes: number[];
 	    opticalStabilizationModes: number[];
+	    maxAeRegions: number;
+	    maxAfRegions: number;
 	    physicalCameraIds: string[];
 	    croppingType: string;
 	    activeArrayWidth: number;
@@ -665,6 +701,8 @@ export namespace phoneapi {
 	        this.awbModes = source["awbModes"];
 	        this.videoStabilizationModes = source["videoStabilizationModes"];
 	        this.opticalStabilizationModes = source["opticalStabilizationModes"];
+	        this.maxAeRegions = source["maxAeRegions"];
+	        this.maxAfRegions = source["maxAfRegions"];
 	        this.physicalCameraIds = source["physicalCameraIds"];
 	        this.croppingType = source["croppingType"];
 	        this.activeArrayWidth = source["activeArrayWidth"];
@@ -712,11 +750,13 @@ export namespace phoneapi {
 	    cropRegionNorm?: RectNorm;
 	    aeExposureCompensation?: number;
 	    aeLock?: boolean;
+	    aeRegionNorm?: RectNorm;
 	    manualExposure?: boolean;
 	    sensorExposureTimeNs?: number;
 	    sensorSensitivityIso?: number;
 	    manualFocus?: boolean;
 	    lensFocusDistanceDiopters?: number;
+	    afRegionNorm?: RectNorm;
 	    awbMode?: number;
 	    manualWhiteBalance?: boolean;
 	    wbRedGain?: number;
@@ -735,11 +775,13 @@ export namespace phoneapi {
 	        this.cropRegionNorm = this.convertValues(source["cropRegionNorm"], RectNorm);
 	        this.aeExposureCompensation = source["aeExposureCompensation"];
 	        this.aeLock = source["aeLock"];
+	        this.aeRegionNorm = this.convertValues(source["aeRegionNorm"], RectNorm);
 	        this.manualExposure = source["manualExposure"];
 	        this.sensorExposureTimeNs = source["sensorExposureTimeNs"];
 	        this.sensorSensitivityIso = source["sensorSensitivityIso"];
 	        this.manualFocus = source["manualFocus"];
 	        this.lensFocusDistanceDiopters = source["lensFocusDistanceDiopters"];
+	        this.afRegionNorm = this.convertValues(source["afRegionNorm"], RectNorm);
 	        this.awbMode = source["awbMode"];
 	        this.manualWhiteBalance = source["manualWhiteBalance"];
 	        this.wbRedGain = source["wbRedGain"];
@@ -789,6 +831,7 @@ export namespace phoneapi {
 	}
 	export class CameraStatePatch {
 	    manualControlEnabled?: boolean;
+	    rotationDegrees?: number;
 	    keys?: CameraControlKeys;
 	
 	    static createFrom(source: any = {}) {
@@ -798,6 +841,7 @@ export namespace phoneapi {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.manualControlEnabled = source["manualControlEnabled"];
+	        this.rotationDegrees = source["rotationDegrees"];
 	        this.keys = this.convertValues(source["keys"], CameraControlKeys);
 	    }
 	
@@ -860,7 +904,6 @@ export namespace phoneapi {
 	    motionSensitivity: string;
 	    storageCapBytes: number;
 	    ringBufferMaxAgeMs: number;
-	    rotationDegrees: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Config(source);
@@ -872,7 +915,24 @@ export namespace phoneapi {
 	        this.motionSensitivity = source["motionSensitivity"];
 	        this.storageCapBytes = source["storageCapBytes"];
 	        this.ringBufferMaxAgeMs = source["ringBufferMaxAgeMs"];
-	        this.rotationDegrees = source["rotationDegrees"];
+	    }
+	}
+	export class ConfigPatch {
+	    deviceName?: string;
+	    motionSensitivity?: string;
+	    storageCapBytes?: number;
+	    ringBufferMaxAgeMs?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigPatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deviceName = source["deviceName"];
+	        this.motionSensitivity = source["motionSensitivity"];
+	        this.storageCapBytes = source["storageCapBytes"];
+	        this.ringBufferMaxAgeMs = source["ringBufferMaxAgeMs"];
 	    }
 	}
 	

@@ -3,17 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import Hls from '../vendor/hlsjs/hls.min.mjs';
 import { StartLivePreview, StopLivePreview } from '../api';
 
-interface LivePreviewProps {
-  phoneId: string;
-  /** True when the phone is in record mode — live preview is unavailable until
-   * recording is stopped on the phone itself (mirrors calibration). */
-  phoneRecording: boolean;
-  /** Rendered absolutely over the <video> box (same coordinate space), given the
-   * current playback state — used by the zoom-rect picker. */
-  overlay?: (playing: boolean) => ComponentChildren;
-}
-
-type State =
+export type LiveState =
   | { kind: 'idle' }
   | { kind: 'starting' }
   | { kind: 'playing' }
@@ -41,8 +31,8 @@ const STALL_AFTER_MS = 6000;
 const HLS_CONFIG = {
   enableWorker: true,
   lowLatencyMode: false,
-  liveSyncDurationCount: 3,        // sit ~3 segments (~3s) behind the live edge
-  liveMaxLatencyDurationCount: 20, // if we fall >~20s behind, seek forward
+  liveSyncDurationCount: 3,
+  liveMaxLatencyDurationCount: 20,
   maxBufferLength: 20,
   maxMaxBufferLength: 40,
   backBufferLength: 12,
@@ -54,35 +44,55 @@ const HLS_CONFIG = {
   fragLoadingRetryDelay: 500,
 };
 
-export function LivePreview({ phoneId, phoneRecording, overlay }: LivePreviewProps) {
-  const [state, setState] = useState<State>({ kind: 'idle' });
+export interface LiveController {
+  state: LiveState;
+  playing: boolean;
+  busy: boolean;
+  /** True while the stream is playing OR spinning up (button should show Stop). */
+  live: boolean;
+  videoRef: { current: HTMLVideoElement | null };
+  watch: () => void;
+  stop: () => void;
+  /** Re-arm the phone broadcast and rebuild the hls.js pipeline against the
+   * (now-different) camera, without taking the phone out of live mode. Call
+   * after a camera switch so the preview follows the new camera. No-op unless
+   * a stream is currently up. */
+  reattach: () => Promise<void>;
+}
+
+/** The live-preview transport, decoupled from any UI so the command bar can
+ * drive it while the video element lives elsewhere on the screen. Always stops
+ * the phone's broadcast on unmount. */
+export function useLivePreview(phoneId: string): LiveController {
+  const [state, setState] = useState<LiveState>({ kind: 'idle' });
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const retriesRef = useRef(0);
-  const playingRef = useRef(false); // has playback ever actually progressed?
-  const startedRef = useRef(false); // did we actually put the phone into live mode?
+  const playingRef = useRef(false);
+  const startedRef = useRef(false);
   const stallTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastProgressRef = useRef({ t: 0, at: 0 });
 
-  const teardown = useCallback((opts: { stopPhone: boolean }) => {
-    if (stallTimerRef.current) {
-      clearInterval(stallTimerRef.current);
-      stallTimerRef.current = null;
-    }
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-      hlsRef.current = null;
-    }
-    playingRef.current = false;
-    if (opts.stopPhone && startedRef.current) {
-      startedRef.current = false;
-      // Fire-and-forget: the phone's own inactivity watchdog also handles this.
-      StopLivePreview(phoneId).catch(() => {});
-    }
-  }, [phoneId]);
+  const teardown = useCallback(
+    (opts: { stopPhone: boolean }) => {
+      if (stallTimerRef.current) {
+        clearInterval(stallTimerRef.current);
+        stallTimerRef.current = null;
+      }
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+      playingRef.current = false;
+      if (opts.stopPhone && startedRef.current) {
+        startedRef.current = false;
+        StopLivePreview(phoneId).catch(() => {});
+      }
+    },
+    [phoneId],
+  );
 
-  // Always stop the broadcast when the component goes away or the phone starts
-  // recording out from under us.
+  // Stop the broadcast when the component goes away.
   useEffect(() => () => teardown({ stopPhone: true }), [teardown]);
 
   const jumpToLiveEdge = useCallback((hls: Hls) => {
@@ -98,83 +108,82 @@ export function LivePreview({ phoneId, phoneRecording, overlay }: LivePreviewPro
     video.play().catch(() => {});
   }, []);
 
-  const attachHls = useCallback((playlistPath: string) => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (!Hls.isSupported()) {
-      setState({ kind: 'error', message: 'This webview has no MSE / hls.js support.' });
-      return;
-    }
-    retriesRef.current = 0;
-    playingRef.current = false;
-    const hls = new Hls(HLS_CONFIG);
-    hlsRef.current = hls;
-
-    hls.on(Hls.Events.ERROR, (_evt: unknown, data: any) => {
-      const isManifest =
-        data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR ||
-        data.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
-        data.details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR ||
-        data.details === Hls.ErrorDetails.LEVEL_EMPTY_ERROR;
-
-      // Buffer stalls are non-fatal in hls.js but this is exactly the "stuck
-      // after a stall" case — nudge the loader and edge.
-      if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
-        hls.startLoad();
-        jumpToLiveEdge(hls);
+  const attachHls = useCallback(
+    (playlistPath: string) => {
+      const video = videoRef.current;
+      if (!video) return;
+      if (!Hls.isSupported()) {
+        setState({ kind: 'error', message: 'This webview has no MSE / hls.js support.' });
         return;
       }
-      if (!data.fatal) return;
+      retriesRef.current = 0;
+      playingRef.current = false;
+      const hls = new Hls(HLS_CONFIG);
+      hlsRef.current = hls;
 
-      if (isManifest && retriesRef.current < MANIFEST_RETRY_LIMIT) {
-        retriesRef.current += 1;
-        setTimeout(() => {
-          if (hlsRef.current === hls) hls.loadSource(playlistPath);
-        }, MANIFEST_RETRY_MS);
-        return;
-      }
-      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-        hls.startLoad();
-        jumpToLiveEdge(hls);
-      } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-        hls.recoverMediaError();
-      } else {
-        setState({ kind: 'error', message: `Playback error: ${data.details}` });
-        teardown({ stopPhone: true });
-      }
-    });
+      hls.on(Hls.Events.ERROR, (_evt: unknown, data: any) => {
+        const isManifest =
+          data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR ||
+          data.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
+          data.details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR ||
+          data.details === Hls.ErrorDetails.LEVEL_EMPTY_ERROR;
 
-    hls.on(Hls.Events.FRAG_BUFFERED, () => {
-      if (!playingRef.current) {
-        playingRef.current = true;
-        retriesRef.current = 0; // startup done; give mid-stream blips a fresh budget
-      }
-      setState({ kind: 'playing' });
-    });
+        if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
+          hls.startLoad();
+          jumpToLiveEdge(hls);
+          return;
+        }
+        if (!data.fatal) return;
 
-    hls.loadSource(playlistPath);
-    hls.attachMedia(video);
-    video.play().catch(() => {});
+        if (isManifest && retriesRef.current < MANIFEST_RETRY_LIMIT) {
+          retriesRef.current += 1;
+          setTimeout(() => {
+            if (hlsRef.current === hls) hls.loadSource(playlistPath);
+          }, MANIFEST_RETRY_MS);
+          return;
+        }
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          hls.startLoad();
+          jumpToLiveEdge(hls);
+        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          hls.recoverMediaError();
+        } else {
+          setState({ kind: 'error', message: `Playback error: ${data.details}` });
+          teardown({ stopPhone: true });
+        }
+      });
 
-    lastProgressRef.current = { t: 0, at: Date.now() };
-    stallTimerRef.current = setInterval(() => {
-      const v = videoRef.current;
-      const h = hlsRef.current;
-      if (!v || !h || v.paused || v.ended) return;
-      const now = Date.now();
-      if (v.currentTime > lastProgressRef.current.t + 0.05) {
-        lastProgressRef.current = { t: v.currentTime, at: now };
-        return;
-      }
-      if (now - lastProgressRef.current.at > STALL_AFTER_MS) {
-        // Wedged. Kick the loader and jump to the live edge; reset the timer so
-        // we give the recovery a chance before trying again.
-        h.startLoad();
-        jumpToLiveEdge(h);
-        lastProgressRef.current = { t: v.currentTime, at: now };
-      }
-    }, STALL_POLL_MS);
-  }, [teardown, jumpToLiveEdge]);
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        if (!playingRef.current) {
+          playingRef.current = true;
+          retriesRef.current = 0;
+        }
+        setState({ kind: 'playing' });
+      });
+
+      hls.loadSource(playlistPath);
+      hls.attachMedia(video);
+      video.play().catch(() => {});
+
+      lastProgressRef.current = { t: 0, at: Date.now() };
+      stallTimerRef.current = setInterval(() => {
+        const v = videoRef.current;
+        const h = hlsRef.current;
+        if (!v || !h || v.paused || v.ended) return;
+        const now = Date.now();
+        if (v.currentTime > lastProgressRef.current.t + 0.05) {
+          lastProgressRef.current = { t: v.currentTime, at: now };
+          return;
+        }
+        if (now - lastProgressRef.current.at > STALL_AFTER_MS) {
+          h.startLoad();
+          jumpToLiveEdge(h);
+          lastProgressRef.current = { t: v.currentTime, at: now };
+        }
+      }, STALL_POLL_MS);
+    },
+    [teardown, jumpToLiveEdge],
+  );
 
   const watch = useCallback(async () => {
     setState({ kind: 'starting' });
@@ -188,9 +197,11 @@ export function LivePreview({ phoneId, phoneRecording, overlay }: LivePreviewPro
     if (!res.ok || !res.playlistPath) {
       setState({
         kind: 'error',
-        message: res.message || (res.outcome === 'recording'
-          ? 'The phone is recording — stop recording on the phone to watch live.'
-          : 'Could not start live preview.'),
+        message:
+          res.message ||
+          (res.outcome === 'recording'
+            ? 'The phone is recording — stop recording to watch live.'
+            : 'Could not start live preview.'),
       });
       return;
     }
@@ -203,44 +214,78 @@ export function LivePreview({ phoneId, phoneRecording, overlay }: LivePreviewPro
     setState({ kind: 'idle' });
   }, [teardown]);
 
-  const busy = state.kind === 'starting';
-  const live = state.kind === 'playing' || state.kind === 'starting';
+  const reattach = useCallback(async () => {
+    if (!startedRef.current) return;
+    setState({ kind: 'starting' });
+    teardown({ stopPhone: false }); // keep the phone in live mode; just drop hls.js
+    // A camera switch tears down + rebuilds the phone's live pipeline; the new
+    // sensor can take a moment to arm, so the first LiveStart(s) may 503. Retry.
+    const REATTACH_TRIES = 6;
+    for (let i = 0; i < REATTACH_TRIES; i++) {
+      let res;
+      try {
+        res = await StartLivePreview(phoneId);
+      } catch (err) {
+        if (i === REATTACH_TRIES - 1) {
+          setState({ kind: 'error', message: String(err) });
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+      if (res.ok && res.playlistPath) {
+        attachHls(res.playlistPath);
+        return;
+      }
+      if (i === REATTACH_TRIES - 1) {
+        setState({
+          kind: 'error',
+          message: res.message || 'The new camera could not start a live stream. Cycle to another camera.',
+        });
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }, [phoneId, teardown, attachHls]);
 
+  return {
+    state,
+    playing: state.kind === 'playing',
+    busy: state.kind === 'starting',
+    live: state.kind === 'playing' || state.kind === 'starting',
+    videoRef,
+    watch,
+    stop,
+    reattach,
+  };
+}
+
+interface LivePreviewVideoProps {
+  ctl: LiveController;
+  /** Rendered absolutely over the <video> box (same coordinate space) with the
+   * current playing flag — used by the zoom-rect picker. */
+  overlay?: (playing: boolean) => ComponentChildren;
+  /** Shown in the frame before a stream is started. */
+  idleHint?: ComponentChildren;
+}
+
+/** Presentational half of the live preview: just the framed <video> + overlay
+ * slot + status line. The Watch/Stop control lives in the command bar. */
+export function LivePreviewVideo({ ctl, overlay, idleHint }: LivePreviewVideoProps) {
+  const { state, videoRef } = ctl;
   return (
-    <div className="card" style={{ padding: '14px' }}>
-      <div className="live-row">
-        <div className="calib-sub">
-          {phoneRecording
-            ? 'Recording — stop recording on the phone to watch live.'
-            : 'Plain HLS, proxied through the controller. Expect a few seconds of latency.'}
-        </div>
-        {live ? (
-          <button className="btn small danger" onClick={stop}>Stop</button>
-        ) : (
-          <button
-            className="btn small"
-            onClick={watch}
-            disabled={busy || phoneRecording}
-            title={phoneRecording ? 'Stop recording on the phone first' : undefined}
-          >
-            {busy ? 'Starting…' : 'Watch live'}
-          </button>
-        )}
-      </div>
-
-      <div className="live-video-wrap" hidden={state.kind === 'idle' || state.kind === 'error'}>
-        <video
-          ref={videoRef}
-          className="live-video"
-          muted
-          playsInline
-          controls
-        />
+    <div class="live-preview">
+      <div class="live-video-wrap" hidden={state.kind === 'idle' || state.kind === 'error'}>
+        {/* No `controls`: a live feed has nothing to scrub. */}
+        <video ref={videoRef} class="live-video" muted playsInline />
         {overlay?.(state.kind === 'playing')}
       </div>
 
-      {state.kind === 'starting' && <div className="calib-sub">Connecting to the phone…</div>}
-      {state.kind === 'error' && <div className="calib-sub">{state.message}</div>}
+      {state.kind === 'idle' && (
+        <div class="live-frame-idle">{idleHint ?? 'Not watching. Use “Watch live” above.'}</div>
+      )}
+      {state.kind === 'starting' && <div class="calib-sub">Connecting to the phone…</div>}
+      {state.kind === 'error' && <div class="live-frame-idle error">{state.message}</div>}
     </div>
   );
 }

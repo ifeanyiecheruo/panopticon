@@ -42,6 +42,10 @@ export function SetActiveCamera(arg1:string,arg2:string):Promise<main.CameraActi
 
 export function SetCameraControls(arg1:string,arg2:phoneapi.CameraStatePatch):Promise<main.CameraActionResult>;
 
+export function SetConfig(arg1:string,arg2:phoneapi.ConfigPatch):Promise<main.ConfigResult>;
+
+export function SetRecording(arg1:string,arg2:boolean):Promise<main.CameraActionResult>;
+
 export function ShowWindow():Promise<void>;
 
 export function StartCalibration(arg1:string):Promise<main.CalibrationStartResult>;

@@ -292,7 +292,6 @@ type Config struct {
 	MotionSensitivity  string `json:"motionSensitivity"`
 	StorageCapBytes    int64  `json:"storageCapBytes"`
 	RingBufferMaxAgeMs int64  `json:"ringBufferMaxAgeMs"`
-	RotationDegrees    int    `json:"rotationDegrees"`
 }
 
 func (c *Client) Config(ctx context.Context) (Config, error) {
@@ -300,6 +299,25 @@ func (c *Client) Config(ctx context.Context) (Config, error) {
 	defer cancel()
 	var out Config
 	err := c.doJSON(ctx, http.MethodGet, "/api/config", nil, nil, &out)
+	return out, err
+}
+
+// ConfigPatch is POST /api/config's body: any subset of device config. A nil
+// field is left untouched on the phone. (rotationDegrees lives on the camera
+// state routes - see phoneapi/camera.go's CameraStatePatch.)
+type ConfigPatch struct {
+	DeviceName         *string `json:"deviceName,omitempty"`
+	MotionSensitivity  *string `json:"motionSensitivity,omitempty"`
+	StorageCapBytes    *int64  `json:"storageCapBytes,omitempty"`
+	RingBufferMaxAgeMs *int64  `json:"ringBufferMaxAgeMs,omitempty"`
+}
+
+// SetConfig batch-updates device config and returns the full resulting document.
+func (c *Client) SetConfig(ctx context.Context, patch ConfigPatch) (Config, error) {
+	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	defer cancel()
+	var out Config
+	err := c.doJSON(ctx, http.MethodPost, "/api/config", nil, patch, &out)
 	return out, err
 }
 

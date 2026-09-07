@@ -2,20 +2,24 @@ import { useEffect, useState } from 'preact/hooks';
 import { ListPhones, type PhoneView } from '../api';
 import { fmtBytes, statusLabel } from '../lib/format';
 import { RefreshIcon } from '../lib/icons';
+import { BatteryIcon } from '../components/BatteryIcon';
+import { PhoneDetail } from './PhoneDetail';
 
 interface FleetProps {
+  selectedPhoneId: string | null;
   onSelectPhone: (phoneId: string) => void;
-  onRefresh: () => void;
+  onDeselect: () => void;
+  onViewGallery: (phoneId: string) => void;
+  onUnpaired: () => void;
 }
 
-export function Fleet({ onSelectPhone, onRefresh }: FleetProps) {
+export function Fleet({ selectedPhoneId, onSelectPhone, onDeselect, onViewGallery, onUnpaired }: FleetProps) {
   const [phones, setPhones] = useState<PhoneView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    // try/catch (rather than .then/.catch) also catches a synchronous throw
-    // from ListPhones() itself, not just a rejected promise.
     (async () => {
       try {
         const p = await ListPhones();
@@ -27,7 +31,7 @@ export function Fleet({ onSelectPhone, onRefresh }: FleetProps) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reload]);
 
   if (error) {
     return (
@@ -48,58 +52,83 @@ export function Fleet({ onSelectPhone, onRefresh }: FleetProps) {
     );
   }
 
-  const totalDisk = phones.reduce((sum, p) => sum + (p.diskUsageBytes || 0), 0);
-
   return (
-    <>
-      <div className="header">
-        <div>
-          <h1>Fleet</h1>
-          <div className="sub">
-            {phones.length} phone{phones.length === 1 ? '' : 's'} paired · <b>{fmtBytes(totalDisk)}</b> archived
-          </div>
-        </div>
-        <div className="header-actions">
-          <button className="btn" onClick={onRefresh}>
-            <RefreshIcon /> Refresh
+    <div className="fleet-split">
+      <aside className="fleet-master">
+        <div className="fleet-master-head">
+          <span>
+            {phones.length} phone{phones.length === 1 ? '' : 's'}
+          </span>
+          <button className="btn small" onClick={() => setReload((r) => r + 1)} title="Refresh">
+            <RefreshIcon />
           </button>
         </div>
-      </div>
-      <div className="body-scroll">
         {phones.length === 0 ? (
           <div className="empty-note">
-            No phones paired yet.
+            No phones paired.
             <br />
             <br />
-            Use <b>Add phone</b> in the left rail to pair one.
+            Use <b>Add phone</b> in the left rail.
           </div>
         ) : (
-          <div className="grid">
-            {phones.map((p) => (
-              <PhoneCard key={p.id} phone={p} onClick={() => onSelectPhone(p.id)} />
-            ))}
-          </div>
+          phones.map((p) => (
+            <button
+              key={p.id}
+              className={`fleet-row ${p.id === selectedPhoneId ? 'active' : ''} ${
+                p.status === 'unreachable' ? 'is-unreachable' : ''
+              }`}
+              onClick={() => onSelectPhone(p.id)}
+            >
+              <span className="fleet-row-name">{p.name}</span>
+              <span className="fleet-row-meta">
+                <span
+                  className={`status-pill ${
+                    p.status === 'recording' ? 'recording' : p.status === 'unreachable' ? 'unreachable' : ''
+                  }`}
+                >
+                  <span className="dot"></span>
+                  {statusLabel(p.status)}
+                </span>
+                <BatteryIcon percent={p.batteryPercent} charging={p.charging} hasBattery={p.hasBattery} />
+              </span>
+            </button>
+          ))
         )}
-      </div>
-    </>
+      </aside>
+
+      <section className="fleet-detail">
+        {selectedPhoneId ? (
+          <PhoneDetail
+            key={selectedPhoneId}
+            phoneId={selectedPhoneId}
+            onDeselect={onDeselect}
+            onPhoneChanged={() => setReload((r) => r + 1)}
+            onViewGallery={() => onViewGallery(selectedPhoneId)}
+            onUnpaired={() => {
+              setReload((r) => r + 1);
+              onUnpaired();
+            }}
+          />
+        ) : (
+          <FleetSummary phones={phones} />
+        )}
+      </section>
+    </div>
   );
 }
 
-function PhoneCard({ phone: p, onClick }: { phone: PhoneView; onClick: () => void }) {
-  const statusClass = p.status === 'recording' ? 'recording' : p.status === 'unreachable' ? 'unreachable' : '';
+function FleetSummary({ phones }: { phones: PhoneView[] }) {
+  const totalDisk = phones.reduce((sum, p) => sum + (p.diskUsageBytes || 0), 0);
   return (
-    <div className={`pcard ${p.status === 'unreachable' ? 'is-unreachable' : ''}`} onClick={onClick}>
-      <div className="top">
-        <div className="name">{p.name}</div>
-        {p.hasBattery && (
-          <div className={`batt ${p.batteryPercent <= 20 ? 'low' : ''}`}>
-            {p.batteryPercent}%{p.charging ? ' ⚡' : ''}
-          </div>
-        )}
+    <div className="fleet-summary">
+      <h1>Fleet</h1>
+      <div className="sub">
+        {phones.length} phone{phones.length === 1 ? '' : 's'} paired · <b>{fmtBytes(totalDisk)}</b> archived
       </div>
-      <div className={`status-pill ${statusClass}`}>
-        <span className="dot"></span>
-        {statusLabel(p.status)}
+      <div className="empty-note" style={{ marginTop: '18px' }}>
+        {phones.length === 0
+          ? 'Pair a phone to get started.'
+          : 'Select a device on the left to view its live preview, controls, config and status.'}
       </div>
     </div>
   );

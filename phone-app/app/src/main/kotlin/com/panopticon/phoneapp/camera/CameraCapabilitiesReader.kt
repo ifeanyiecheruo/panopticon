@@ -94,6 +94,8 @@ object CameraCapabilitiesReader {
             else -> "unknown"
         }
         val active = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        val maxAeRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
+        val maxAfRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
 
         return CameraCapabilities(
             cameraId = cameraId,
@@ -110,6 +112,8 @@ object CameraCapabilitiesReader {
             awbModes = awbModes,
             videoStabilizationModes = vidStabModes,
             opticalStabilizationModes = oisModes,
+            maxAeRegions = maxAeRegions,
+            maxAfRegions = maxAfRegions,
             physicalCameraIds = physicalIds,
             croppingType = croppingType,
             activeArrayWidth = active?.width() ?: 0,

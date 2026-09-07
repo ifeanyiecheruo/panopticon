@@ -3,10 +3,15 @@ import type { DayGroup } from '../lib/clips';
 import { clipKey } from '../lib/clips';
 import { fmtDuration } from '../lib/format';
 
+export interface ClickMods {
+  shift: boolean;
+  ctrl: boolean;
+}
+
 interface ClipTileProps {
   clip: ClipView;
   active: boolean;
-  onClick: () => void;
+  onClick: (mods: ClickMods) => void;
 }
 
 function ClipTile({ clip: c, active, onClick }: ClipTileProps) {
@@ -14,7 +19,7 @@ function ClipTile({ clip: c, active, onClick }: ClipTileProps) {
     <div
       className={`ctile ${active ? 'active' : ''}`}
       style={c.hasThumbnail ? { backgroundImage: `url('${c.thumbnailUrl}')` } : undefined}
-      onClick={onClick}
+      onClick={(e) => onClick({ shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey })}
     >
       {!c.hasThumbnail && <div className="noimg">no thumb</div>}
       <div className="cbar">
@@ -27,20 +32,28 @@ function ClipTile({ clip: c, active, onClick }: ClipTileProps) {
 
 interface DayGroupListProps {
   days: DayGroup[];
-  selectedKey: string | null;
-  onSelect: (key: string) => void;
+  selectedKeys: Set<string>;
+  onSelect: (key: string, mods: ClickMods) => void;
 }
 
-export function DayGroupList({ days, selectedKey, onSelect }: DayGroupListProps) {
+export function DayGroupList({ days, selectedKeys, onSelect }: DayGroupListProps) {
   return (
     <>
       {days.map((group) => (
         <div className="day-group" key={group.day}>
           <div className="day-head">{group.day}</div>
           <div className="clip-grid">
-            {group.clips.map((c) => (
-              <ClipTile key={clipKey(c)} clip={c} active={selectedKey === clipKey(c)} onClick={() => onSelect(clipKey(c))} />
-            ))}
+            {group.clips.map((c) => {
+              const k = clipKey(c);
+              return (
+                <ClipTile
+                  key={k}
+                  clip={c}
+                  active={selectedKeys.has(k)}
+                  onClick={(mods) => onSelect(k, mods)}
+                />
+              );
+            })}
           </div>
         </div>
       ))}

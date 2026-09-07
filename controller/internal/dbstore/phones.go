@@ -79,6 +79,16 @@ func (s *Store) GetPhone(id string) (Phone, error) {
 	return phoneFromRow(row), nil
 }
 
+// UpdatePhoneName renames a paired phone locally. Called when the device name
+// is changed via the Phone-detail config form so the new name flows through the
+// whole controller UI (Fleet list, Gallery filter, clip attribution).
+func (s *Store) UpdatePhoneName(id, name string) error {
+	return s.q.UpdatePhoneName(context.Background(), queries.UpdatePhoneNameParams{
+		Name: name,
+		ID:   id,
+	})
+}
+
 // UpdatePhoneLastSeen stamps last_seen_ms to now (called whenever a phone
 // answers a request successfully).
 func (s *Store) UpdatePhoneLastSeen(id string, whenMs int64) error {

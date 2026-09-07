@@ -137,3 +137,17 @@ func (q *Queries) UpdatePhoneLastSeen(ctx context.Context, arg UpdatePhoneLastSe
 	_, err := q.db.ExecContext(ctx, updatePhoneLastSeen, arg.LastSeenMs, arg.ID)
 	return err
 }
+
+const updatePhoneName = `-- name: UpdatePhoneName :exec
+UPDATE phones SET name = ? WHERE id = ?
+`
+
+type UpdatePhoneNameParams struct {
+	Name string
+	ID   string
+}
+
+func (q *Queries) UpdatePhoneName(ctx context.Context, arg UpdatePhoneNameParams) error {
+	_, err := q.db.ExecContext(ctx, updatePhoneName, arg.Name, arg.ID)
+	return err
+}

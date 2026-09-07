@@ -3,6 +3,7 @@ package com.panopticon.phoneapp.camera
 import android.graphics.Rect
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.ColorSpaceTransform
+import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.RggbChannelVector
 import android.os.Build
 import com.panopticon.phoneapp.calibration.RectNorm
@@ -48,15 +49,37 @@ object CameraControlApply {
         }
         k.aeLock?.let { builder.set(CaptureRequest.CONTROL_AE_LOCK, it) }
 
-        if (k.manualExposure == true && caps.hasManualSensor) {
-            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-            k.sensorExposureTimeNs?.let { builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, it) }
-            k.sensorSensitivityIso?.let { builder.set(CaptureRequest.SENSOR_SENSITIVITY, it) }
+        // Manual exposure: within it, either the shutter/ISO dials OR a
+        // spot-metering region (the region keeps AE metering ON, biased to that
+        // area). The controller only ever sets one of the two.
+        if (k.manualExposure == true) {
+            val aeRegion = k.aeRegionNorm
+            if (aeRegion != null && haveActive && caps.maxAeRegions > 0) {
+                builder.set(
+                    CaptureRequest.CONTROL_AE_REGIONS,
+                    arrayOf(MeteringRectangle(denorm(aeRegion, active), MeteringRectangle.METERING_WEIGHT_MAX)),
+                )
+            } else if (caps.hasManualSensor) {
+                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                k.sensorExposureTimeNs?.let { builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, it) }
+                k.sensorSensitivityIso?.let { builder.set(CaptureRequest.SENSOR_SENSITIVITY, it) }
+            }
         }
 
-        if (k.manualFocus == true && caps.hasManualFocus) {
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-            k.lensFocusDistanceDiopters?.let { builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, it) }
+        // Manual focus: within it, either the distance dial OR a focus-point
+        // region (continuous AF locked to that area). Again exactly one is set.
+        if (k.manualFocus == true) {
+            val afRegion = k.afRegionNorm
+            if (afRegion != null && haveActive && caps.maxAfRegions > 0) {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                builder.set(
+                    CaptureRequest.CONTROL_AF_REGIONS,
+                    arrayOf(MeteringRectangle(denorm(afRegion, active), MeteringRectangle.METERING_WEIGHT_MAX)),
+                )
+            } else if (caps.hasManualFocus) {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                k.lensFocusDistanceDiopters?.let { builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, it) }
+            }
         }
 
         // White balance: manual RGGB gains win over an AWB preset (both target the same result).
