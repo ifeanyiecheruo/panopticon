@@ -120,6 +120,14 @@ class CameraGlPipeline(
     private var runLoopJob: Job? = null
 
     private var recordingSize = Size(1280, 720)
+    // The camera → SurfaceTexture buffer size. When the sensor's native aspect
+    // ratio differs from [recordingSize]'s, this is a sensor-aspect size (so the
+    // HAL fills it without anamorphic squash) and the GL blit centre-crops it to
+    // [recordingSize]'s aspect via [texCropX]/[texCropY]. Equal to [recordingSize]
+    // when no correction is needed.
+    private var sourceSize = Size(1280, 720)
+    private var texCropX = 1f
+    private var texCropY = 1f
 
     // camera
     private var cameraDevice: CameraDevice? = null
@@ -138,6 +146,7 @@ class CameraGlPipeline(
     private var aPosLoc = 0
     private var aTexLoc = 0
     private var uStMatrixLoc = 0
+    private var uTexCropLoc = 0
     private var oesTexId = 0
     private var fbo = 0
     private var fboTex = 0
@@ -210,6 +219,8 @@ class CameraGlPipeline(
                 lastOutputMs.set(0)
                 openCameraIfNeeded()
                 recordingSize = pickRecordingSize()
+                sourceSize = pickSourceSize(recordingSize)
+                computeTexCrop()
                 setupGlAndEncoder()
                 startDrain()
                 openSessionAndRequest()
@@ -254,12 +265,16 @@ class CameraGlPipeline(
             setupEgl()
             setupGlObjects()
             val st = SurfaceTexture(oesTexId)
-            st.setDefaultBufferSize(recordingSize.width, recordingSize.height)
+            st.setDefaultBufferSize(sourceSize.width, sourceSize.height)
             st.setOnFrameAvailableListener({ onFrameAvailable() }, glHandler)
             surfaceTexture = st
             cameraSurface = Surface(st)
         }
-        Log.i(TAG, "GL + encoder up (${recordingSize.width}x${recordingSize.height})")
+        Log.i(
+            TAG,
+            "GL + encoder up (out ${recordingSize.width}x${recordingSize.height}, " +
+                "camera source ${sourceSize.width}x${sourceSize.height}, crop $texCropX,$texCropY)",
+        )
     }
 
     private fun createEncoder() {
@@ -307,6 +322,7 @@ class CameraGlPipeline(
         aPosLoc = GLES20.glGetAttribLocation(program, "aPos")
         aTexLoc = GLES20.glGetAttribLocation(program, "aTex")
         uStMatrixLoc = GLES20.glGetUniformLocation(program, "uSTMatrix")
+        uTexCropLoc = GLES20.glGetUniformLocation(program, "uTexCrop")
         val tex = IntArray(1); GLES20.glGenTextures(1, tex, 0); oesTexId = tex[0]
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexId)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
@@ -342,6 +358,7 @@ class CameraGlPipeline(
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexId)
         GLES20.glUniformMatrix4fv(uStMatrixLoc, 1, false, stMatrix, 0)
+        GLES20.glUniform2f(uTexCropLoc, texCropX, texCropY)
         quad.position(0); GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
         GLES20.glEnableVertexAttribArray(aPosLoc)
         quad.position(2); GLES20.glVertexAttribPointer(aTexLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
@@ -697,12 +714,16 @@ class CameraGlPipeline(
 
     // ---- helpers ----
 
-    private fun pickRecordingSize(): Size {
-        val target = resolvedCameraId ?: cameraId?.takeIf { it.isNotBlank() } ?: backCameraId()
-            ?: return Size(1280, 720)
-        // For a "<logical>:<physical>" target the physical sensor's own stream map applies.
+    /** Plain logical/physical id whose stream map + sensor geometry apply to this
+     *  session (the physical sub-camera's own, for a "<logical>:<physical>" target). */
+    private fun sizingCameraId(): String? {
+        val target = resolvedCameraId ?: cameraId?.takeIf { it.isNotBlank() } ?: backCameraId() ?: return null
         val (logicalId, physId) = CameraCapabilitiesReader.splitTarget(target)
-        val id = physId ?: logicalId
+        return physId ?: logicalId
+    }
+
+    private fun pickRecordingSize(): Size {
+        val id = sizingCameraId() ?: return Size(1280, 720)
         val map = cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         val camSizes = map?.getOutputSizes(SurfaceTexture::class.java)?.toList() ?: emptyList()
         val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
@@ -715,6 +736,54 @@ class CameraGlPipeline(
         return supported.firstOrNull { it.width == 1280 && it.height == 720 }
             ?: supported.filter { it.width <= 1280 && it.height <= 720 }.maxByOrNull { it.width.toLong() * it.height }
             ?: Size(1280, 720)
+    }
+
+    /**
+     * The camera → SurfaceTexture buffer size. When the sensor's native aspect
+     * ratio matches [target]'s, this is just [target] (the HAL centre-crops to it
+     * cleanly). Otherwise it's the smallest sensor-aspect SurfaceTexture size that
+     * covers [target] in both dimensions — the HAL then fills that buffer with the
+     * full un-squashed sensor image and [computeTexCrop] trims it to [target]'s
+     * aspect in GL. Falls back to [target] if the camera exposes no usable
+     * sensor-aspect size (the pre-existing squashed behaviour — logged).
+     */
+    private fun pickSourceSize(target: Size): Size {
+        val id = sizingCameraId() ?: return target
+        val chars = cameraManager.getCameraCharacteristics(id)
+        val active = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        val targetA = target.width.toDouble() / target.height
+        val sensorA =
+            if (active != null && active.height() > 0) active.width().toDouble() / active.height() else targetA
+        if (kotlin.math.abs(sensorA - targetA) < 0.02) return target
+
+        val stSizes = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?.getOutputSizes(SurfaceTexture::class.java)?.toList().orEmpty()
+        val sensorAspect = stSizes.filter {
+            kotlin.math.abs(it.width.toDouble() / it.height - sensorA) < 0.04
+        }
+        val pick = sensorAspect
+            .filter { it.width >= target.width && it.height >= target.height }
+            .minByOrNull { it.width.toLong() * it.height }
+            ?: sensorAspect.maxByOrNull { it.width.toLong() * it.height }
+        if (pick == null) {
+            Log.w(TAG, "pickSourceSize: no sensor-aspect SurfaceTexture size (sensorA=$sensorA); recording may be squashed")
+            return target
+        }
+        return pick
+    }
+
+    /** Sets [texCropX]/[texCropY] to centre-crop [sourceSize] down to [recordingSize]'s
+     *  aspect ratio (1,1 when they already match). */
+    private fun computeTexCrop() {
+        val srcA = sourceSize.width.toDouble() / sourceSize.height
+        val dstA = recordingSize.width.toDouble() / recordingSize.height
+        if (srcA > dstA + 1e-4) {
+            texCropX = (dstA / srcA).toFloat(); texCropY = 1f
+        } else if (srcA < dstA - 1e-4) {
+            texCropX = 1f; texCropY = (srcA / dstA).toFloat()
+        } else {
+            texCropX = 1f; texCropY = 1f
+        }
     }
 
     private fun segmentFileName(): String {
@@ -770,10 +839,17 @@ class CameraGlPipeline(
     private companion object {
         const val VERTEX_SHADER = """
             uniform mat4 uSTMatrix;
+            uniform vec2 uTexCrop;
             attribute vec4 aPos;
             attribute vec4 aTex;
             varying vec2 vTex;
-            void main() { gl_Position = aPos; vTex = (uSTMatrix * aTex).xy; }
+            void main() {
+                gl_Position = aPos;
+                // Centre-crop the sampled region to the output aspect ratio before
+                // the SurfaceTexture transform (uTexCrop is 1,1 when no crop is needed).
+                vec2 c = vec2(0.5) + (aTex.xy - vec2(0.5)) * uTexCrop;
+                vTex = (uSTMatrix * vec4(c, aTex.zw)).xy;
+            }
         """
         const val FRAGMENT_SHADER = """
             #extension GL_OES_EGL_image_external : require
