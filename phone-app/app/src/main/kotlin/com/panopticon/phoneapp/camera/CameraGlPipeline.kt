@@ -7,6 +7,7 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
@@ -21,6 +22,7 @@ import android.opengl.EGLExt
 import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
@@ -87,6 +89,8 @@ class CameraGlPipeline(
     private val context: Context,
     private val segmentsDir: File,
     private val appConfig: AppConfig,
+    private val cameraId: String? = null,
+    initialControls: CameraControlSpec = CameraControlSpec(),
     private val rotationIntervalMs: Long = 10_000L,
     private val trailerMs: Long = 5_000L,
     private val preRollMs: Long = 3_000L,
@@ -96,6 +100,16 @@ class CameraGlPipeline(
     private val onMotionChanged: (motion: Boolean) -> Unit = {},
 ) {
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+    // Manual-control state (see CameraControlApply). Re-applied to the repeating request on
+    // applyControls() without a session rebuild; caps are read once the camera id is resolved.
+    @Volatile private var controls: CameraControlSpec = initialControls
+    @Volatile private var caps: CameraCapabilities? = null
+    @Volatile private var resolvedCameraId: String? = null
+
+    /** Set when [cameraId] is a "<logical>:<physical>" target: the session's outputs are pinned
+     *  to this physical sub-camera via [PhysicalCameraApi28]. */
+    @Volatile private var physicalCameraId: String? = null
 
     private val callbackThread = HandlerThread("PanopticonCameraCb").apply { start() }
     private val callbackHandler = Handler(callbackThread.looper)
@@ -523,8 +537,15 @@ class CameraGlPipeline(
 
     private suspend fun openCameraIfNeeded() {
         if (cameraDevice != null) return
-        val id = backCameraId() ?: throw IllegalStateException("no back-facing camera")
-        cameraDevice = openCameraDevice(id)
+        val id = cameraId?.takeIf { it.isNotBlank() } ?: backCameraId()
+            ?: throw IllegalStateException("no back-facing camera")
+        resolvedCameraId = id
+        // "<logical>:<physical>" - open the logical device; pin the session's outputs to the
+        // physical sub-camera in createCaptureSession.
+        val (logicalId, physId) = CameraCapabilitiesReader.splitTarget(id)
+        physicalCameraId = physId?.takeIf { Build.VERSION.SDK_INT >= Build.VERSION_CODES.P }
+        caps = runCatching { CameraCapabilitiesReader.read(context, id) }.getOrNull()
+        cameraDevice = openCameraDevice(logicalId)
     }
 
     private suspend fun openSessionAndRequest() {
@@ -534,11 +555,32 @@ class CameraGlPipeline(
         val session = createCaptureSession(device, listOf(surface), failed)
         delay(500)
         if (failed.get() || !running) { session.close(); throw IllegalStateException("session failed asynchronously") }
-        val request = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply { addTarget(surface) }.build()
-        session.setRepeatingRequest(request, null, callbackHandler)
+        session.setRepeatingRequest(buildRecordRequest(device, surface), null, callbackHandler)
         captureSession = session
         Log.i(TAG, "capture session up")
     }
+
+    /**
+     * Merge a new manual-control state and, if a session is live, re-issue the repeating request
+     * so it takes effect without tearing the pipeline down (only a *camera switch* rebuilds).
+     * Safe to call before the session is up - the state is kept and applied by
+     * [buildRecordRequest] when the session next configures.
+     */
+    fun applyControls(spec: CameraControlSpec) {
+        controls = spec
+        val device = cameraDevice ?: return
+        val session = captureSession ?: return
+        val surface = cameraSurface ?: return
+        runCatching {
+            session.setRepeatingRequest(buildRecordRequest(device, surface), null, callbackHandler)
+        }.onFailure { Log.w(TAG, "applyControls: setRepeatingRequest failed", it) }
+    }
+
+    private fun buildRecordRequest(device: CameraDevice, surface: Surface): CaptureRequest =
+        device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+            addTarget(surface)
+            caps?.let { CameraControlApply.applyTo(this, controls, it) }
+        }.build()
 
     private fun backCameraId(): String? = cameraManager.cameraIdList.firstOrNull { id ->
         cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
@@ -570,16 +612,24 @@ class CameraGlPipeline(
     private suspend fun createCaptureSession(
         device: CameraDevice, surfaces: List<Surface>, sessionFailed: AtomicBoolean,
     ): CameraCaptureSession = suspendCancellableCoroutine { cont ->
+        val cb = object : CameraCaptureSession.StateCallback() {
+            override fun onConfigured(session: CameraCaptureSession) { if (cont.isActive) cont.resume(session) }
+            override fun onConfigureFailed(session: CameraCaptureSession) {
+                sessionFailed.set(true)
+                if (cont.isActive) cont.resumeWithException(IllegalStateException("session configure failed"))
+            }
+            override fun onClosed(session: CameraCaptureSession) { sessionFailed.set(true) }
+        }
         try {
-            @Suppress("DEPRECATION")
-            device.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(session: CameraCaptureSession) { if (cont.isActive) cont.resume(session) }
-                override fun onConfigureFailed(session: CameraCaptureSession) {
-                    sessionFailed.set(true)
-                    if (cont.isActive) cont.resumeWithException(IllegalStateException("session configure failed"))
-                }
-                override fun onClosed(session: CameraCaptureSession) { sessionFailed.set(true) }
-            }, callbackHandler)
+            val physId = physicalCameraId
+            if (physId != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                PhysicalCameraApi28.createSession(
+                    device, surfaces, physId, { callbackHandler.post(it) }, cb,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                device.createCaptureSession(surfaces, cb, callbackHandler)
+            }
         } catch (e: CameraAccessException) {
             cont.resumeWithException(e)
         }
@@ -648,7 +698,11 @@ class CameraGlPipeline(
     // ---- helpers ----
 
     private fun pickRecordingSize(): Size {
-        val id = backCameraId() ?: return Size(1280, 720)
+        val target = resolvedCameraId ?: cameraId?.takeIf { it.isNotBlank() } ?: backCameraId()
+            ?: return Size(1280, 720)
+        // For a "<logical>:<physical>" target the physical sensor's own stream map applies.
+        val (logicalId, physId) = CameraCapabilitiesReader.splitTarget(target)
+        val id = physId ?: logicalId
         val map = cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         val camSizes = map?.getOutputSizes(SurfaceTexture::class.java)?.toList() ?: emptyList()
         val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)

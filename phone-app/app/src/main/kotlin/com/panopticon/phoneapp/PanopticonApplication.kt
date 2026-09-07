@@ -3,6 +3,8 @@ package com.panopticon.phoneapp
 import android.app.Application
 import com.panopticon.phoneapp.calibration.CalibrationRunner
 import com.panopticon.phoneapp.calibration.CalibrationStore
+import com.panopticon.phoneapp.camera.CameraCatalog
+import com.panopticon.phoneapp.camera.CameraGlPipeline
 import com.panopticon.phoneapp.camera.LivePipeline
 import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.pairing.ControllerRegistry
@@ -10,6 +12,15 @@ import com.panopticon.phoneapp.pairing.InviteManager
 import com.panopticon.phoneapp.state.AppConfig
 import com.panopticon.phoneapp.state.AppMode
 import com.panopticon.phoneapp.state.AppState
+
+/** What changed in `DeviceConfig` that the running camera pipeline needs to react to. */
+enum class CameraConfigChange {
+    /** `activeCameraId` changed - a disruptive reconfigure: the pipeline is rebuilt. */
+    ACTIVE_CAMERA,
+
+    /** `cameraControls` changed - a light re-issue of the repeating request. */
+    CONTROLS,
+}
 
 /**
  * Holds the process-wide singletons shared between the foreground service (which owns the
@@ -29,6 +40,8 @@ class PanopticonApplication : Application() {
         private set
     lateinit var calibrationRunner: CalibrationRunner
         private set
+    lateinit var cameraCatalog: CameraCatalog
+        private set
     val appState = AppState()
 
     /**
@@ -47,6 +60,22 @@ class PanopticonApplication : Application() {
     @Volatile
     var livePipeline: LivePipeline? = null
 
+    /**
+     * The RECORD-mode pipeline, or null outside RECORD. Registered by
+     * [com.panopticon.phoneapp.service.PanopticonService] the same way as [livePipeline] so the
+     * `/api/camera/state` route can push a control change onto whichever pipeline is running.
+     */
+    @Volatile
+    var cameraGlPipeline: CameraGlPipeline? = null
+
+    /**
+     * Registered by [com.panopticon.phoneapp.service.PanopticonService] so the camera-selection /
+     * manual-control routes can drive a reconfigure through the service (which owns the pipelines),
+     * mirroring [onModeChangeRequested].
+     */
+    @Volatile
+    var onCameraConfigChanged: ((CameraConfigChange) -> Unit)? = null
+
     fun requestMode(mode: AppMode) {
         if (appState.mode.value == mode) return
         appState.setMode(mode)
@@ -61,6 +90,7 @@ class PanopticonApplication : Application() {
         segmentStore = SegmentStore(this)
         segmentStore.reconcile()
         calibrationRunner = CalibrationRunner(this, CalibrationStore(this), appState)
+        cameraCatalog = CameraCatalog(this)
     }
 
     companion object {

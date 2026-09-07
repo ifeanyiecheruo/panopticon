@@ -1,3 +1,4 @@
+import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import Hls from '../vendor/hlsjs/hls.min.mjs';
 import { StartLivePreview, StopLivePreview } from '../api';
@@ -7,6 +8,9 @@ interface LivePreviewProps {
   /** True when the phone is in record mode — live preview is unavailable until
    * recording is stopped on the phone itself (mirrors calibration). */
   phoneRecording: boolean;
+  /** Rendered absolutely over the <video> box (same coordinate space), given the
+   * current playback state — used by the zoom-rect picker. */
+  overlay?: (playing: boolean) => ComponentChildren;
 }
 
 type State =
@@ -50,7 +54,7 @@ const HLS_CONFIG = {
   fragLoadingRetryDelay: 500,
 };
 
-export function LivePreview({ phoneId, phoneRecording }: LivePreviewProps) {
+export function LivePreview({ phoneId, phoneRecording, overlay }: LivePreviewProps) {
   const [state, setState] = useState<State>({ kind: 'idle' });
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -224,14 +228,16 @@ export function LivePreview({ phoneId, phoneRecording }: LivePreviewProps) {
         )}
       </div>
 
-      <video
-        ref={videoRef}
-        className="live-video"
-        muted
-        playsInline
-        controls
-        hidden={state.kind === 'idle' || state.kind === 'error'}
-      />
+      <div className="live-video-wrap" hidden={state.kind === 'idle' || state.kind === 'error'}>
+        <video
+          ref={videoRef}
+          className="live-video"
+          muted
+          playsInline
+          controls
+        />
+        {overlay?.(state.kind === 'playing')}
+      </div>
 
       {state.kind === 'starting' && <div className="calib-sub">Connecting to the phone…</div>}
       {state.kind === 'error' && <div className="calib-sub">{state.message}</div>}

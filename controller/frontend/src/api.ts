@@ -23,6 +23,11 @@ export {
   StopLivePreview,
   UnpairPhone,
   ForceUnpairPhone,
+  ListCameras,
+  SetActiveCamera,
+  GetCameraControls,
+  SetCameraControls,
+  ComputeEffectiveRect,
 } from '../generated/wailsjs/go/main/App';
 
 import type { main, phoneapi, calibration } from '../generated/wailsjs/go/models';
@@ -41,3 +46,12 @@ export type CalibrationProgressResult = main.CalibrationProgressResult;
 export type LivePreviewResult = main.LivePreviewResult;
 export type CalibrationProgress = phoneapi.CalibrationProgress;
 export type UnpairResult = main.UnpairResult;
+export type CamerasResult = main.CamerasResult;
+export type CameraActionResult = main.CameraActionResult;
+export type CameraControlsView = main.CameraControlsView;
+export type CameraInfo = phoneapi.CameraInfo;
+export type CameraCapabilities = phoneapi.CameraCapabilities;
+export type CameraStateResponse = phoneapi.CameraStateResponse;
+export type CameraControlKeys = phoneapi.CameraControlKeys;
+export type EffectiveRectResult = calibration.EffectiveRectResult;
+export type RectNorm = phoneapi.RectNorm;

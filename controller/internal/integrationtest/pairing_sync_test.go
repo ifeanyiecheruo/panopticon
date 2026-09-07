@@ -56,6 +56,13 @@ type fakePhone struct {
 
 	// mode: "record" (default) blocks calibration; "standby" allows it.
 	mode string
+
+	// Camera selection + manual controls. activeCameraID defaults to "0"; the
+	// device has cameras "0" (wide) and "2" (ultra-wide). cameraKeys echoes the
+	// last POST /api/camera/state keys.
+	activeCameraID       string
+	manualControlEnabled bool
+	cameraKeys           map[string]any
 }
 
 func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePhone) {
@@ -265,6 +272,126 @@ func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePho
 		}
 	}))
 
+	mux.HandleFunc("/api/cameras", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+		fp.mu.Lock()
+		active := fp.activeCameraID
+		if active == "" {
+			active = "0"
+		}
+		fp.mu.Unlock()
+		writeJSON(w, map[string]any{"cameras": []map[string]any{
+			{"cameraId": "0", "facing": "back", "label": "Wide (auto)", "focalLengthMm": 6.81, "isActive": active == "0"},
+			{"cameraId": "0:2", "facing": "back", "label": "Ultra-wide", "focalLengthMm": 1.55, "isActive": active == "0:2"},
+			{"cameraId": "1", "facing": "front", "label": "Front (auto)", "focalLengthMm": 2.5, "isActive": active == "1"},
+		}})
+	}))
+	mux.HandleFunc("/api/cameras/active", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			CameraID string `json:"cameraId"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		if !knownCam(b.CameraID) {
+			w.WriteHeader(http.StatusNotFound)
+			writeJSON(w, map[string]string{"error": "unknown cameraId '" + b.CameraID + "'"})
+			return
+		}
+		fp.mu.Lock()
+		fp.activeCameraID = b.CameraID
+		fp.mu.Unlock()
+		writeJSON(w, map[string]string{"activeCameraId": b.CameraID})
+	}))
+	mux.HandleFunc("/api/camera/capabilities", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("cameraId")
+		if id == "" {
+			fp.mu.Lock()
+			id = fp.activeCameraID
+			fp.mu.Unlock()
+			if id == "" {
+				id = "0"
+			}
+		}
+		if !knownCam(id) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		physicalIDs := []string{}
+		if id == "0" {
+			physicalIDs = []string{"2"}
+		}
+		writeJSON(w, map[string]any{
+			"cameraId":                  id,
+			"zoomRatioRange":            map[string]any{"lo": 1.0, "hi": 8.0},
+			"zoomViaRatioApi":           true,
+			"aeCompensationRange":       map[string]any{"lo": -24, "hi": 24},
+			"aeCompensationStepMilliEv": 166,
+			"exposureTimeRangeNs":       map[string]any{"lo": 12000, "hi": 100000000},
+			"sensitivityRange":          map[string]any{"lo": 50, "hi": 6400},
+			"minFocusDistanceDiopters":  10.0,
+			"hasManualSensor":           true,
+			"hasManualFocus":            true,
+			"hasManualWhiteBalance":     true,
+			"wbGainRange":               map[string]any{"lo": 1.0, "hi": 8.0},
+			"awbModes":                  []int{0, 1, 2, 5, 6},
+			"videoStabilizationModes":   []int{0, 1},
+			"opticalStabilizationModes": []int{0, 1},
+			"physicalCameraIds":         physicalIDs,
+			"croppingType":              "FREEFORM",
+			"activeArrayWidth":          4032,
+			"activeArrayHeight":         3024,
+		})
+	}))
+	mux.HandleFunc("/api/camera/state", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+		fp.mu.Lock()
+		defer fp.mu.Unlock()
+		if r.Method == http.MethodPost {
+			var b struct {
+				ManualControlEnabled *bool          `json:"manualControlEnabled"`
+				Keys                 map[string]any `json:"keys"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&b)
+			if b.Keys != nil {
+				if z, ok := b.Keys["zoomRatio"].(float64); ok && (z < 1.0 || z > 8.0) {
+					w.WriteHeader(http.StatusBadRequest)
+					writeJSON(w, map[string]string{"error": "must be in 1.0..8.0", "key": "zoomRatio"})
+					return
+				}
+				if m, ok := b.Keys["awbMode"].(float64); ok {
+					allowed := map[int]bool{0: true, 1: true, 2: true, 5: true, 6: true}
+					if !allowed[int(m)] {
+						w.WriteHeader(http.StatusBadRequest)
+						writeJSON(w, map[string]string{"error": "must be one of [0 1 2 5 6]", "key": "awbMode"})
+						return
+					}
+				}
+				if m, ok := b.Keys["opticalStabilizationMode"].(float64); ok && m != 0 && m != 1 {
+					w.WriteHeader(http.StatusBadRequest)
+					writeJSON(w, map[string]string{"error": "must be one of [0 1]", "key": "opticalStabilizationMode"})
+					return
+				}
+			}
+			if b.ManualControlEnabled != nil {
+				fp.manualControlEnabled = *b.ManualControlEnabled
+			}
+			if b.Keys != nil {
+				fp.cameraKeys = b.Keys
+			}
+		}
+		id := fp.activeCameraID
+		if id == "" {
+			id = "0"
+		}
+		keys := fp.cameraKeys
+		if keys == nil {
+			keys = map[string]any{}
+		}
+		writeJSON(w, map[string]any{
+			"cameraId":             id,
+			"rotationDegrees":      0,
+			"manualControlEnabled": fp.manualControlEnabled,
+			"keys":                 keys,
+		})
+	}))
+
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, fp
@@ -288,6 +415,10 @@ func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// knownCam mirrors the fake phone's fixed camera set: logical "0" (+ its physical
+// sub-camera "0:2") and front "1".
+func knownCam(id string) bool { return id == "0" || id == "0:2" || id == "1" }
 
 func newTestStore(t *testing.T) (*dbstore.Store, appdirs.Dirs) {
 	t.Helper()

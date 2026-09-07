@@ -45,6 +45,36 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   `positionHonored` / `positionMetadataLiedRatios` / `qualityCollapseRatio`. Cancellable,
   resilient to a weak HAL dropping the device mid-sweep, last result persisted to disk. See
   `calibration/ZoomMath.kt` for the pure geometry/metric helpers.
+- **Camera selection + manual controls** - `GET /api/cameras` lists every selectable camera:
+  the logical ids `CameraManager` reports **plus** `"<logical>:<physical>"` entries for each
+  physical sub-camera of a logical multi-camera (`camera/CameraCatalog.kt`; wide/ultra-wide/tele
+  label heuristic in the framework-free `camera/CameraLabels.kt`). `POST /api/cameras/active`
+  switches which one the pipelines open - a disruptive reconfigure (the service rebuilds the
+  running pipeline, same as a mode switch); a `"0:3"` target opens logical `0` but pins the
+  session's outputs to physical camera `3` via `OutputConfiguration.setPhysicalCameraId`
+  (`camera/PhysicalCameraApi28.kt`, API 28+). `GET /api/camera/capabilities`
+  (`camera/CameraCapabilitiesReader.kt`, reads the physical sensor's own characteristics for a
+  `"0:3"` id) gives the declared ranges for every key in any mode. `GET/POST /api/camera/state`
+  carries the concrete `CameraControlKeys` set: `zoomRatio`, off-centre `cropRegionNorm`
+  (mutually exclusive - never both in one request, per the readback-corruption quirk),
+  `aeExposureCompensation`, `aeLock`, `manualExposure` + `sensorExposureTimeNs` +
+  `sensorSensitivityIso` (`AE_MODE_OFF`, gated on `MANUAL_SENSOR`), `manualFocus` +
+  `lensFocusDistanceDiopters` (`AF_MODE_OFF`), `awbMode` (`CONTROL_AWB_MODE` preset),
+  `manualWhiteBalance` + `wbRedGain`/`wbGreenGain`/`wbBlueGain` (`AWB_MODE_OFF` +
+  `COLOR_CORRECTION_GAINS` + an identity `COLOR_CORRECTION_TRANSFORM` - both are required or
+  frames go black, see `docs/QUIRKS.md`; gated on `MANUAL_POST_PROCESSING`),
+  `videoStabilizationMode` and `opticalStabilizationMode` - each validated against the camera's
+  deduped available-modes list. `POST` is validate-then-apply (`camera/CameraControlValidation.kt`,
+  pure) - `400 {"error","key"}` naming the first offending key, applies nothing. The applied
+  state + `activeCameraId` persist in `DeviceConfig`, so a state tuned while watching the live
+  preview also governs recording and survives a restart; both pipelines merge it into their
+  repeating request via `camera/CameraControlApply.kt` and re-issue on change without a session
+  rebuild. **Verified on the Pixel 6** (API 36): physical sub-camera switch to `0:3` (ultra-wide);
+  manual exposure honoured (~900× luma swing between 1/4000 s ISO 55 and 1/25 s ISO 4000);
+  manual WB gains honoured (channel balance flips ~16× between red-heavy and blue-heavy gains);
+  manual focus measurably changes frame sharpness. **BLU G5** (API 28): legacy
+  `SCALER_CROP_REGION` zoom, no `MANUAL_SENSOR` / `MANUAL_POST_PROCESSING` / OIS / logical
+  multi-cam - the corresponding keys `400` and only `0`/`1` are listed.
 - **Mode** - `record` (motion-gated pipeline), `standby` (camera released), `live` (plain-HLS
   live preview - `camera/LivePipeline.kt` + `LiveHlsRelay.kt` + hand-rolled `camera/ts/TsMuxer.kt`,
   since `MediaMuxer` can't emit `.ts`). `record` is sticky: calibration and live preview only run
@@ -114,13 +144,15 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 
 ## Explicitly out of scope for this slice (not started)
 
-Digital zoom / manual Camera2 controls (`/api/camera/...`), multi-camera switching
-(`/api/cameras`), the Controllers/Configuration screens, QR-code invite display (code/URL are
-shown as plain text, which is enough for manual entry). Live view is implemented as **plain
-HLS** — LL-HLS, adaptive bitrate, live resolution changes and a scoped `/live/*` token are all
-deferred. Calibration (routes, empirical zoom probe, Calibrate screen) is implemented; the
-controller-side zoom-rect picker that consumes the effective-rect data is deferred (it's tied
-to a manual-controls UI that doesn't exist yet).
+The Controllers/Configuration screens, QR-code invite display (code/URL are shown as plain
+text, which is enough for manual entry). Live view is implemented as **plain HLS** — LL-HLS,
+adaptive bitrate, live resolution changes and a scoped `/live/*` token are all deferred.
+Manual Camera2 controls (`/api/camera/*` — zoom, crop rect, exposure, focus, white balance
+incl. manual RGGB gains, video + optical stabilization) and multi-camera selection
+(`/api/cameras*`, incl. per-physical sub-camera targeting) are implemented (see "what's here").
+No Compose UI for any of it on the phone side — it's driven entirely from the controller. The
+`/api/camera/state` GET reports `rotationDegrees` for spec fidelity but it's still written
+through `/api/config`.
 
 ## Build / install / run
 

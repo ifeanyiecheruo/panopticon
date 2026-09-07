@@ -2,6 +2,7 @@ package com.panopticon.phoneapp.state
 
 import android.content.Context
 import android.os.Build
+import com.panopticon.phoneapp.camera.CameraControlSpec
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -10,6 +11,10 @@ import kotlinx.serialization.json.Json
  * Persisted device configuration - GET/POST /api/config in phone-http-api.md.
  * Backed by a single SharedPreferences JSON blob rather than per-field prefs: this is a thin
  * vertical slice and the whole document is small and always read/written together.
+ *
+ * [activeCameraId] and [cameraControls] back the camera-selection and camera-control routes;
+ * they live here (not just in memory) so a camera + manual-control state tuned while watching
+ * the live preview also governs recording and survives an app restart.
  */
 @Serializable
 data class DeviceConfig(
@@ -18,6 +23,9 @@ data class DeviceConfig(
     val storageCapBytes: Long = 8_000_000_000L,
     val ringBufferMaxAgeMs: Long = 7L * 24 * 60 * 60 * 1000,
     val rotationDegrees: Int = 0,
+    /** Physical camera id the pipelines open; "" = resolve the default back camera. */
+    val activeCameraId: String = "",
+    val cameraControls: CameraControlSpec = CameraControlSpec(),
 )
 
 class AppConfig(context: Context) {

@@ -8,8 +8,10 @@ This is a **vertical slice**, not the full app — see "What's deferred" below. 
 end to end: project scaffold, tray presence, embedded SQLite state, the Add-phone pairing
 flow, a Fleet screen, a background sync loop, a Gallery/Trash, the manufacturer+model
 calibration store (opportunistic ingest on pair / Phone-detail open, plus a Phone-detail
-re-run), plain-HLS **live preview**, and unpair / force-unpair. It does not implement manual
-camera adjusters or the eviction-probe loop.
+re-run), plain-HLS **live preview**, **camera selection + manual Camera2 controls** (a
+switcher + adjuster panel + a zoom-rect picker over the live preview that overlays the
+calibration-predicted honoured crop), and unpair / force-unpair. It does not implement the
+eviction-probe loop.
 
 Reference docs (read-only, live in the parent `panopticon` repo):
 - `../docs/implementation/phone-http-api.md` — the phone-side HTTP contract this controller
@@ -104,9 +106,15 @@ rows, and the Gallery/Trash screens reading them back correctly.
   `StoreResult` (unconditional overwrite, for a manual re-run), and `EffectiveRect` — maps a
   requested zoom + centre for a camera/resolution to the crop the phone's HAL will actually
   honour (nearest-resolution + interpolation over the stored `ZoomSample`s). `EffectiveRect` is
-  the data side of the deferred zoom-rect picker; nothing in the UI consumes it yet.
-  `internal/phoneapi/calibration.go` is the matching HTTP client surface (decodes the full
-  per-resolution zoom map).
+  bound as `App.ComputeEffectiveRect` and drawn as the dashed predicted-crop overlay under the
+  zoom-rect picker. `internal/phoneapi/calibration.go` is the matching HTTP client surface
+  (decodes the full per-resolution zoom map).
+- `internal/phoneapi/camera.go` — HTTP client for `/api/cameras`, `/api/cameras/active`,
+  `/api/camera/capabilities`, `/api/camera/state`. Typed sentinels: `ErrUnknownCamera` (404 on
+  a switch), `*InvalidControlKeyError{Key,Reason}` (400 naming the rejected control key). Bound
+  as `App.ListCameras` / `SetActiveCamera` / `GetCameraControls` (bundles capabilities + state +
+  the model's calibration cameras) / `SetCameraControls`; `frontend/src/components/CameraControls.tsx`
+  is the switcher + adjuster panel + zoom-rect picker.
 - `internal/unpair` — `DELETE /api/pair` wiring. `Unpair` (safe path): checks
   `GET /api/segments` for segments the phone still has that we never archived and returns
   `needs_confirmation` if any; requires the phone reachable and the revoke to succeed (or a 401
@@ -164,15 +172,15 @@ rows, and the Gallery/Trash screens reading them back correctly.
 Per the task's explicit scope cut — these are real gaps versus the full handoff doc, not
 oversights:
 
-- **Manual camera adjusters, and the zoom-rect picker.** Phone detail shows raw
-  `GET /api/status` + `GET /api/config` JSON for adjusters. Live preview *is* wired (plain-HLS
-  `<video>` via `LivePreview.tsx` + `liveproxy.go`), and calibration *is* wired (manufacturer+model
-  lookup, per-camera optical/digital/crossover/position/quality readout, Run/Re-run, disabled
-  with a reason while the phone is recording). What's deferred is the UI that lets a user draw a
-  zoom rect and see the "effective rect" overlay — the data and `calibration.EffectiveRect`
-  helper are in place, but the overlay hangs off a manual-controls surface that doesn't exist
-  yet. LL-HLS, adaptive bitrate and a scoped live token are also deferred (see
-  `docs/QUIRKS.md`).
+- **Manual camera adjusters + zoom-rect picker are implemented** (`CameraControls.tsx`): a
+  camera switcher (logical cameras **and** their physical sub-cameras — e.g. the Pixel 6's
+  `0:3` ultra-wide), a manual-controls master toggle, and capability-gated sliders/toggles
+  bounded to `GET /api/camera/capabilities` — zoom, exposure comp, AE lock, manual exposure
+  (shutter + ISO), manual focus, white balance (`CONTROL_AWB_MODE` preset **or** manual RGGB
+  gains), and video + optical stabilization. Plus a drag-to-draw zoom-rect over the live
+  `<video>` overlaying `App.ComputeEffectiveRect`'s calibration-predicted honoured crop. All
+  verified end to end against the Pixel 6. LL-HLS, adaptive bitrate and a scoped live token
+  remain deferred (see `docs/QUIRKS.md`).
 - **Eviction-probe loop.** The handoff doc's tombstone-cleanup mechanism (probing
   `/api/segments/:filename/file` on a purged clip's segments until a 404 confirms the phone's
   ring buffer evicted them, then dropping the DB rows) is not implemented. `DeleteClipPermanently`

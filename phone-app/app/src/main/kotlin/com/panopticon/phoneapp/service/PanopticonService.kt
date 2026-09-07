@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.panopticon.phoneapp.CameraConfigChange
 import com.panopticon.phoneapp.MainActivity
 import com.panopticon.phoneapp.PanopticonApplication
 import com.panopticon.phoneapp.R
@@ -40,6 +41,7 @@ class PanopticonService : Service() {
         super.onCreate()
         app = PanopticonApplication.from(this)
         app.onModeChangeRequested = ::handleModeChanged
+        app.onCameraConfigChanged = ::handleCameraConfigChanged
         createNotificationChannel()
     }
 
@@ -71,7 +73,9 @@ class PanopticonService : Service() {
                     appState = app.appState,
                     segmentStore = app.segmentStore,
                     calibrationRunner = app.calibrationRunner,
+                    cameraCatalog = app.cameraCatalog,
                     onModeChanged = ::handleModeChanged,
+                    onCameraConfigChanged = ::handleCameraConfigChanged,
                     liveProvider = { app.livePipeline },
                 )
                 server.start()
@@ -95,16 +99,14 @@ class PanopticonService : Service() {
             AppMode.LIVE -> {
                 // RECORD and LIVE are mutually exclusive - tear the recording pipeline down and
                 // bring up the live one (armed-idle; POST /api/live/start begins broadcasting).
-                cameraPipeline?.release()
-                cameraPipeline = null
+                releaseCameraPipeline()
                 app.appState.setMotionActive(false)
                 app.appState.setRecordingStatus(RecordingStatus.IDLE)
                 startLivePipeline()
             }
             AppMode.STANDBY -> {
                 // Explicit stop: fully release the camera so a calibration sweep can take it.
-                cameraPipeline?.release()
-                cameraPipeline = null
+                releaseCameraPipeline()
                 stopLivePipeline()
                 app.appState.setMotionActive(false)
                 app.appState.setRecordingStatus(RecordingStatus.STOPPED)
@@ -112,12 +114,48 @@ class PanopticonService : Service() {
         }
     }
 
+    /**
+     * React to a `/api/cameras/active` or `/api/camera/state` change. An active-camera change is
+     * a disruptive reconfigure (rebuild whichever pipeline is running, matching how a mode switch
+     * tears down and brings back up); a controls change is a light re-issue of the repeating
+     * request. STANDBY has no pipeline - the persisted `DeviceConfig` is picked up next start.
+     */
+    private fun handleCameraConfigChanged(change: CameraConfigChange) {
+        when (change) {
+            CameraConfigChange.ACTIVE_CAMERA -> when (app.appState.mode.value) {
+                AppMode.RECORD -> {
+                    releaseCameraPipeline()
+                    startCameraPipeline()
+                }
+                AppMode.LIVE -> {
+                    stopLivePipeline()
+                    startLivePipeline()
+                }
+                AppMode.STANDBY -> Unit
+            }
+            CameraConfigChange.CONTROLS -> {
+                val spec = app.appConfig.get().cameraControls
+                cameraPipeline?.applyControls(spec)
+                app.livePipeline?.applyControls(spec)
+            }
+        }
+    }
+
+    private fun releaseCameraPipeline() {
+        cameraPipeline?.release()
+        cameraPipeline = null
+        app.cameraGlPipeline = null
+    }
+
     private fun startLivePipeline() {
         if (app.livePipeline != null) return
         app.appState.setLiveViewers(0)
+        val cfg = app.appConfig.get()
         app.livePipeline = LivePipeline(
             context = applicationContext,
             liveDir = File(applicationContext.cacheDir, "live"),
+            cameraId = app.cameraCatalog.resolveActiveId(cfg.activeCameraId),
+            initialControls = cfg.cameraControls,
             onHealthChanged = { healthy -> app.appState.setCameraHealthy(healthy) },
             onBroadcastingChanged = { broadcasting ->
                 app.appState.setLiveViewers(if (broadcasting) 1 else 0)
@@ -136,10 +174,13 @@ class PanopticonService : Service() {
         // decides when a segment is actually written.
         app.appState.setRecordingStatus(RecordingStatus.IDLE)
         app.appState.setMotionActive(false)
+        val cfg = app.appConfig.get()
         cameraPipeline = CameraGlPipeline(
             context = applicationContext,
             segmentsDir = app.segmentStore.segmentsDir,
             appConfig = app.appConfig,
+            cameraId = app.cameraCatalog.resolveActiveId(cfg.activeCameraId),
+            initialControls = cfg.cameraControls,
             onSegmentFinished = { file, createdAtMs, durationMs, width, height ->
                 app.segmentStore.addSegment(file, createdAtMs, durationMs, width, height)
                 Log.i(TAG, "segment finished: ${file.name} (${durationMs}ms, ${width}x$height, ${file.length()} bytes)")
@@ -162,13 +203,16 @@ class PanopticonService : Service() {
                 if (!recording) app.appState.setMotionActive(false)
             },
             onMotionChanged = { motion -> app.appState.setMotionActive(motion) },
-        ).also { it.start() }
+        ).also {
+            app.cameraGlPipeline = it
+            it.start()
+        }
     }
 
     override fun onDestroy() {
         app.onModeChangeRequested = null
-        cameraPipeline?.release()
-        cameraPipeline = null
+        app.onCameraConfigChanged = null
+        releaseCameraPipeline()
         stopLivePipeline()
         httpServer?.stop()
         httpServer = null

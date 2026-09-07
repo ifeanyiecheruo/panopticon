@@ -9,6 +9,44 @@ already lives elsewhere and would drift.
 
 **Slices added since the initial handoff:**
 
+- **Camera selection + manual Camera2 controls (both sides).** `GET /api/cameras` /
+  `POST /api/cameras/active` (phone `camera/CameraCatalog.kt`; a switch is a disruptive
+  reconfigure — the service rebuilds the running pipeline, `activeCameraId` persisted in
+  `DeviceConfig`). The catalog lists logical ids **and** `"<logical>:<physical>"` sub-cameras
+  of a logical multi-camera (API 28+); opening a `"0:3"` target opens logical `0` but pins the
+  session's outputs to physical camera `3` via `OutputConfiguration.setPhysicalCameraId`
+  (`camera/PhysicalCameraApi28.kt`). `GET /api/camera/capabilities` (reads the physical sensor's
+  characteristics for a `"0:3"` id) / `GET|POST /api/camera/state` with a concrete
+  `CameraControlKeys` set: `zoomRatio`, off-centre `cropRegionNorm` (mutually exclusive with
+  `zoomRatio` per request — the readback-corruption quirk), `aeExposureCompensation`, `aeLock`,
+  `manualExposure`+time+ISO (`AE_MODE_OFF`, gated on `MANUAL_SENSOR`), `manualFocus`+distance
+  (`AF_MODE_OFF`), `awbMode` (`CONTROL_AWB_MODE` preset), `manualWhiteBalance`+RGGB gains
+  (`AWB_MODE_OFF` + `COLOR_CORRECTION_GAINS` + an identity `COLOR_CORRECTION_TRANSFORM` — both
+  needed or frames go black, new QUIRK; gated on `MANUAL_POST_PROCESSING`),
+  `videoStabilizationMode` and `opticalStabilizationMode` (each checked against the camera's
+  deduped available-modes list). `POST` is validate-then-apply (`camera/CameraControlValidation.kt`,
+  framework-free + unit-tested) → `400 {error,key}`. The state persists in
+  `DeviceConfig.cameraControls` and re-applies to whichever pipeline (`record` **or** `live`)
+  is running, so a state dialled in on the live preview also governs recording;
+  `camera/CameraControlApply.kt` merges it into the repeating request and re-issues on change
+  with no session rebuild. Controller: `internal/phoneapi/camera.go` + `App.ListCameras` /
+  `SetActiveCamera` / `GetCameraControls` / `SetCameraControls` / `ComputeEffectiveRect` (binds
+  the previously-unconsumed `calibration.EffectiveRect`), and `frontend/src/components/CameraControls.tsx`
+  — a camera switcher (logical + physical), an adjuster panel bounded to `capabilities`, and a
+  drag zoom-rect picker over the live `<video>` that overlays the calibration-predicted honoured
+  crop. `mock-phone` and `internal/integrationtest` gained the routes + a `camera_test.go`.
+  **Verified end to end:** phone-app JVM tests (`CameraLabelsTest`, `CameraControlValidationTest`,
+  `CameraControlSpecTest`); the full controller path (`wails dev` webview → bindings → `phoneapi`
+  → the Pixel 6). **On the Pixel 6 (API 36):** switch to physical sub-camera `0:3` (ultra-wide)
+  — session binds to physical id 3, pipeline healthy; **manual exposure honoured** (~900× frame
+  luma between 1/4000 s ISO 55 and 1/25 s ISO 4000, measured with ffmpeg); **manual WB gains
+  honoured** (channel R/B ratio flips ~16× between red-heavy and blue-heavy gains); **manual
+  focus** measurably changes frame sharpness. **BLU G5 (API 28):** no `MANUAL_SENSOR` /
+  `MANUAL_POST_PROCESSING` / OIS / logical multi-cam — the matching keys `400`, only `0`/`1`
+  listed. **Phone-side segment deletion** also done this pass (BLU G5's ~1 GB / 990 segments,
+  via `adb rm` + app restart → `SegmentStore.reconcile()` rebuilt the index empty; the
+  `DELETE /api/segments` API drops connections under sustained sequential load on that HAL).
+
 - **Calibration (both sides), incl. the real empirical zoom probe.** phone-app's
   `CalibrationRunner` does a real per-camera / per-`StreamConfigurationMap`-size / per-zoom
   sweep — applies `CONTROL_ZOOM_RATIO` (API 30+) / `SCALER_CROP_REGION`, reads back the
@@ -25,8 +63,8 @@ already lives elsewhere and would drift.
   full range; the optical→digital crossover at 1.15× on the Pixel 6 back camera (ultrawide→wide,
   via `LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID`); off-centre position honoured on the Pixel 6
   back, not on the front, neither lying about it in metadata; `qualityCollapseRatio ≈ 2.8×` on
-  the Pixel 6 back vs. its declared 7× max. **Still open:** the controller-side **zoom-rect
-  picker UI** that consumes `EffectiveRect` (deferred — it hangs off Live preview). See
+  the Pixel 6 back vs. its declared 7× max. The controller-side **zoom-rect picker UI** that
+  consumes `EffectiveRect` is now implemented as part of the camera-controls slice (above). See
   `docs/QUIRKS.md`'s "Calibration zoom probe" for the full device findings + the weak-HAL quirks the
   probe works around (API-gated-key `NoSuchFieldError`, session-recycle device disconnect,
   `ImageReader.close()` SIGSEGV race, front-camera control-interleaving readback corruption,
@@ -209,20 +247,17 @@ Worth calling out specifically: several deferred features require coordinated wo
 phone-app and controller together**, not just one side in isolation — these are natural
 candidates for "the next slice":
 
-- ~~**Calibration.**~~ **Implemented** (both sides), including the real empirical zoom probe —
-  see "Slices added since the initial handoff" above. What remains: the Pixel 6 verification run
-  and the controller-side zoom-rect picker UI.
+- ~~**Calibration.**~~ **Implemented** (both sides), including the real empirical zoom probe and
+  Pixel 6 verification — see "Slices added since the initial handoff" above. The controller-side
+  zoom-rect picker that consumes `EffectiveRect` is now built too (camera-controls slice).
 - ~~**Live HLS view.**~~ **Implemented as plain HLS** (both sides) — see "Slices added since the
   initial handoff" below. Deferred within it: LL-HLS (`EXT-X-PART`/parts + the hls.js latency
   workarounds the prototype paid for, catalogued in `docs/QUIRKS.md`), adaptive bitrate, live
   resolution changes, a scoped `/live/*` token, and a sustained on-device verification run.
-- **Manual Camera2 controls / digital zoom.** `/api/camera/*` routes don't exist on phone-app;
-  controller's Phone-detail has no adjuster UI. The old prototype's `QUIRKS.md` has extensive,
-  hard-won findings here (`SCALER_CROP_REGION` not honoring position, digital zoom quality
-  collapsing below the declared max, etc.) that are very likely still relevant on real hardware —
-  re-verify against the Pixel 6 rather than assuming, same approach this session took for the
-  quirks that *were* re-verified (see `docs/QUIRKS.md`'s "Reconfirmed on Pixel 6" section for the
-  pattern to follow).
+- ~~**Manual Camera2 controls / digital zoom / multi-camera.**~~ **Implemented and verified on
+  the Pixel 6** (both sides) — see "Slices added since the initial handoff" above. Nothing
+  outstanding here; a Compose UI on the phone side is the only camera-control thing not built,
+  and it's deliberate (the controller drives everything).
 - ~~**Motion-gated recording.**~~ **Implemented** (phone-app only) — see "Slices added since the
   initial handoff" above. Remaining: on-device threshold tuning, a real
   background-subtraction model.
@@ -232,7 +267,9 @@ candidates for "the next slice":
   unsynced-clips warning and refuses to drop local state unless the phone is reachable and the
   token actually revoked; force unpair drops it regardless. Integration-tested. No phone-app
   change (`DELETE /api/pair` already existed).
-- **Multi-camera.** `/api/cameras*` doesn't exist; nothing controller-side switches cameras.
+- ~~**Multi-camera.**~~ **Implemented** as part of the camera-controls slice — `/api/cameras` +
+  `/api/cameras/active` on the phone (logical ids **and** `"<logical>:<physical>"` sub-cameras),
+  a switcher in the controller's Phone detail.
 
 Remaining single-side deferred items (bulk arm/stand-down, eviction-probe/tombstone
 cleanup, QR pairing, the Controllers/Configuration screens, etc.) are listed in each project's
@@ -268,17 +305,20 @@ is done — see above.)
 
 ## Suggested next steps
 
-No hard ordering. **Calibration**, **motion-gated recording**, and **live HLS view** are all
-done as slices (above); their remaining pieces are noted there.
+No hard ordering. **Calibration**, **motion-gated recording**, **live HLS view**, and
+**camera selection + manual controls** are all done as slices (above); their remaining pieces
+are noted there.
 
 Largest remaining pieces:
-- **Manual Camera2 controls / digital zoom** (`/api/camera/*`, plus the controller-side zoom-rect
-  picker that consumes `calibration.EffectiveRect`) — re-verify the prototype's
-  `SCALER_CROP_REGION`/digital-zoom quirks against real hardware first.
-- **LL-HLS upgrade for live view** if the plain-HLS latency (~6–10s) proves too high — the
+- **Eviction-probe / tombstone-cleanup loop** (controller) — purged clips leave their segment
+  rows as tombstones forever; nothing probes the phone's ring buffer to confirm the files are
+  gone and drop them.
+- **LL-HLS upgrade for live view** if the plain-HLS latency (~4–6s) proves too high — the
   prototype's `EXT-X-PART` machinery and its hls.js latency workarounds are catalogued in
   `docs/QUIRKS.md`'s carried-forward section, ready to adopt.
-- **Multi-camera** (`/api/cameras*`) and the eviction-probe/tombstone-cleanup loop.
+- **On-device motion-threshold tuning** (Pixel 6) and a real background-subtraction model.
+- Smaller: bulk arm/stand-down; QR pairing; the Controllers/Configuration screens; a
+  phone-side Compose UI for the camera controls.
 
 Still open on shipped slices: on-device motion-threshold tuning (Pixel 6). Live view is verified
 end to end (phone → `liveproxy.go` → hls.js in a real `wails dev` webview) on the Pixel 6 and

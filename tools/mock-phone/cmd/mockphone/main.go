@@ -7,7 +7,9 @@
 // GET /api/config, GET /api/build-info, GET /api/segments, GET
 // /api/segments/:filename/file, GET /api/segments/:filename/thumbnail,
 // POST /api/calibration/start, GET /api/calibration/status,
-// DELETE /api/calibration/:runId, GET /api/calibration/result.
+// DELETE /api/calibration/:runId, GET /api/calibration/result,
+// GET /api/cameras, POST /api/cameras/active, GET /api/camera/capabilities,
+// GET/POST /api/camera/state.
 //
 // Usage: go run ./cmd/mockphone [-addr :8091] [-invite XYZF-EBDO-ORMS]
 package main
@@ -62,6 +64,13 @@ type server struct {
 	calRunID      string
 	calStartedAt  time.Time
 	calSweepDurMs int64
+
+	// Camera selection + manual controls: a fixed two-camera device; state is
+	// echoed straight back so the controller's client + bindings can be
+	// exercised without a real HAL.
+	activeCameraID       string
+	manualControlEnabled bool
+	controlKeys          map[string]any
 }
 
 func main() {
@@ -71,13 +80,15 @@ func main() {
 	flag.Parse()
 
 	s := &server{
-		invite:        *invite,
-		controllers:   make(map[string]pairedController),
-		deviceName:    "Mock Porch Cam",
-		manufacturer:  "Google",
-		model:         "Pixel 6",
-		mode:          "record",
-		calSweepDurMs: 6000,
+		invite:         *invite,
+		controllers:    make(map[string]pairedController),
+		deviceName:     "Mock Porch Cam",
+		manufacturer:   "Google",
+		model:          "Pixel 6",
+		mode:           "record",
+		calSweepDurMs:  6000,
+		activeCameraID: "0",
+		controlKeys:    map[string]any{},
 	}
 	s.seedSegments(*numSegments)
 
@@ -94,6 +105,10 @@ func main() {
 	mux.HandleFunc("/api/calibration/status", s.withAuth(s.handleCalibrationStatus))
 	mux.HandleFunc("/api/calibration/result", s.withAuth(s.handleCalibrationResult))
 	mux.HandleFunc("/api/calibration/", s.withAuth(s.handleCalibrationCancel)) // DELETE /api/calibration/:runId
+	mux.HandleFunc("/api/cameras", s.withAuth(s.handleCameras))
+	mux.HandleFunc("/api/cameras/active", s.withAuth(s.handleCamerasActive))
+	mux.HandleFunc("/api/camera/capabilities", s.withAuth(s.handleCameraCapabilities))
+	mux.HandleFunc("/api/camera/state", s.withAuth(s.handleCameraState))
 
 	log.Printf("mockphone listening on %s (invite=%s, manufacturer=%s model=%s, %d seeded segments)",
 		*addr, *invite, s.manufacturer, s.model, *numSegments)
@@ -298,6 +313,145 @@ func (s *server) handleBuildInfo(w http.ResponseWriter, r *http.Request) {
 		"appVersionCode": 1,
 		"buildType":      "mock",
 		"gitSha":         "mock0000",
+	})
+}
+
+// ---- camera selection + manual controls ----
+//
+// A fixed two-camera device ("0" wide, "2" ultra-wide). Capabilities are a
+// canned MANUAL_SENSOR-capable blob; state is echoed straight back. Just enough
+// to exercise the controller's phoneapi client + Wails bindings.
+
+func (s *server) mockCameras() []map[string]any {
+	s.mu.Lock()
+	active := s.activeCameraID
+	s.mu.Unlock()
+	return []map[string]any{
+		{"cameraId": "0", "facing": "back", "label": "Wide (auto)", "focalLengthMm": 6.81, "isActive": active == "0"},
+		{"cameraId": "0:2", "facing": "back", "label": "Ultra-wide", "focalLengthMm": 1.55, "isActive": active == "0:2"},
+		{"cameraId": "1", "facing": "front", "label": "Front (auto)", "focalLengthMm": 2.5, "isActive": active == "1"},
+	}
+}
+
+func (s *server) knownCamera(id string) bool {
+	return id == "0" || id == "0:2" || id == "1"
+}
+
+func (s *server) handleCameras(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"cameras": s.mockCameras()})
+}
+
+func (s *server) handleCamerasActive(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		CameraID string `json:"cameraId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if !s.knownCamera(body.CameraID) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown cameraId '" + body.CameraID + "'"})
+		return
+	}
+	s.mu.Lock()
+	s.activeCameraID = body.CameraID
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]string{"activeCameraId": body.CameraID})
+}
+
+func (s *server) handleCameraCapabilities(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("cameraId")
+	if id == "" {
+		s.mu.Lock()
+		id = s.activeCameraID
+		s.mu.Unlock()
+	}
+	if !s.knownCamera(id) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown cameraId '" + id + "'"})
+		return
+	}
+	physicalIDs := []string{}
+	if id == "0" {
+		physicalIDs = []string{"2"}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cameraId":                  id,
+		"zoomRatioRange":            map[string]any{"lo": 1.0, "hi": 8.0},
+		"zoomViaRatioApi":           true,
+		"aeCompensationRange":       map[string]any{"lo": -24, "hi": 24},
+		"aeCompensationStepMilliEv": 166,
+		"exposureTimeRangeNs":       map[string]any{"lo": 12000, "hi": 100000000},
+		"sensitivityRange":          map[string]any{"lo": 50, "hi": 6400},
+		"minFocusDistanceDiopters":  10.0,
+		"hasManualSensor":           true,
+		"hasManualFocus":            true,
+		"hasManualWhiteBalance":     true,
+		"wbGainRange":               map[string]any{"lo": 1.0, "hi": 8.0},
+		"awbModes":                  []int{0, 1, 2, 5, 6},
+		"videoStabilizationModes":   []int{0, 1},
+		"opticalStabilizationModes": []int{0, 1},
+		"physicalCameraIds":         physicalIDs,
+		"croppingType":              "FREEFORM",
+		"activeArrayWidth":          4032,
+		"activeArrayHeight":         3024,
+	})
+}
+
+func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var body struct {
+			ManualControlEnabled *bool          `json:"manualControlEnabled"`
+			Keys                 map[string]any `json:"keys"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		// Reject obviously bad keys so the controller's 400-path is exercised.
+		if body.Keys != nil {
+			if z, ok := body.Keys["zoomRatio"].(float64); ok && (z < 1.0 || z > 8.0) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": "must be in 1.0..8.0", "key": "zoomRatio",
+				})
+				return
+			}
+			if m, ok := body.Keys["awbMode"].(float64); ok {
+				allowed := map[int]bool{0: true, 1: true, 2: true, 5: true, 6: true}
+				if !allowed[int(m)] {
+					writeJSON(w, http.StatusBadRequest, map[string]string{
+						"error": "must be one of [0 1 2 5 6]", "key": "awbMode",
+					})
+					return
+				}
+			}
+			if m, ok := body.Keys["opticalStabilizationMode"].(float64); ok && m != 0 && m != 1 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": "must be one of [0 1]", "key": "opticalStabilizationMode",
+				})
+				return
+			}
+		}
+		s.mu.Lock()
+		if body.ManualControlEnabled != nil {
+			s.manualControlEnabled = *body.ManualControlEnabled
+		}
+		if body.Keys != nil {
+			s.controlKeys = body.Keys
+		}
+		s.mu.Unlock()
+	} else if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := s.controlKeys
+	if keys == nil {
+		keys = map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cameraId":             s.activeCameraID,
+		"rotationDegrees":      0,
+		"manualControlEnabled": s.manualControlEnabled,
+		"keys":                 keys,
 	})
 }
 

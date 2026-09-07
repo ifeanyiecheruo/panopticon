@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -355,8 +356,8 @@ func (a *App) StopLivePreview(phoneID string) error {
 }
 
 type CalibrationProgressResult struct {
-	OK       bool   `json:"ok"`
-	Error    string `json:"error,omitempty"`
+	OK       bool                          `json:"ok"`
+	Error    string                        `json:"error,omitempty"`
 	Progress *phoneapi.CalibrationProgress `json:"progress,omitempty"`
 	// Stored is set true on the poll where a just-completed sweep's result was
 	// ingested into the model-keyed calibration store.
@@ -400,6 +401,137 @@ func (a *App) CancelCalibration(phoneID, runID string) error {
 	}
 	client := phoneapi.New(phone.BaseURL, phone.Token)
 	return client.CancelCalibration(a.ctxOrBackground(), runID)
+}
+
+// ---- Camera selection + manual controls (driven from Phone detail) ----
+
+type CamerasResult struct {
+	OK      bool                  `json:"ok"`
+	Error   string                `json:"error,omitempty"`
+	Cameras []phoneapi.CameraInfo `json:"cameras"`
+}
+
+// ListCameras returns the phone's physical cameras and which one is active.
+func (a *App) ListCameras(phoneID string) CamerasResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return CamerasResult{Error: err.Error()}
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+	resp, err := client.Cameras(a.ctxOrBackground())
+	if err != nil {
+		return CamerasResult{Error: err.Error()}
+	}
+	return CamerasResult{OK: true, Cameras: resp.Cameras}
+}
+
+type CameraActionResult struct {
+	OK      bool   `json:"ok"`
+	Outcome string `json:"outcome"` // "ok" | "unknown_camera" | "invalid_key" | "unreachable" | "other"
+	Message string `json:"message,omitempty"`
+	// InvalidKey is set only with outcome "invalid_key".
+	InvalidKey string `json:"invalidKey,omitempty"`
+}
+
+// SetActiveCamera switches which physical camera the phone's pipelines use.
+// This is a disruptive reconfigure on the phone (like a mode switch); a camera
+// switch mid-recording ends the current clip and starts a new one.
+func (a *App) SetActiveCamera(phoneID, cameraID string) CameraActionResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return CameraActionResult{Outcome: "other", Message: err.Error()}
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+	_, err = client.SetActiveCamera(a.ctxOrBackground(), cameraID)
+	switch {
+	case err == nil:
+		return CameraActionResult{OK: true, Outcome: "ok"}
+	case errors.Is(err, phoneapi.ErrUnknownCamera):
+		return CameraActionResult{Outcome: "unknown_camera", Message: "The phone has no camera with that id."}
+	case errors.Is(err, phoneapi.ErrUnreachable):
+		return CameraActionResult{Outcome: "unreachable", Message: "Could not reach the phone."}
+	default:
+		return CameraActionResult{Outcome: "other", Message: err.Error()}
+	}
+}
+
+// CameraControlsView is Phone-detail's adjuster-panel data source: the active
+// camera's declared ranges, the current manual-control state, and the model's
+// calibration cameras (for the zoom-rect picker's predicted-crop overlay).
+type CameraControlsView struct {
+	OK           bool                          `json:"ok"`
+	Error        string                        `json:"error,omitempty"`
+	Capabilities *phoneapi.CameraCapabilities  `json:"capabilities,omitempty"`
+	State        *phoneapi.CameraStateResponse `json:"state,omitempty"`
+	Calibration  calibration.View              `json:"calibration"`
+}
+
+// GetCameraControls fetches GET /api/camera/capabilities (active camera) +
+// GET /api/camera/state in one round trip for the adjuster panel, plus the
+// model-keyed calibration summary already used elsewhere in Phone detail.
+func (a *App) GetCameraControls(phoneID string) CameraControlsView {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return CameraControlsView{Error: err.Error()}
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+
+	state, err := client.CameraState(a.ctxOrBackground())
+	if err != nil {
+		return CameraControlsView{Error: err.Error()}
+	}
+	caps, err := client.CameraCapabilities(a.ctxOrBackground(), state.CameraID)
+	if err != nil {
+		return CameraControlsView{Error: err.Error()}
+	}
+	calView, cerr := calibration.Lookup(a.store, phone)
+	if cerr != nil {
+		log.Printf("camera controls: calibration lookup for %s: %v", phoneID, cerr)
+	}
+	return CameraControlsView{OK: true, Capabilities: &caps, State: &state, Calibration: calView}
+}
+
+// SetCameraControls applies a new manual-control state on the phone
+// (validate-then-apply; a bad key comes back as outcome "invalid_key" naming
+// the field). The phone persists the state so it also governs recording.
+func (a *App) SetCameraControls(phoneID string, patch phoneapi.CameraStatePatch) CameraActionResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return CameraActionResult{Outcome: "other", Message: err.Error()}
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+	_, err = client.SetCameraState(a.ctxOrBackground(), patch)
+	switch {
+	case err == nil:
+		return CameraActionResult{OK: true, Outcome: "ok"}
+	case errors.Is(err, phoneapi.ErrUnreachable):
+		return CameraActionResult{Outcome: "unreachable", Message: "Could not reach the phone."}
+	default:
+		var ck *phoneapi.InvalidControlKeyError
+		if errors.As(err, &ck) {
+			return CameraActionResult{Outcome: "invalid_key", InvalidKey: ck.Key, Message: ck.Reason}
+		}
+		return CameraActionResult{Outcome: "other", Message: err.Error()}
+	}
+}
+
+// ComputeEffectiveRect maps a requested zoom + centre for one camera at one
+// output resolution to the crop the phone's HAL will actually apply, using the
+// stored empirical calibration for the phone's model. Backs the zoom-rect
+// picker's predicted-crop overlay.
+func (a *App) ComputeEffectiveRect(
+	phoneID, cameraID string, width, height int, zoom, centerX, centerY float64,
+) (calibration.EffectiveRectResult, error) {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return calibration.EffectiveRectResult{}, err
+	}
+	key := calibration.ModelKey(phone.Manufacturer, phone.Model)
+	entry, err := a.store.GetCalibration(key)
+	if err != nil {
+		return calibration.EffectiveRectResult{}, fmt.Errorf("no calibration for this model: %w", err)
+	}
+	return calibration.EffectiveRect(entry, cameraID, width, height, zoom, centerX, centerY)
 }
 
 // ---- Gallery / Trash ----

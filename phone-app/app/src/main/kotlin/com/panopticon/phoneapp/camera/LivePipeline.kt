@@ -11,6 +11,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
@@ -62,6 +63,8 @@ private const val DEQUEUE_TIMEOUT_US = 10_000L
 class LivePipeline(
     private val context: Context,
     private val liveDir: File,
+    private val cameraId: String? = null,
+    initialControls: CameraControlSpec = CameraControlSpec(),
     private val bitRate: Int = 2_000_000,
     private val frameRate: Int = 24,
     private val segmentDurationUs: Long = LiveHlsRelay.DEFAULT_SEGMENT_DURATION_US,
@@ -70,6 +73,14 @@ class LivePipeline(
     private val onBroadcastingChanged: (Boolean) -> Unit = {},
 ) {
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+    // Manual-control state (see CameraControlApply). Re-applied to the repeating request on
+    // applyControls(); the caps are read once the camera id is resolved in arm().
+    @Volatile private var controls: CameraControlSpec = initialControls
+    @Volatile private var caps: CameraCapabilities? = null
+    @Volatile private var openCameraId: String? = null
+    /** Set when [cameraId] is "<logical>:<physical>": session outputs pinned via [PhysicalCameraApi28]. */
+    @Volatile private var physicalCameraId: String? = null
 
     private val callbackThread = HandlerThread("PanopticonLiveCb").apply { start() }
     private val callbackHandler = Handler(callbackThread.looper)
@@ -148,13 +159,7 @@ class LivePipeline(
 
         relay = LiveHlsRelay(liveDir, segmentDurationUs)
         startDrain()
-        val request = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-            addTarget(surface)
-            // Pin the capture rate so the encoder gets a steady frame cadence - a HAL that drops
-            // to 15fps for exposure makes hls.js's buffer maths lumpy.
-            stableFpsRange()?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
-        }.build()
-        session.setRepeatingRequest(request, null, callbackHandler)
+        session.setRepeatingRequest(buildLiveRequest(device, surface), null, callbackHandler)
         broadcasting.set(true)
         startWatchdog()
         startSyncFrameLoop()
@@ -168,6 +173,31 @@ class LivePipeline(
 
     /** Called on every playlist/segment GET so the inactivity watchdog knows someone's watching. */
     fun touch() = lastAccessMs.set(SystemClock.elapsedRealtime())
+
+    /**
+     * Merge a new manual-control state and, if currently broadcasting, re-issue the repeating
+     * request so it takes effect without a session rebuild. A no-op if the camera isn't up yet;
+     * the state is kept and applied by [buildLiveRequest] when broadcasting next starts.
+     */
+    fun applyControls(spec: CameraControlSpec) {
+        controls = spec
+        val device = cameraDevice ?: return
+        val session = captureSession ?: return
+        val surface = encoderInputSurface ?: return
+        if (!broadcasting.get()) return
+        runCatching {
+            session.setRepeatingRequest(buildLiveRequest(device, surface), null, callbackHandler)
+        }.onFailure { Log.w(TAG, "applyControls: setRepeatingRequest failed", it) }
+    }
+
+    private fun buildLiveRequest(device: CameraDevice, surface: Surface): CaptureRequest =
+        device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+            addTarget(surface)
+            // Pin the capture rate so the encoder gets a steady frame cadence - a HAL that drops
+            // to 15fps for exposure makes hls.js's buffer maths lumpy.
+            stableFpsRange()?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+            caps?.let { CameraControlApply.applyTo(this, controls, it) }
+        }.build()
 
     private fun stopBroadcastingLocked() {
         watchdogJob?.cancel()
@@ -189,9 +219,14 @@ class LivePipeline(
     // ---- internals ----
 
     private suspend fun arm() {
-        val id = backCameraId() ?: throw IllegalStateException("no back-facing camera")
-        recordingSize = pickRecordingSize(id)
-        cameraDevice = openCameraDevice(id)
+        val id = cameraId?.takeIf { it.isNotBlank() } ?: backCameraId()
+            ?: throw IllegalStateException("no back-facing camera")
+        openCameraId = id
+        val (logicalId, physId) = CameraCapabilitiesReader.splitTarget(id)
+        physicalCameraId = physId?.takeIf { Build.VERSION.SDK_INT >= Build.VERSION_CODES.P }
+        caps = runCatching { CameraCapabilitiesReader.read(context, id) }.getOrNull()
+        recordingSize = pickRecordingSize(physId ?: logicalId)
+        cameraDevice = openCameraDevice(logicalId)
         createEncoder()
         val surface = encoderInputSurface ?: throw IllegalStateException("encoder has no input surface")
         val device = cameraDevice ?: throw IllegalStateException("camera closed")
@@ -357,16 +392,24 @@ class LivePipeline(
     private suspend fun createCaptureSession(
         device: CameraDevice, surfaces: List<Surface>, sessionFailed: AtomicBoolean,
     ): CameraCaptureSession = suspendCancellableCoroutine { cont ->
+        val cb = object : CameraCaptureSession.StateCallback() {
+            override fun onConfigured(session: CameraCaptureSession) { if (cont.isActive) cont.resume(session) }
+            override fun onConfigureFailed(session: CameraCaptureSession) {
+                sessionFailed.set(true)
+                if (cont.isActive) cont.resumeWithException(IllegalStateException("session configure failed"))
+            }
+            override fun onClosed(session: CameraCaptureSession) { sessionFailed.set(true) }
+        }
         try {
-            @Suppress("DEPRECATION")
-            device.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(session: CameraCaptureSession) { if (cont.isActive) cont.resume(session) }
-                override fun onConfigureFailed(session: CameraCaptureSession) {
-                    sessionFailed.set(true)
-                    if (cont.isActive) cont.resumeWithException(IllegalStateException("session configure failed"))
-                }
-                override fun onClosed(session: CameraCaptureSession) { sessionFailed.set(true) }
-            }, callbackHandler)
+            val physId = physicalCameraId
+            if (physId != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                PhysicalCameraApi28.createSession(
+                    device, surfaces, physId, { callbackHandler.post(it) }, cb,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                device.createCaptureSession(surfaces, cb, callbackHandler)
+            }
         } catch (e: CameraAccessException) {
             cont.resumeWithException(e)
         }

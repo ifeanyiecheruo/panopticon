@@ -11,7 +11,7 @@ import {
 } from '../api';
 import { fmtBytes, statusLabel } from '../lib/format';
 import { BackIcon, GalleryIcon } from '../lib/icons';
-import { LivePreview } from '../components/LivePreview';
+import { CameraControls } from '../components/CameraControls';
 
 interface PhoneDetailProps {
   phoneId: string;
@@ -183,13 +183,7 @@ export function PhoneDetail({ phoneId, onBack, onViewGallery }: PhoneDetailProps
         </div>
       </div>
 
-      <div className="deferred-note">
-        Manual camera adjusters are still out of scope for this vertical slice. Raw{' '}
-        <span className="mono">GET /api/status</span> + <span className="mono">GET /api/config</span> are shown below.
-      </div>
-
-      <div className="section-title">Live preview</div>
-      <LivePreview phoneId={phoneId} phoneRecording={phoneRecording} />
+      <CameraControls phoneId={phoneId} phoneRecording={phoneRecording} />
 
       <div className="section-title">Sync</div>
       <div className="card">

@@ -46,6 +46,44 @@ export namespace calibration {
 		    return a;
 		}
 	}
+	export class EffectiveRectResult {
+	    honoredZoom: number;
+	    effectiveRectNorm: phoneapi.RectNorm;
+	    positionHonored: boolean;
+	    activePhysicalId: string;
+	    note: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EffectiveRectResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.honoredZoom = source["honoredZoom"];
+	        this.effectiveRectNorm = this.convertValues(source["effectiveRectNorm"], phoneapi.RectNorm);
+	        this.positionHonored = source["positionHonored"];
+	        this.activePhysicalId = source["activePhysicalId"];
+	        this.note = source["note"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class View {
 	    modelKey: string;
 	    present: boolean;
@@ -222,6 +260,96 @@ export namespace main {
 	        this.runId = source["runId"];
 	        this.message = source["message"];
 	    }
+	}
+	export class CameraActionResult {
+	    ok: boolean;
+	    outcome: string;
+	    message?: string;
+	    invalidKey?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CameraActionResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.outcome = source["outcome"];
+	        this.message = source["message"];
+	        this.invalidKey = source["invalidKey"];
+	    }
+	}
+	export class CameraControlsView {
+	    ok: boolean;
+	    error?: string;
+	    capabilities?: phoneapi.CameraCapabilities;
+	    state?: phoneapi.CameraStateResponse;
+	    calibration: calibration.View;
+	
+	    static createFrom(source: any = {}) {
+	        return new CameraControlsView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.error = source["error"];
+	        this.capabilities = this.convertValues(source["capabilities"], phoneapi.CameraCapabilities);
+	        this.state = this.convertValues(source["state"], phoneapi.CameraStateResponse);
+	        this.calibration = this.convertValues(source["calibration"], calibration.View);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CamerasResult {
+	    ok: boolean;
+	    error?: string;
+	    cameras: phoneapi.CameraInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CamerasResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.error = source["error"];
+	        this.cameras = this.convertValues(source["cameras"], phoneapi.CameraInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class SegmentView {
 	    filename: string;
@@ -453,6 +581,280 @@ export namespace phoneapi {
 		}
 	}
 	
+	export class LongRange2 {
+	    lo: number;
+	    hi: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LongRange2(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.lo = source["lo"];
+	        this.hi = source["hi"];
+	    }
+	}
+	export class IntRange2 {
+	    lo: number;
+	    hi: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new IntRange2(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.lo = source["lo"];
+	        this.hi = source["hi"];
+	    }
+	}
+	export class FloatRange2 {
+	    lo: number;
+	    hi: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new FloatRange2(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.lo = source["lo"];
+	        this.hi = source["hi"];
+	    }
+	}
+	export class CameraCapabilities {
+	    cameraId: string;
+	    zoomRatioRange: FloatRange2;
+	    zoomViaRatioApi: boolean;
+	    aeCompensationRange: IntRange2;
+	    aeCompensationStepMilliEv: number;
+	    exposureTimeRangeNs?: LongRange2;
+	    sensitivityRange?: IntRange2;
+	    minFocusDistanceDiopters: number;
+	    hasManualSensor: boolean;
+	    hasManualFocus: boolean;
+	    hasManualWhiteBalance: boolean;
+	    wbGainRange: FloatRange2;
+	    awbModes: number[];
+	    videoStabilizationModes: number[];
+	    opticalStabilizationModes: number[];
+	    physicalCameraIds: string[];
+	    croppingType: string;
+	    activeArrayWidth: number;
+	    activeArrayHeight: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CameraCapabilities(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cameraId = source["cameraId"];
+	        this.zoomRatioRange = this.convertValues(source["zoomRatioRange"], FloatRange2);
+	        this.zoomViaRatioApi = source["zoomViaRatioApi"];
+	        this.aeCompensationRange = this.convertValues(source["aeCompensationRange"], IntRange2);
+	        this.aeCompensationStepMilliEv = source["aeCompensationStepMilliEv"];
+	        this.exposureTimeRangeNs = this.convertValues(source["exposureTimeRangeNs"], LongRange2);
+	        this.sensitivityRange = this.convertValues(source["sensitivityRange"], IntRange2);
+	        this.minFocusDistanceDiopters = source["minFocusDistanceDiopters"];
+	        this.hasManualSensor = source["hasManualSensor"];
+	        this.hasManualFocus = source["hasManualFocus"];
+	        this.hasManualWhiteBalance = source["hasManualWhiteBalance"];
+	        this.wbGainRange = this.convertValues(source["wbGainRange"], FloatRange2);
+	        this.awbModes = source["awbModes"];
+	        this.videoStabilizationModes = source["videoStabilizationModes"];
+	        this.opticalStabilizationModes = source["opticalStabilizationModes"];
+	        this.physicalCameraIds = source["physicalCameraIds"];
+	        this.croppingType = source["croppingType"];
+	        this.activeArrayWidth = source["activeArrayWidth"];
+	        this.activeArrayHeight = source["activeArrayHeight"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class RectNorm {
+	    l: number;
+	    t: number;
+	    r: number;
+	    b: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new RectNorm(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.l = source["l"];
+	        this.t = source["t"];
+	        this.r = source["r"];
+	        this.b = source["b"];
+	    }
+	}
+	export class CameraControlKeys {
+	    zoomRatio?: number;
+	    cropRegionNorm?: RectNorm;
+	    aeExposureCompensation?: number;
+	    aeLock?: boolean;
+	    manualExposure?: boolean;
+	    sensorExposureTimeNs?: number;
+	    sensorSensitivityIso?: number;
+	    manualFocus?: boolean;
+	    lensFocusDistanceDiopters?: number;
+	    awbMode?: number;
+	    manualWhiteBalance?: boolean;
+	    wbRedGain?: number;
+	    wbGreenGain?: number;
+	    wbBlueGain?: number;
+	    videoStabilizationMode?: number;
+	    opticalStabilizationMode?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CameraControlKeys(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.zoomRatio = source["zoomRatio"];
+	        this.cropRegionNorm = this.convertValues(source["cropRegionNorm"], RectNorm);
+	        this.aeExposureCompensation = source["aeExposureCompensation"];
+	        this.aeLock = source["aeLock"];
+	        this.manualExposure = source["manualExposure"];
+	        this.sensorExposureTimeNs = source["sensorExposureTimeNs"];
+	        this.sensorSensitivityIso = source["sensorSensitivityIso"];
+	        this.manualFocus = source["manualFocus"];
+	        this.lensFocusDistanceDiopters = source["lensFocusDistanceDiopters"];
+	        this.awbMode = source["awbMode"];
+	        this.manualWhiteBalance = source["manualWhiteBalance"];
+	        this.wbRedGain = source["wbRedGain"];
+	        this.wbGreenGain = source["wbGreenGain"];
+	        this.wbBlueGain = source["wbBlueGain"];
+	        this.videoStabilizationMode = source["videoStabilizationMode"];
+	        this.opticalStabilizationMode = source["opticalStabilizationMode"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CameraInfo {
+	    cameraId: string;
+	    facing: string;
+	    label: string;
+	    focalLengthMm?: number;
+	    isActive: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CameraInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cameraId = source["cameraId"];
+	        this.facing = source["facing"];
+	        this.label = source["label"];
+	        this.focalLengthMm = source["focalLengthMm"];
+	        this.isActive = source["isActive"];
+	    }
+	}
+	export class CameraStatePatch {
+	    manualControlEnabled?: boolean;
+	    keys?: CameraControlKeys;
+	
+	    static createFrom(source: any = {}) {
+	        return new CameraStatePatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.manualControlEnabled = source["manualControlEnabled"];
+	        this.keys = this.convertValues(source["keys"], CameraControlKeys);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CameraStateResponse {
+	    cameraId: string;
+	    rotationDegrees: number;
+	    manualControlEnabled: boolean;
+	    keys: CameraControlKeys;
+	
+	    static createFrom(source: any = {}) {
+	        return new CameraStateResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cameraId = source["cameraId"];
+	        this.rotationDegrees = source["rotationDegrees"];
+	        this.manualControlEnabled = source["manualControlEnabled"];
+	        this.keys = this.convertValues(source["keys"], CameraControlKeys);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class Config {
 	    deviceName: string;
 	    motionSensitivity: string;
@@ -473,20 +875,10 @@ export namespace phoneapi {
 	        this.rotationDegrees = source["rotationDegrees"];
 	    }
 	}
-	export class FloatRange2 {
-	    lo: number;
-	    hi: number;
 	
-	    static createFrom(source: any = {}) {
-	        return new FloatRange2(source);
-	    }
 	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.lo = source["lo"];
-	        this.hi = source["hi"];
-	    }
-	}
+	
+	
 	export class Status {
 	    mode: string;
 	    status: string;

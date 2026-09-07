@@ -10,6 +10,10 @@ export function CancelCalibration(arg1, arg2) {
   return window['go']['main']['App']['CancelCalibration'](arg1, arg2);
 }
 
+export function ComputeEffectiveRect(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['ComputeEffectiveRect'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
 export function DeleteClipPermanently(arg1, arg2) {
   return window['go']['main']['App']['DeleteClipPermanently'](arg1, arg2);
 }
@@ -26,12 +30,20 @@ export function GetCalibrationProgress(arg1, arg2) {
   return window['go']['main']['App']['GetCalibrationProgress'](arg1, arg2);
 }
 
+export function GetCameraControls(arg1) {
+  return window['go']['main']['App']['GetCameraControls'](arg1);
+}
+
 export function GetPhoneDetail(arg1) {
   return window['go']['main']['App']['GetPhoneDetail'](arg1);
 }
 
 export function IsQuitting() {
   return window['go']['main']['App']['IsQuitting']();
+}
+
+export function ListCameras(arg1) {
+  return window['go']['main']['App']['ListCameras'](arg1);
 }
 
 export function ListClips(arg1) {
@@ -56,6 +68,14 @@ export function RequestQuit() {
 
 export function RestoreClip(arg1, arg2) {
   return window['go']['main']['App']['RestoreClip'](arg1, arg2);
+}
+
+export function SetActiveCamera(arg1, arg2) {
+  return window['go']['main']['App']['SetActiveCamera'](arg1, arg2);
+}
+
+export function SetCameraControls(arg1, arg2) {
+  return window['go']['main']['App']['SetCameraControls'](arg1, arg2);
 }
 
 export function ShowWindow() {

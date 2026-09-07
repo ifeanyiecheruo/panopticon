@@ -112,18 +112,51 @@ them can run.
 
 ### Cameras (selection)
 
+> **Implemented** — phone-app `http/routes/CameraRoutes.kt` + `camera/CameraCatalog.kt`,
+> controller `internal/phoneapi/camera.go` + `App.ListCameras` / `SetActiveCamera` +
+> `frontend/src/components/CameraControls.tsx`. `cameraIdList` returns *logical* cameras only, so
+> the catalog also emits `"<logical>:<physical>"` ids for each physical sub-camera of a logical
+> multi-camera (API 28+). Opening one opens the *logical* device but pins the session's outputs
+> to that physical sensor via `OutputConfiguration.setPhysicalCameraId` (`camera/PhysicalCameraApi28.kt`).
+> On the Pixel 6 this exposes `0:2` (wide) and `0:3` (ultra-wide); the BLU G5 (single sensor per
+> facing) just lists `0`/`1`.
+
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
-| GET | `/api/cameras` | — | — | `{ "cameras": [ { "cameraId": "0", "facing": "back", "label": "Wide", "focalLengthMm": 5.4, "isActive": true }, { "cameraId": "2", "facing": "back", "label": "Ultra-wide", "focalLengthMm": 1.9, "isActive": false } ] }` | Lists physical cameras and which is active. |
-| POST | `/api/cameras/active` | — | `{ "cameraId": "2" }` | `{ "activeCameraId": "2" }` | Switches active camera (disruptive reconfigure). `404` unknown `cameraId`. |
+| GET | `/api/cameras` | — | — | `{ "cameras": [ { "cameraId": "0:3", "facing": "back", "label": "Ultra-wide", "focalLengthMm": 2.35, "isActive": false }, { "cameraId": "0", "facing": "back", "label": "Wide (auto)", "focalLengthMm": 6.81, "isActive": true }, { "cameraId": "1", "facing": "front", "label": "Front (auto)", "focalLengthMm": 2.51, "isActive": false } ] }` | Lists selectable cameras (logical ids + `"<logical>:<physical>"` sub-cameras) and which is active. `label` is a wide/ultra-wide/tele/front heuristic from relative focal length; a bare logical id gets a "(auto)" suffix. |
+| POST | `/api/cameras/active` | — | `{ "cameraId": "0:3" }` | `{ "activeCameraId": "0:3" }` | Switches active camera. Disruptive reconfigure — the service rebuilds the running pipeline (a switch mid-recording ends the current clip). Persisted in `DeviceConfig.activeCameraId`. `404` unknown `cameraId`. |
 
 ### Camera control
 
+> **Implemented** — phone-app `http/routes/CameraRoutes.kt` +
+> `camera/CameraCapabilitiesReader.kt` / `CameraControlApply.kt` / `CameraControlValidation.kt`
+> (the last is framework-free + unit-tested), controller `internal/phoneapi/camera.go` +
+> `App.GetCameraControls` / `SetCameraControls` / `ComputeEffectiveRect`. The applied state
+> persists in `DeviceConfig.cameraControls` and is re-applied to whichever pipeline
+> (`record` or `live`) is running — a state dialled in while watching the live preview also
+> governs recording. Verified on the Pixel 6 (API 36) and BLU G5 (API 28).
+
+**The concrete `keys` set** (`CameraControlKeys`; a null/absent field = leave that control on
+auto). `POST` replaces the `keys` object wholesale — send the full desired set.
+
+| key | Camera2 mapping | capability gate |
+|---|---|---|
+| `zoomRatio` (float) | `CONTROL_ZOOM_RATIO` (API 30+) else centred `SCALER_CROP_REGION` | `zoomRatioRange` |
+| `cropRegionNorm` `{l,t,r,b}` 0..1 | `SCALER_CROP_REGION` (off-centre) — **exclusive** with `zoomRatio` in one request (readback-corruption quirk); the rect wins | must be a sane sub-rect of 0..1 |
+| `aeExposureCompensation` (int) | `CONTROL_AE_EXPOSURE_COMPENSATION` | `aeCompensationRange` |
+| `aeLock` (bool) | `CONTROL_AE_LOCK` (metering freeze, not a manual-exposure dial) | — |
+| `manualExposure` (bool) + `sensorExposureTimeNs` + `sensorSensitivityIso` | `CONTROL_AE_MODE=OFF` + `SENSOR_EXPOSURE_TIME` + `SENSOR_SENSITIVITY` | `hasManualSensor` (`REQUEST_AVAILABLE_CAPABILITIES` ∋ `MANUAL_SENSOR`) |
+| `manualFocus` (bool) + `lensFocusDistanceDiopters` | `CONTROL_AF_MODE=OFF` + `LENS_FOCUS_DISTANCE` | `hasManualFocus` (`LENS_INFO_MINIMUM_FOCUS_DISTANCE > 0` + `AF_MODE_OFF`) |
+| `awbMode` (int) | `CONTROL_AWB_MODE` (0 off / 1 auto / 2 incandescent / … / 8 shade) | must be in `awbModes` (`CONTROL_AWB_AVAILABLE_MODES`, deduped) |
+| `manualWhiteBalance` (bool) + `wbRedGain` / `wbGreenGain` / `wbBlueGain` | `AWB_MODE_OFF` + `COLOR_CORRECTION_MODE=TRANSFORM_MATRIX` + identity `COLOR_CORRECTION_TRANSFORM` + `COLOR_CORRECTION_GAINS` (RGGB, green used for both G channels). Wins over `awbMode`. | `hasManualWhiteBalance` (`REQUEST_AVAILABLE_CAPABILITIES` ∋ `MANUAL_POST_PROCESSING`); gains in `wbGainRange` (fixed `1.0..8.0` — Camera2 declares none) |
+| `videoStabilizationMode` (int) | `CONTROL_VIDEO_STABILIZATION_MODE` (0 off, 1 on, 2 preview-stabilization API 33+) | must be in `videoStabilizationModes` (`CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES`, deduped) |
+| `opticalStabilizationMode` (int) | `LENS_OPTICAL_STABILIZATION_MODE` (0 off, 1 on) | must be in `opticalStabilizationModes` (`LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION`, deduped) |
+
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
-| GET | `/api/camera/capabilities` | `cameraId=2` *(optional, defaults to active)* | — | `{ "cameraId": "2", "SCALER_CROP_REGION": { "...": "..." }, "LENS_FOCUS_DISTANCE": { "minDiopters": 0, "maxDiopters": 10.0 } }` | Declared per-key ranges for a camera; optional `cameraId` previews another camera without switching. |
-| GET | `/api/camera/state` | — | — | `{ "cameraId": "2", "rotationDegrees": 0, "manualControlEnabled": true, "keys": { "...": "..." } }` | Current values for the active camera. |
-| POST | `/api/camera/state` | — | `{ "manualControlEnabled": true, "keys": { "SCALER_CROP_REGION": { "...": "..." } } }` | *(resulting state, same shape as GET)* | Batch-applies control keys; validate-then-apply, `400` naming the offending key. |
+| GET | `/api/camera/capabilities` | `cameraId=1` *(optional, defaults to active)* | — | `{ "cameraId": "0", "zoomRatioRange": {"lo":0.67,"hi":7.0}, "zoomViaRatioApi": true, "aeCompensationRange": {"lo":-24,"hi":24}, "aeCompensationStepMilliEv": 166, "exposureTimeRangeNs": {"lo":26503,"hi":8310343667}, "sensitivityRange": {"lo":44,"hi":11377}, "minFocusDistanceDiopters": 9.52, "hasManualSensor": true, "hasManualFocus": true, "hasManualWhiteBalance": true, "wbGainRange": {"lo":1.0,"hi":8.0}, "awbModes": [0,1,2,3,4,5,6,7,8], "videoStabilizationModes": [0,1,2], "opticalStabilizationModes": [0,1], "physicalCameraIds": ["2","3"], "croppingType": "CENTER_ONLY", "activeArrayWidth": 4080, "activeArrayHeight": 3072 }` | Declared per-key ranges for a camera; pure `CameraCharacteristics` read, works in any mode. Optional `cameraId` previews another camera without switching. `404` unknown `cameraId`. |
+| GET | `/api/camera/state` | — | — | `{ "cameraId": "0", "rotationDegrees": 0, "manualControlEnabled": false, "keys": { "zoomRatio": null, "...": null } }` | Current manual-control state (from `DeviceConfig`). `rotationDegrees` is reported here for spec fidelity but written via `/api/config`. |
+| POST | `/api/camera/state` | — | `{ "manualControlEnabled": true, "keys": { "zoomRatio": 2.0, "aeExposureCompensation": -2 } }` | *(resulting state, same shape as GET)* | Validate-then-apply against the **active** camera's capabilities: `400 {"error": "...", "key": "zoomRatio"}` on the first offending key, applies nothing. Accepted + persisted even in `standby` (applied when a pipeline next starts). |
 
 ### Calibration (device-wide)
 
