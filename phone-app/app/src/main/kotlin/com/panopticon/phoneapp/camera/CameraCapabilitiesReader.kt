@@ -1,6 +1,7 @@
 package com.panopticon.phoneapp.camera
 
 import android.content.Context
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.os.Build
@@ -97,6 +98,18 @@ object CameraCapabilitiesReader {
         val maxAeRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
         val maxAfRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
 
+        // Selectable record/broadcast sizes: ~16:9 output sizes from 480p..1080p,
+        // largest first. (4K live is intentionally excluded - too heavy for the
+        // plain-HLS pipeline.)
+        val outputResolutions = chars
+            .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?.getOutputSizes(SurfaceTexture::class.java)
+            ?.filter { it.width in 640..1920 && kotlin.math.abs(it.width.toDouble() / it.height - 16.0 / 9.0) < 0.02 }
+            ?.sortedByDescending { it.width.toLong() * it.height }
+            ?.map { "${it.width}x${it.height}" }
+            ?.distinct()
+            ?: emptyList()
+
         return CameraCapabilities(
             cameraId = cameraId,
             zoomRatioRange = zoom,
@@ -114,6 +127,7 @@ object CameraCapabilitiesReader {
             opticalStabilizationModes = oisModes,
             maxAeRegions = maxAeRegions,
             maxAfRegions = maxAfRegions,
+            outputResolutions = outputResolutions,
             physicalCameraIds = physicalIds,
             croppingType = croppingType,
             activeArrayWidth = active?.width() ?: 0,

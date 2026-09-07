@@ -33,13 +33,20 @@ import (
 // When all have stopped the sim pauses 1..5s, then relaunches. A grid scrolls
 // diagonally the whole time so a zoomed-in viewer always has motion on screen.
 
-const (
-	liveW   = 1280
-	liveH   = 720
-	liveFPS = 15
-)
+const liveFPS = 15
 
 var errNoFFmpeg = errors.New("ffmpeg not found on PATH")
+
+// parseWxH turns "1920x1080" into (1920, 1080); anything else -> the 720p
+// default. Keeps the sim + ffmpeg in lock-step with the phone's videoResolution.
+func parseWxH(s string) (w, h int) {
+	w, h = 1280, 720
+	var pw, ph int
+	if n, err := fmt.Sscanf(strings.ToLower(s), "%dx%d", &pw, &ph); err == nil && n == 2 && pw > 0 && ph > 0 {
+		w, h = pw, ph
+	}
+	return
+}
 
 // ---- physics ----
 
@@ -54,13 +61,14 @@ type ball struct {
 
 type sim struct {
 	rng      *rand.Rand
+	w, h     float64 // frame size (== the camera resolution)
 	balls    []ball
 	grid     float64   // scroll offset in px, monotonically increasing
 	pauseTil time.Time // zero = running; future = paused between rounds
 }
 
-func newSim(rng *rand.Rand) *sim {
-	s := &sim{rng: rng}
+func newSim(rng *rand.Rand, w, h int) *sim {
+	s := &sim{rng: rng, w: float64(w), h: float64(h)}
 	s.launch()
 	return s
 }
@@ -74,8 +82,8 @@ func (s *sim) launch() {
 		r := 16 + s.rng.Float64()*58
 		s.balls = append(s.balls, ball{
 			// spawn fully inside the frame so the whole disc is on screen
-			x:      r + s.rng.Float64()*(liveW-2*r),
-			y:      r + s.rng.Float64()*(liveH-2*r),
+			x:      r + s.rng.Float64()*(s.w-2*r),
+			y:      r + s.rng.Float64()*(s.h-2*r),
 			vx:     speed * math.Cos(ang),
 			vy:     speed * math.Sin(ang),
 			r:      r,
@@ -126,8 +134,8 @@ func (s *sim) step(dt float64) {
 			if b.vx < 0 {
 				b.vx = -b.vx * restitution
 			}
-		} else if b.x > liveW-b.r {
-			b.x = liveW - b.r
+		} else if b.x > s.w-b.r {
+			b.x = s.w - b.r
 			if b.vx > 0 {
 				b.vx = -b.vx * restitution
 			}
@@ -139,8 +147,8 @@ func (s *sim) step(dt float64) {
 			}
 		}
 		onFloor := false
-		if b.y > liveH-b.r {
-			b.y = liveH - b.r
+		if b.y > s.h-b.r {
+			b.y = s.h - b.r
 			if b.vy > 0 {
 				b.vy = -b.vy * restitution
 			}
@@ -187,15 +195,16 @@ func brightColor(rng *rand.Rand) color.RGBA {
 // ---- rendering (straight into the RGBA byte buffer ffmpeg consumes) ----
 
 func (s *sim) render(img *image.RGBA) {
+	W, H := img.Bounds().Dx(), img.Bounds().Dy()
 	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{10, 14, 18, 255}}, image.Point{}, draw.Src)
 
 	const cell = 84
 	off := int(math.Mod(s.grid, cell))
 	gridCol := color.RGBA{38, 52, 58, 255}
-	for x := off - cell; x < liveW; x += cell {
+	for x := off - cell; x < W; x += cell {
 		vline(img, x, gridCol)
 	}
-	for y := off - cell; y < liveH; y += cell {
+	for y := off - cell; y < H; y += cell {
 		hline(img, y, gridCol)
 	}
 
@@ -206,25 +215,27 @@ func (s *sim) render(img *image.RGBA) {
 }
 
 func vline(img *image.RGBA, x int, c color.RGBA) {
+	W, H := img.Bounds().Dx(), img.Bounds().Dy()
 	for w := 0; w < 2; w++ {
 		xx := x + w
-		if xx < 0 || xx >= liveW {
+		if xx < 0 || xx >= W {
 			continue
 		}
-		for y := 0; y < liveH; y++ {
+		for y := 0; y < H; y++ {
 			putPx(img, xx, y, c)
 		}
 	}
 }
 
 func hline(img *image.RGBA, y int, c color.RGBA) {
+	W, H := img.Bounds().Dx(), img.Bounds().Dy()
 	for w := 0; w < 2; w++ {
 		yy := y + w
-		if yy < 0 || yy >= liveH {
+		if yy < 0 || yy >= H {
 			continue
 		}
 		o := img.PixOffset(0, yy)
-		for x := 0; x < liveW; x++ {
+		for x := 0; x < W; x++ {
 			img.Pix[o], img.Pix[o+1], img.Pix[o+2], img.Pix[o+3] = c.R, c.G, c.B, 255
 			o += 4
 		}
@@ -235,10 +246,11 @@ func fillCircle(img *image.RGBA, cx, cy, r int, c color.RGBA) {
 	if r < 1 {
 		r = 1
 	}
+	W, H := img.Bounds().Dx(), img.Bounds().Dy()
 	r2 := r * r
 	for dy := -r; dy <= r; dy++ {
 		yy := cy + dy
-		if yy < 0 || yy >= liveH {
+		if yy < 0 || yy >= H {
 			continue
 		}
 		span2 := r2 - dy*dy
@@ -250,8 +262,8 @@ func fillCircle(img *image.RGBA, cx, cy, r int, c color.RGBA) {
 		if x0 < 0 {
 			x0 = 0
 		}
-		if x1 >= liveW {
-			x1 = liveW - 1
+		if x1 >= W {
+			x1 = W - 1
 		}
 		if x0 > x1 {
 			continue
@@ -297,11 +309,15 @@ func (s *server) startLive() error {
 		return err
 	}
 
+	s.mu.Lock()
+	w, h := parseWxH(s.videoResolution)
+	s.mu.Unlock()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	args := []string{
 		"-hide_banner", "-loglevel", "error",
 		"-f", "rawvideo", "-pix_fmt", "rgba",
-		"-s", fmt.Sprintf("%dx%d", liveW, liveH), "-r", strconv.Itoa(liveFPS),
+		"-s", fmt.Sprintf("%dx%d", w, h), "-r", strconv.Itoa(liveFPS),
 		"-i", "pipe:0",
 		"-an",
 		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
@@ -333,17 +349,17 @@ func (s *server) startLive() error {
 	s.live.done = make(chan struct{})
 	s.live.lastPoll = time.Now()
 
-	go s.pumpFrames(ctx, stdin, cmd, dir)
-	log.Printf("mockphone live: streaming %dx%d@%dfps from %s", liveW, liveH, liveFPS, dir)
+	go s.pumpFrames(ctx, stdin, cmd, dir, w, h)
+	log.Printf("mockphone live: streaming %dx%d@%dfps from %s", w, h, liveFPS, dir)
 	return nil
 }
 
-func (s *server) pumpFrames(ctx context.Context, stdin io.WriteCloser, cmd *exec.Cmd, dir string) {
+func (s *server) pumpFrames(ctx context.Context, stdin io.WriteCloser, cmd *exec.Cmd, dir string, w, h int) {
 	defer close(s.live.done)
 
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	sm := newSim(rng)
-	img := image.NewRGBA(image.Rect(0, 0, liveW, liveH))
+	sm := newSim(rng, w, h)
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
 
 	const substeps = 3
 	dt := 1.0 / float64(liveFPS)
@@ -382,6 +398,12 @@ func (s *server) pumpFrames(ctx context.Context, stdin io.WriteCloser, cmd *exec
 			}
 		}
 	}
+}
+
+func (s *liveStream) isRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running
 }
 
 func (s *server) stopLive() {

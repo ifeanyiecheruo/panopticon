@@ -328,6 +328,20 @@ a{color:var(--accent);}
    Preview screen — see docs/implementation/HANDOFF-phone-ux.md). Same narrow,
    space-constrained layout as the phone: frosted overlay ruler on the video,
    a drag-scroller mode bar below, pickers below that. ---- */
+/* section-title row that carries the resolution dropdown on its right */
+.phonecam-title{
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  max-width:440px;
+}
+.res-select{
+  text-transform:none; letter-spacing:0; font-weight:500;
+  font-family:"Consolas",monospace; font-size:11px;
+  background:var(--surface-2); color:var(--text); border:1px solid var(--border-soft);
+  border-radius:7px; padding:3px 6px;
+}
+.res-select:focus{outline:none; border-color:var(--accent-dim);}
+.res-select:disabled{opacity:.5;}
+
 .phonecam{max-width:440px;}
 .viewport-wrap{position:relative;}
 .viewport-wrap .live-video{width:100%; border-radius:12px; background:#000; aspect-ratio:16/9; object-fit:contain; display:block;}

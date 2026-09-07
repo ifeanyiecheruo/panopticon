@@ -2,6 +2,7 @@ package com.panopticon.phoneapp.http.routes
 
 import android.content.Context
 import com.panopticon.phoneapp.CameraConfigChange
+import com.panopticon.phoneapp.camera.CameraCapabilities
 import com.panopticon.phoneapp.camera.CameraCapabilitiesReader
 import com.panopticon.phoneapp.camera.CameraCatalog
 import com.panopticon.phoneapp.camera.CameraControlValidation
@@ -80,10 +81,12 @@ fun Route.cameraRoutes(
         get("/api/camera/state") {
             val cfg = appConfig.get()
             val id = cameraCatalog.resolveActiveId(cfg.activeCameraId) ?: ""
+            val caps = if (id.isNotEmpty()) CameraCapabilitiesReader.read(androidContext, id) else null
             call.respond(
                 CameraStateResponse(
                     cameraId = id,
                     rotationDegrees = cfg.rotationDegrees,
+                    videoResolution = effectiveResolution(cfg.videoResolution, caps),
                     manualControlEnabled = cfg.cameraControls.manualControlEnabled,
                     keys = cfg.cameraControls.keys,
                 ),
@@ -105,22 +108,53 @@ fun Route.cameraRoutes(
                 return@post
             }
             val caps = CameraCapabilitiesReader.read(androidContext, id)
+            if (patch.videoResolution != null &&
+                caps.outputResolutions.isNotEmpty() &&
+                patch.videoResolution !in caps.outputResolutions
+            ) {
+                call.respond(
+                    HttpStatusCode.BadRequest,
+                    ControlErrorBody("must be one of ${caps.outputResolutions}", "videoResolution"),
+                )
+                return@post
+            }
             CameraControlValidation.validate(next.keys, caps)?.let { err ->
                 call.respond(HttpStatusCode.BadRequest, ControlErrorBody(err.reason, err.key))
                 return@post
             }
 
             val nextRotation = patch.rotationDegrees ?: cfg.rotationDegrees
-            appConfig.update { it.copy(cameraControls = next, rotationDegrees = nextRotation) }
-            onCameraConfigChanged(CameraConfigChange.CONTROLS)
+            val nextResolution = patch.videoResolution ?: cfg.videoResolution
+            val resolutionChanged = patch.videoResolution != null && patch.videoResolution != cfg.videoResolution
+            appConfig.update {
+                it.copy(cameraControls = next, rotationDegrees = nextRotation, videoResolution = nextResolution)
+            }
+            // A size change needs a full pipeline rebuild (like a camera switch);
+            // a plain control change is just a request rebuild.
+            onCameraConfigChanged(
+                if (resolutionChanged) CameraConfigChange.ACTIVE_CAMERA else CameraConfigChange.CONTROLS,
+            )
             call.respond(
                 CameraStateResponse(
                     cameraId = id,
                     rotationDegrees = nextRotation,
+                    videoResolution = effectiveResolution(nextResolution, caps),
                     manualControlEnabled = next.manualControlEnabled,
                     keys = next.keys,
                 ),
             )
         }
+    }
+}
+
+/** The concrete record/broadcast size to report: the stored choice if it's
+ * still offered, otherwise the camera's largest supported size, otherwise a
+ * 720p default. */
+private fun effectiveResolution(stored: String, caps: CameraCapabilities?): String {
+    val list = caps?.outputResolutions ?: emptyList()
+    return when {
+        stored.isNotEmpty() && (list.isEmpty() || stored in list) -> stored
+        list.isNotEmpty() -> list.first()
+        else -> "1280x720"
     }
 }

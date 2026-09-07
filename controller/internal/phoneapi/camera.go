@@ -76,6 +76,7 @@ type CameraCapabilities struct {
 	OpticalStabilizationModes []int       `json:"opticalStabilizationModes"`
 	MaxAERegions              int         `json:"maxAeRegions"`
 	MaxAFRegions              int         `json:"maxAfRegions"`
+	OutputResolutions         []string    `json:"outputResolutions"`
 	PhysicalCameraIDs         []string    `json:"physicalCameraIds"`
 	CroppingType              string      `json:"croppingType"`
 	ActiveArrayWidth          int         `json:"activeArrayWidth"`
@@ -109,17 +110,21 @@ type CameraControlKeys struct {
 type CameraStateResponse struct {
 	CameraID             string            `json:"cameraId"`
 	RotationDegrees      int               `json:"rotationDegrees"`
+	VideoResolution      string            `json:"videoResolution"`
 	ManualControlEnabled bool              `json:"manualControlEnabled"`
 	Keys                 CameraControlKeys `json:"keys"`
 }
 
 // CameraStatePatch is POST /api/camera/state's body. Keys, when non-nil,
 // replaces the applied set wholesale (send the full desired set). Any subset of
-// the three fields may be sent; omitted fields are left unchanged on the phone.
+// the fields may be sent; omitted fields are left unchanged on the phone.
 type CameraStatePatch struct {
-	ManualControlEnabled *bool              `json:"manualControlEnabled,omitempty"`
+	ManualControlEnabled *bool `json:"manualControlEnabled,omitempty"`
 	// RotationDegrees is the preview/record frame rotation (0/90/180/270).
-	RotationDegrees *int               `json:"rotationDegrees,omitempty"`
+	RotationDegrees *int `json:"rotationDegrees,omitempty"`
+	// VideoResolution is the record/broadcast size "<w>x<h>" (one of the
+	// camera's CameraCapabilities.OutputResolutions).
+	VideoResolution *string            `json:"videoResolution,omitempty"`
 	Keys            *CameraControlKeys `json:"keys,omitempty"`
 }
 

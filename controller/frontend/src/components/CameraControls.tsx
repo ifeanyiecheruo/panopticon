@@ -84,6 +84,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   const [manualOn, setManualOn] = useState(false);
   const [keys, setKeys] = useState<ControlKeys>({});
   const [rotation, setRotation] = useState(0);
+  const [resolution, setResolution] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
   const [invalidKey, setInvalidKey] = useState<string | null>(null);
 
@@ -104,6 +105,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
       setManualOn(cv.state?.manualControlEnabled ?? false);
       setKeys({ ...(cv.state?.keys ?? {}) });
       setRotation(cv.state?.rotationDegrees ?? 0);
+      setResolution(cv.state?.videoResolution ?? '');
     } else {
       setLoadErr(cv.error || cs.error || 'Could not read camera state from the phone.');
     }
@@ -190,6 +192,36 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
     } catch (err) {
       setRotation(prev);
       setMsg(String(err));
+    }
+  };
+
+  // Record/broadcast size. Like a camera switch it rebuilds the phone pipeline,
+  // so re-attach the live player afterwards.
+  const applyResolution = async (size: string) => {
+    if (size === resolution || switchBusy) return;
+    const prev = resolution;
+    setResolution(size);
+    setSwitchBusy(true);
+    try {
+      const r = await SetCameraControls(
+        phoneId,
+        { videoResolution: size } as Parameters<typeof SetCameraControls>[1],
+      );
+      if (!r.ok) {
+        setResolution(prev);
+        setMsg(r.message || 'Could not set resolution.');
+        return;
+      }
+      setMsg(null);
+      if (ctl.live || ctl.state.kind === 'error') {
+        await new Promise((res) => setTimeout(res, 1200));
+        await ctl.reattach();
+      }
+    } catch (err) {
+      setResolution(prev);
+      setMsg(String(err));
+    } finally {
+      setSwitchBusy(false);
     }
   };
 
@@ -648,7 +680,24 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   // ---- render ----
   return (
     <>
-      <div className="section-title">Live preview &amp; camera</div>
+      <div className="section-title phonecam-title">
+        <span>Live preview &amp; camera</span>
+        {(caps?.outputResolutions?.length ?? 0) > 1 && (
+          <select
+            className="res-select"
+            value={resolution}
+            disabled={switchBusy}
+            onChange={(e) => applyResolution((e.target as HTMLSelectElement).value)}
+            title="Record / broadcast resolution"
+          >
+            {caps!.outputResolutions.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
       <div className="phonecam" onPointerDownCapture={wake}>
         <div
           className={`viewport-wrap ${idle ? 'idle' : ''}`}

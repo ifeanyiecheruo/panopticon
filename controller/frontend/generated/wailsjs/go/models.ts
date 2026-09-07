@@ -675,6 +675,7 @@ export namespace phoneapi {
 	    opticalStabilizationModes: number[];
 	    maxAeRegions: number;
 	    maxAfRegions: number;
+	    outputResolutions: string[];
 	    physicalCameraIds: string[];
 	    croppingType: string;
 	    activeArrayWidth: number;
@@ -703,6 +704,7 @@ export namespace phoneapi {
 	        this.opticalStabilizationModes = source["opticalStabilizationModes"];
 	        this.maxAeRegions = source["maxAeRegions"];
 	        this.maxAfRegions = source["maxAfRegions"];
+	        this.outputResolutions = source["outputResolutions"];
 	        this.physicalCameraIds = source["physicalCameraIds"];
 	        this.croppingType = source["croppingType"];
 	        this.activeArrayWidth = source["activeArrayWidth"];
@@ -832,6 +834,7 @@ export namespace phoneapi {
 	export class CameraStatePatch {
 	    manualControlEnabled?: boolean;
 	    rotationDegrees?: number;
+	    videoResolution?: string;
 	    keys?: CameraControlKeys;
 	
 	    static createFrom(source: any = {}) {
@@ -842,6 +845,7 @@ export namespace phoneapi {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.manualControlEnabled = source["manualControlEnabled"];
 	        this.rotationDegrees = source["rotationDegrees"];
+	        this.videoResolution = source["videoResolution"];
 	        this.keys = this.convertValues(source["keys"], CameraControlKeys);
 	    }
 	
@@ -866,6 +870,7 @@ export namespace phoneapi {
 	export class CameraStateResponse {
 	    cameraId: string;
 	    rotationDegrees: number;
+	    videoResolution: string;
 	    manualControlEnabled: boolean;
 	    keys: CameraControlKeys;
 	
@@ -877,6 +882,7 @@ export namespace phoneapi {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.cameraId = source["cameraId"];
 	        this.rotationDegrees = source["rotationDegrees"];
+	        this.videoResolution = source["videoResolution"];
 	        this.manualControlEnabled = source["manualControlEnabled"];
 	        this.keys = this.convertValues(source["keys"], CameraControlKeys);
 	    }

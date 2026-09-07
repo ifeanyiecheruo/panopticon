@@ -65,6 +65,8 @@ class LivePipeline(
     private val liveDir: File,
     private val cameraId: String? = null,
     initialControls: CameraControlSpec = CameraControlSpec(),
+    /** Requested record/broadcast size "<w>x<h>"; "" = pick 720p-ish. */
+    private val videoResolution: String = "",
     private val bitRate: Int = 2_000_000,
     private val frameRate: Int = 24,
     private val segmentDurationUs: Long = LiveHlsRelay.DEFAULT_SEGMENT_DURATION_US,
@@ -424,8 +426,20 @@ class LivePipeline(
         }
         val caps = avc?.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)?.videoCapabilities
         val supported = camSizes.filter { caps == null || caps.isSizeSupported(it.width, it.height) }
+        parseVideoSize(videoResolution)?.let { want ->
+            supported.firstOrNull { it.width == want.width && it.height == want.height }?.let { return it }
+        }
         return supported.firstOrNull { it.width == 1280 && it.height == 720 }
             ?: supported.filter { it.width <= 1280 && it.height <= 720 }.maxByOrNull { it.width.toLong() * it.height }
             ?: Size(1280, 720)
     }
+}
+
+/** "1920x1080" -> Size(1920, 1080); anything unparseable -> null. */
+internal fun parseVideoSize(s: String): Size? {
+    val parts = s.split('x', 'X')
+    if (parts.size != 2) return null
+    val w = parts[0].trim().toIntOrNull() ?: return null
+    val h = parts[1].trim().toIntOrNull() ?: return null
+    return if (w > 0 && h > 0) Size(w, h) else null
 }

@@ -709,6 +709,9 @@ class CameraGlPipeline(
         val avc = codecList.codecInfos.firstOrNull { it.isEncoder && it.supportedTypes.any { t -> t.equals(MediaFormat.MIMETYPE_VIDEO_AVC, true) } }
         val caps = avc?.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)?.videoCapabilities
         val supported = camSizes.filter { caps == null || caps.isSizeSupported(it.width, it.height) }
+        parseVideoSize(appConfig.get().videoResolution)?.let { want ->
+            supported.firstOrNull { it.width == want.width && it.height == want.height }?.let { return it }
+        }
         return supported.firstOrNull { it.width == 1280 && it.height == 720 }
             ?: supported.filter { it.width <= 1280 && it.height <= 720 }.maxByOrNull { it.width.toLong() * it.height }
             ?: Size(1280, 720)

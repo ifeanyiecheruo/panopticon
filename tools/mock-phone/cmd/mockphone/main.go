@@ -66,6 +66,7 @@ type server struct {
 	storageCapBytes    int64
 	ringBufferMaxAgeMs int64
 	rotationDegrees    int
+	videoResolution    string // "<w>x<h>" — record/broadcast size (via /api/camera/state)
 
 	// Calibration: a sweep is faked as a short timed "running" window, after
 	// which /status reports "completed" and /result serves a canned body.
@@ -100,6 +101,7 @@ func main() {
 		motionSensitivity:  "medium",
 		storageCapBytes:    64_000_000_000,
 		ringBufferMaxAgeMs: 604_800_000,
+		videoResolution:    "1280x720",
 		calSweepDurMs:  6000,
 		activeCameraID: "0",
 		controlKeys:    map[string]any{},
@@ -414,6 +416,9 @@ func (s *server) handleCamerasActive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"activeCameraId": body.CameraID})
 }
 
+// mockOutputResolutions is the set POST /api/camera/state accepts for videoResolution.
+var mockOutputResolutions = map[string]bool{"1920x1080": true, "1280x720": true, "854x480": true}
+
 func (s *server) handleCameraCapabilities(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("cameraId")
 	if id == "" {
@@ -447,6 +452,7 @@ func (s *server) handleCameraCapabilities(w http.ResponseWriter, r *http.Request
 		"opticalStabilizationModes": []int{0, 1},
 		"maxAeRegions":              3,
 		"maxAfRegions":              1,
+		"outputResolutions":         []string{"1920x1080", "1280x720", "854x480"},
 		"physicalCameraIds":         physicalIDs,
 		"croppingType":              "FREEFORM",
 		"activeArrayWidth":          4032,
@@ -459,6 +465,7 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			ManualControlEnabled *bool          `json:"manualControlEnabled"`
 			RotationDegrees      *int           `json:"rotationDegrees"`
+			VideoResolution      *string        `json:"videoResolution"`
 			Keys                 map[string]any `json:"keys"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -471,6 +478,12 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
+		}
+		if body.VideoResolution != nil && !mockOutputResolutions[*body.VideoResolution] {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "must be one of 1920x1080 / 1280x720 / 854x480", "key": "videoResolution",
+			})
+			return
 		}
 		// Reject obviously bad keys so the controller's 400-path is exercised.
 		if body.Keys != nil {
@@ -503,10 +516,23 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 		if body.RotationDegrees != nil {
 			s.rotationDegrees = *body.RotationDegrees
 		}
+		resChanged := false
+		if body.VideoResolution != nil && *body.VideoResolution != s.videoResolution {
+			s.videoResolution = *body.VideoResolution
+			resChanged = true
+		}
 		if body.Keys != nil {
 			s.controlKeys = body.Keys
 		}
+		live := s.mode == "live"
 		s.mu.Unlock()
+
+		// A size change rebuilds the pipeline; bounce a running live stream so the
+		// controller re-attaches at the new resolution (mirrors a camera switch).
+		if resChanged && live && s.live.isRunning() {
+			s.stopLive()
+			_ = s.startLive()
+		}
 	} else if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -520,6 +546,7 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cameraId":             s.activeCameraID,
 		"rotationDegrees":      s.rotationDegrees,
+		"videoResolution":      s.videoResolution,
 		"manualControlEnabled": s.manualControlEnabled,
 		"keys":                 keys,
 	})

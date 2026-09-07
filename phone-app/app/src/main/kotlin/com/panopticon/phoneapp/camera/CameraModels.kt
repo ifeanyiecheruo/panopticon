@@ -84,6 +84,10 @@ data class CameraCapabilities(
     val maxAeRegions: Int = 0,
     /** `CONTROL_MAX_REGIONS_AF` - >0 means `afRegionNorm` (tap-to-focus) is supported. */
     val maxAfRegions: Int = 0,
+    /** Selectable record/broadcast sizes ("<w>x<h>"), largest first - a filtered
+     *  view of `StreamConfigurationMap` output sizes. The active one is
+     *  `CameraStateResponse.videoResolution`, set via `POST /api/camera/state`. */
+    val outputResolutions: List<String> = emptyList(),
     /** Physical sub-camera ids of a logical multi-camera (`chars.physicalCameraIds`), API 28+.
      *  Present only on the logical camera's own capabilities; a `"<logical>:<physical>"` entry
      *  carries the physical camera's ranges directly. */
@@ -157,6 +161,7 @@ data class CameraControlSpec(
 data class CameraStateResponse(
     val cameraId: String,
     val rotationDegrees: Int,
+    val videoResolution: String,
     val manualControlEnabled: Boolean,
     val keys: CameraControlKeys,
 )
@@ -168,5 +173,8 @@ data class CameraStatePatch(
      * `DeviceConfig`, not in [CameraControlSpec] - it's a pipeline-orientation
      * setting, not an auto/manual control key. */
     val rotationDegrees: Int? = null,
+    /** Record/broadcast size "<w>x<h>"; must be one of the camera's
+     * `outputResolutions`. Changing it rebuilds the running pipeline. */
+    val videoResolution: String? = null,
     val keys: CameraControlKeys? = null,
 )

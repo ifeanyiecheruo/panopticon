@@ -23,6 +23,8 @@ data class DeviceConfig(
     val storageCapBytes: Long = 8_000_000_000L,
     val ringBufferMaxAgeMs: Long = 7L * 24 * 60 * 60 * 1000,
     val rotationDegrees: Int = 0,
+    /** Record/broadcast size "<w>x<h>"; "" = let the pipeline pick (720p-ish). */
+    val videoResolution: String = "",
     /** Physical camera id the pipelines open; "" = resolve the default back camera. */
     val activeCameraId: String = "",
     val cameraControls: CameraControlSpec = CameraControlSpec(),
