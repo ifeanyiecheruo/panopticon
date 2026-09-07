@@ -332,15 +332,22 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   }, [pickRect, cancelRect]);
 
   // ---- adjuster set (capability-gated) ----
+  // Per-capability flags for the combined adjusters. Each adjuster shows if
+  // *either* of its two capabilities is present; inside, only the sub-controls
+  // (rulers, dropdown options) whose capability is supported get rendered.
+  const canZoomDial = !!caps && caps.zoomRatioRange.hi - caps.zoomRatioRange.lo > 0.01;
+  const canZoomRect = canZoomDial; // digital crop needs the same digital-zoom headroom
+  const canFocusDial = !!caps && caps.hasManualFocus && caps.minFocusDistanceDiopters > 0;
+  const canFocusPoint = !!caps && caps.maxAfRegions > 0;
+  const canExpComp = !!caps && caps.aeCompensationRange.hi > caps.aeCompensationRange.lo;
+  const canManualExp = !!(caps?.hasManualSensor && caps.exposureTimeRangeNs && caps.sensitivityRange);
+  const canSpotMeter = !!caps && caps.maxAeRegions > 0;
+
   const modes: Mode[] = [];
   if (caps) {
-    modes.push({ id: 'zoom', label: 'Zoom', icon: 'zoom' });
+    if (canZoomDial || canZoomRect) modes.push({ id: 'zoom', label: 'Zoom', icon: 'zoom' });
     modes.push({ id: 'exposure', label: 'Exposure', icon: 'exposure' });
-    // Focus adjuster: a manual-distance dial and/or drag-to-focus (AF regions).
-    // Cameras that expose only one of the two (e.g. the Pixel 6 back camera has
-    // AF regions but no manual focus distance) still get the mode.
-    if ((caps.hasManualFocus && caps.minFocusDistanceDiopters > 0) || caps.maxAfRegions > 0)
-      modes.push({ id: 'focus', label: 'Focus', icon: 'focus' });
+    if (canFocusDial || canFocusPoint) modes.push({ id: 'focus', label: 'Focus', icon: 'focus' });
     if ((caps.awbModes && caps.awbModes.length > 1) || caps.hasManualWhiteBalance)
       modes.push({ id: 'wb', label: 'White bal.', icon: 'wb' });
     const canVideoStab = caps.videoStabilizationModes?.includes(1);
@@ -371,8 +378,6 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   let note: string | undefined;
   let rectTarget: RectTarget | undefined;
 
-  const hasManualExp = !!(caps?.hasManualSensor && caps.exposureTimeRangeNs && caps.sensitivityRange);
-
   if (caps && playing) {
     const C = caps;
     switch (validOpen) {
@@ -380,66 +385,88 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
         // Zoom = a centred-zoom ruler AND the drag-a-box off-centre picker.
         // The rect (like every rect) is only offered while manual controls are
         // engaged, and never toggles that state itself.
-        if (manualOn) {
+        if (canZoomDial) {
+          rulers = [
+            {
+              key: 'zoom',
+              spec: spec(C.zoomRatioRange.lo, C.zoomRatioRange.hi, ['zoomOut', 'zoomIn']),
+              value: keys.zoomRatio ?? C.zoomRatioRange.lo,
+              dflt: C.zoomRatioRange.lo,
+              set: (v, c) => applyKeys({ zoomRatio: v, cropRegionNorm: undefined }, c),
+            },
+          ];
+        }
+        if (canZoomRect && manualOn) {
           rectTarget = { key: 'cropRegionNorm', clears: ['zoomRatio'], applied: 'Zoom rect applied.' };
         }
-        rulers = [
-          {
-            key: 'zoom',
-            spec: spec(C.zoomRatioRange.lo, C.zoomRatioRange.hi, ['zoomOut', 'zoomIn']),
-            value: keys.zoomRatio ?? C.zoomRatioRange.lo,
-            dflt: C.zoomRatioRange.lo,
-            set: (v, c) => applyKeys({ zoomRatio: v, cropRegionNorm: undefined }, c),
-          },
-        ];
         break;
       case 'exposure': {
-        // Folded: metering mode (auto / AE lock / manual) + comp OR shutter+ISO
-        // rulers + a drag-a-box spot-metering rect.
+        // Folded: metering mode + (comp ruler | shutter+ISO rulers) + a
+        // drag-a-box spot-metering rect. Only capabilities the camera has are
+        // offered; AE lock is universal so it's always there.
         const expMode = keys.manualExposure ? 'manual' : keys.aeLock ? 'lock' : 'auto';
         const opts = [
           { v: 'auto', label: 'auto' },
           { v: 'lock', label: 'AE lock' },
         ];
-        if (hasManualExp) opts.push({ v: 'manual', label: 'manual (shutter + ISO)' });
+        if (canManualExp || canSpotMeter) {
+          opts.push({
+            v: 'manual',
+            label: canManualExp ? 'manual (shutter + ISO)' : 'manual (spot metering)',
+          });
+        }
         select = {
           label: 'Exposure',
           value: expMode,
           options: opts,
-          onChange: (v) => {
-            if (v === 'manual') applyKeys({ manualExposure: true, aeLock: false, aeRegionNorm: undefined }, true);
-            else if (v === 'lock') applyKeys({ manualExposure: false, aeLock: true }, true);
-            else applyKeys({ manualExposure: false, aeLock: false }, true);
-          },
+          onChange: (v) =>
+            applyKeys(
+              {
+                manualExposure: v === 'manual',
+                aeLock: v === 'lock',
+                aeRegionNorm: undefined,
+              },
+              true,
+            ),
         };
-        if (expMode === 'manual' && C.exposureTimeRangeNs && C.sensitivityRange) {
-          const eLo = Math.log10(C.exposureTimeRangeNs.lo);
-          const eHi = Math.log10(C.exposureTimeRangeNs.hi);
-          rulers = [
-            {
-              key: 'shutter',
-              spec: spec(eLo, eHi, ['moon', 'sun']),
-              value: Math.log10(keys.sensorExposureTimeNs ?? C.exposureTimeRangeNs.lo),
-              dflt: eLo,
-              set: (v, c) =>
-                applyKeys(
-                  { sensorExposureTimeNs: Math.round(10 ** v), manualExposure: true, aeRegionNorm: undefined },
-                  c,
-                ),
-            },
-            {
-              key: 'iso',
-              spec: spec(C.sensitivityRange.lo, C.sensitivityRange.hi, ['shadowLow', 'shadowHigh']),
-              value: keys.sensorSensitivityIso ?? C.sensitivityRange.lo,
-              dflt: C.sensitivityRange.lo,
-              set: (v, c) =>
-                applyKeys(
-                  { sensorSensitivityIso: Math.round(v), manualExposure: true, aeRegionNorm: undefined },
-                  c,
-                ),
-            },
-          ];
-        } else {
+        if (expMode === 'manual') {
+          if (canManualExp && C.exposureTimeRangeNs && C.sensitivityRange) {
+            const eLo = Math.log10(C.exposureTimeRangeNs.lo);
+            const eHi = Math.log10(C.exposureTimeRangeNs.hi);
+            rulers = [
+              {
+                key: 'shutter',
+                spec: spec(eLo, eHi, ['moon', 'sun']),
+                value: Math.log10(keys.sensorExposureTimeNs ?? C.exposureTimeRangeNs.lo),
+                dflt: eLo,
+                set: (v, c) =>
+                  applyKeys(
+                    { sensorExposureTimeNs: Math.round(10 ** v), manualExposure: true, aeRegionNorm: undefined },
+                    c,
+                  ),
+              },
+              {
+                key: 'iso',
+                spec: spec(C.sensitivityRange.lo, C.sensitivityRange.hi, ['shadowLow', 'shadowHigh']),
+                value: keys.sensorSensitivityIso ?? C.sensitivityRange.lo,
+                dflt: C.sensitivityRange.lo,
+                set: (v, c) =>
+                  applyKeys(
+                    { sensorSensitivityIso: Math.round(v), manualExposure: true, aeRegionNorm: undefined },
+                    c,
+                  ),
+              },
+            ];
+          }
+          if (canSpotMeter) {
+            rectTarget = {
+              key: 'aeRegionNorm',
+              clears: canManualExp ? ['sensorExposureTimeNs', 'sensorSensitivityIso'] : [],
+              applied: 'Metering spot set.',
+            };
+            if (!canManualExp) note = 'Drag a box on the preview to meter that area.';
+          }
+        } else if (canExpComp) {
           rulers = [
             {
               key: 'ec',
@@ -450,30 +477,20 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
             },
           ];
         }
-        // Spot-metering rect: manual exposure only, and it does NOT leave manual.
-        if (expMode === 'manual' && C.maxAeRegions > 0) {
-          rectTarget = {
-            key: 'aeRegionNorm',
-            clears: ['sensorExposureTimeNs', 'sensorSensitivityIso'],
-            applied: 'Metering spot set.',
-          };
-        }
         break;
       }
       case 'focus': {
-        const hasFocusDial = C.hasManualFocus && C.minFocusDistanceDiopters > 0;
         select = {
           label: 'Focus mode',
           value: keys.manualFocus ? 'manual' : 'auto',
           options: [
             { v: 'auto', label: 'auto (continuous)' },
-            { v: 'manual', label: hasFocusDial ? 'manual' : 'manual (pick a point)' },
+            { v: 'manual', label: canFocusDial ? 'manual' : 'manual (pick a point)' },
           ],
-          onChange: (v) =>
-            applyKeys({ manualFocus: v === 'manual', afRegionNorm: undefined }, true),
+          onChange: (v) => applyKeys({ manualFocus: v === 'manual', afRegionNorm: undefined }, true),
         };
         if (keys.manualFocus) {
-          if (hasFocusDial) {
+          if (canFocusDial) {
             rulers = [
               {
                 key: 'focus',
@@ -489,16 +506,16 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
             ];
           }
           // Focus-point rect: manual only, and it does NOT leave manual.
-          if (C.maxAfRegions > 0) {
+          if (canFocusPoint) {
             rectTarget = {
               key: 'afRegionNorm',
-              clears: hasFocusDial ? ['lensFocusDistanceDiopters'] : [],
+              clears: canFocusDial ? ['lensFocusDistanceDiopters'] : [],
               applied: 'Focus point set.',
             };
-            if (!hasFocusDial) note = 'Drag a box on the preview to lock focus on that area.';
+            if (!canFocusDial) note = 'Drag a box on the preview to lock focus on that area.';
           }
         } else {
-          note = hasFocusDial
+          note = canFocusDial
             ? 'Set focus mode to “manual” to dial focus or pick a focus point.'
             : 'Set focus mode to “manual” to pick a focus point.';
         }
