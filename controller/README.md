@@ -6,12 +6,14 @@ background whether or not a window is open.
 
 This is a **vertical slice**, not the full app — see "What's deferred" below. It implements
 end to end: project scaffold, tray presence, embedded SQLite state, the Add-phone pairing
-flow, a Fleet screen, a background sync loop, a Gallery/Trash, the manufacturer+model
-calibration store (opportunistic ingest on pair / Phone-detail open, plus a Phone-detail
-re-run), plain-HLS **live preview**, **camera selection + manual Camera2 controls** (a
-switcher + adjuster panel + a zoom-rect picker over the live preview that overlays the
-calibration-predicted honoured crop), and unpair / force-unpair. It does not implement the
-eviction-probe loop.
+flow, a **master-detail Fleet** (device list + inline Phone-detail: command bar, editable
+config form, read-only status panel, battery glyph), a background sync loop, a
+multi-select Gallery/Trash, the manufacturer+model calibration store (opportunistic ingest on
+pair / Phone-detail open, plus a Phone-detail re-run), plain-HLS **live preview** with a
+selectable resolution, **camera selection + manual Camera2 controls** (a switcher + the
+phone-style adjuster panel + a Zoom/Focus/Exposure rect picker over the live preview that
+overlays the calibration-predicted honoured crop), per-phone record start/stop + rename, and
+unpair / force-unpair. It does not implement the eviction-probe loop or fleet-wide bulk arm.
 
 Reference docs (read-only, live in the parent `panopticon` repo):
 - `../docs/implementation/phone-http-api.md` — the phone-side HTTP contract this controller
@@ -139,20 +141,23 @@ rows, and the Gallery/Trash screens reading them back correctly.
   the entry point. Layout:
   - `src/main.tsx` — entry point, mounts `<App/>`.
   - `src/App.tsx` — top-level router/state: one `useState<AppState>` covering the current
-    route plus each screen's in-flight selection, mirroring the original single-object
-    `state` the vanilla router mutated. Every `navigate()` call bumps a `nonce` that's folded
-    into the active screen's `key`, forcing a full unmount/remount (and refetch) — the same
-    "wipe `main.innerHTML` and re-run `renderX()` from scratch on every navigation" behavior
-    the vanilla version had, including the loading flash on every clip selection.
-  - `src/screens/` — one component per screen: `Fleet.tsx`, `PhoneDetail.tsx`,
-    `Gallery.tsx`, `Trash.tsx`, `AddPhone.tsx`.
-  - `src/components/` — `Shell.tsx` (the left nav rail + main slot), `ClipTiles.tsx`
-    (the day-grouped clip grid shared by Gallery and Trash, one tile per clip),
-    `ClipPlayer.tsx` (a `<video>` that walks a clip's segments as a playlist, advancing on
-    `ended` and then handing off to the next clip), and `LivePreview.tsx` (the Phone-detail
-    live view — [hls.js](https://github.com/video-dev/hls.js) against the local proxy with
-    live-tuned config + a stall watchdog, a Watch/Stop button, `StartLivePreview`/
-    `StopLivePreview` bound calls, teardown on unmount).
+    route plus each screen's in-flight selection. `navigate()` merges a partial `AppState`;
+    screens are keyed by bare route (and `phone` reuses the `fleet` key) so navigation and
+    selection **don't** remount/refetch the screen — the old `nonce`-in-`key` remount (and its
+    loading flash on every clip selection) is gone. Screens refetch only on real input changes
+    and keep stale data painted during a refetch.
+  - `src/screens/` — one component per screen: `Fleet.tsx` (master list + inline
+    `PhoneDetail`), `PhoneDetail.tsx`, `Gallery.tsx`, `Trash.tsx`, `AddPhone.tsx`.
+  - `src/components/` — `Shell.tsx` (left nav rail + main slot); `ClipTiles.tsx` (day-grouped
+    clip grid shared by Gallery/Trash, shift/ctrl multi-select); `ClipPlayer.tsx` (a keyed
+    `<video>` that walks a clip's segments as a playlist and, given `autoplay`, plays through
+    to the next clip across its remount); `LivePreview.tsx` (`useLivePreview` hook +
+    presentational video — [hls.js](https://github.com/video-dev/hls.js) against the local
+    proxy with live-tuned config + a stall watchdog, `reattach()` for camera switches);
+    `CameraControls.tsx` + `phonecam/*` (the ported phone Preview-screen controls: drag-rulers,
+    a drag-scroller mode bar, dropdowns, the shared Zoom/Focus/Exposure rect picker, a
+    right-aligned resolution `<select>`); `PhoneCommandBar.tsx`, `ConfigForm.tsx` (editable
+    config), `StatusPanel.tsx` (read-only), `BatteryIcon.tsx` (cell/bolt glyph).
   - `src/vendor/hlsjs/` — hls.js 1.7.2 (Apache-2.0) vendored as built ESM (full + minified) +
     `.d.ts`, **not** an npm dependency; see its `README.md` for how to update.
   - `src/api.ts` — thin typed re-export of the generated Wails bindings
@@ -187,9 +192,11 @@ oversights:
   and `EmptyTrash` purge every segment file in the clip immediately and mark the clip row
   `purged` (its segment rows stay as tombstones so resync can't resurrect them), but purged
   tombstones accumulate forever rather than eventually being dropped.
-- **Bulk arm / bulk stand-down** (Fleet's fleet-wide record/standby actions) — not
-  implemented; this slice's Fleet screen is read-only (status display + drill-down).
-  Likewise no per-phone rename action.
+- **Bulk arm / bulk stand-down** (Fleet's *fleet-wide* record/standby actions) — not
+  implemented. Per-phone record start/stop **is** done (the Phone-detail command bar,
+  `App.SetRecording`), as is per-phone rename (the config form's `deviceName`, which
+  `App.SetConfig` also writes to the local `phones` row via `UpdatePhoneName` so it
+  propagates through Fleet / Gallery / clip attribution).
 - **QR-code pairing.** Only the paste-two-fields path is implemented (address + invite code,
   with full-URL autofill into either field). No webcam viewfinder.
 - **Custom scrubber.** Uses a native `<video controls>` element instead of the mock's custom

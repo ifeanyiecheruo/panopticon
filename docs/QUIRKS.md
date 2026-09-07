@@ -129,6 +129,10 @@ ever recording, same approach as the old `recordingSizes()`.
 resolved to 1280x720 (both camera and encoder agree it's supported) - we never hit a case where
 the two capability sets disagreed, so **the actual black-frame failure mode was not reproduced or
 exercised** here. The guard is present but untested against a real disagreement.
+**Update (commit `e6de4cf`):** `pickRecordingSize()` now honours a controller-selected
+`videoResolution` (up to 4K) when both capability sets support it, so it no longer always lands on
+720p. That exposed a *different* failure at >1080p — an anamorphic squash, not black frames — see
+"The GL `SurfaceTexture` record path anamorphically squashes…" below.
 **Where:** `CameraGlPipeline.kt` (`pickRecordingSize()`).
 
 #### A thumbnail came back black - explained by test-environment lighting, not a codec bug
@@ -199,6 +203,32 @@ Pixel 6 and BLU G5 produce a rolling playlist of valid `mpegts`/`h264` 1280×720
 decodes + concatenates cleanly; then, through a real `wails dev` controller (hls.js in the
 webview against `liveproxy.go`), the Pixel 6 played **2.5+ minutes continuously, ~50 segments,
 zero segment 404s, no stalls**, and the BLU produced dead-regular ~0.96s segments at real time.
+
+#### The GL `SurfaceTexture` record path anamorphically squashes the frame when the buffer aspect ≠ the sensor aspect (>1080p 16:9 on the 4:3 main sensor)
+**What we assumed:** feeding the camera into a `SurfaceTexture` sized with
+`setDefaultBufferSize(W,H)` and drawing it through `SurfaceTexture.getTransformMatrix()` yields a
+correctly-proportioned frame at any `(W,H)` the camera lists for `SurfaceTexture` output — the
+matrix carries whatever crop the HAL applied.
+**Actually observed (Pixel 6 back camera):** at a 16:9 size **above ~1080p** (`3840×2160`), the
+HAL fills the buffer with the **whole 4:3 sensor frame scaled anamorphically to 16:9** — no
+centre-crop, and `getTransformMatrix()` comes back ≈ identity (no crop encoded). The full-quad GL
+blit then stretches that 4:3 content across the 16:9 encoder surface → recordings are **visibly
+vertically squashed** (circles → wide ellipses). At `1280×720` the HAL *does* centre-crop, so it
+was invisible until `pickRecordingSize()` began honouring a UI-selected resolution (commit
+`e6de4cf`). The **live** path is unaffected: `LivePipeline` targets a concrete `MediaCodec` input
+`Surface`, which gets Camera2's guaranteed aspect-preserving centre-crop — so live looked right
+while a recording of the same scene was squashed.
+**What we do about it:** `CameraGlPipeline` now separates the *output* size (`recordingSize` — the
+encoder/EGL surface) from the *camera source* size (`sourceSize` — the `SurfaceTexture` buffer).
+`pickSourceSize()` drives the `SurfaceTexture` at a **sensor-aspect** size (so the HAL fills it
+1:1, no squash) and a `uTexCrop` uniform in the vertex shader centre-crops the sampled region to
+the output aspect *before* `uSTMatrix`. When the sensor already matches the output aspect,
+`sourceSize == recordingSize` and `uTexCrop` is `(1,1)` (no-op). If the camera exposes no
+sensor-aspect `SurfaceTexture` size it logs and falls back to the old (squashed) behaviour.
+**Verified on the Pixel 6:** a fresh `3840×2160` recording is correctly proportioned and its
+framing matches the live preview (both a 16:9 centre-crop of the sensor).
+**Where:** `phone-app/.../camera/CameraGlPipeline.kt` (`pickSourceSize()`, `computeTexCrop()`,
+`VERTEX_SHADER`'s `uTexCrop`). Commit `e3bb2fa`.
 
 ### Calibration zoom probe
 

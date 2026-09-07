@@ -1,11 +1,13 @@
 # Panopticon implementation handoff
 
-Status as of 2026-09-06: both `phone-app/` and `controller/` exist as working, cross-verified
+Status as of 2026-09-07: both `phone-app/` and `controller/` exist as working, cross-verified
 **thin vertical slices** — pair → record → sync a clip → view it, phone and controller talking
-to each other over the real HTTP contract, tested against a real Pixel 6. This doc is the
-starting point for whoever picks this up next (a fresh session, most likely) to build out the
-remaining feature slices. Read this first; it links out rather than duplicating detail that
-already lives elsewhere and would drift.
+to each other over the real HTTP contract, tested against a real Pixel 6. Since then several
+feature slices have landed on top (camera controls, calibration, motion-gated recording, live
+HLS, the controller UX overhaul + selectable resolution) — see "Slices added since the initial
+handoff" below. This doc is the starting point for whoever picks this up next (a fresh session,
+most likely) to build out the remaining feature slices. Read this first; it links out rather
+than duplicating detail that already lives elsewhere and would drift.
 
 **Slices added since the initial handoff:**
 
@@ -161,8 +163,53 @@ already lives elsewhere and would drift.
   on both devices; then through a real `wails dev` controller (hls.js in the webview) the Pixel 6
   played 2.5+ min continuously (~50 segments, zero 404s, no stalls) and the BLU produced regular
   ~0.96s segments at real time. **Deferred:** LL-HLS + the rest of its hls.js latency workarounds
-  (catalogued in `docs/QUIRKS.md`), adaptive bitrate, live resolution changes, a scoped `/live/*`
-  token.
+  (catalogued in `docs/QUIRKS.md`), adaptive bitrate, a scoped `/live/*` token.
+
+- **Controller UX overhaul + selectable resolution + live-start arming (both sides).** Commits
+  `381de5b`…`e3bb2fa`. **Controller frontend:** Fleet is **master-detail** — a device list beside
+  an inline Phone-detail pane, stably keyed so selecting a phone swaps only the detail pane (the
+  old remount-on-navigate is gone → Gallery/Trash no longer flash on selection). The master list
+  shows **only the phone name**; a second copy of status/battery there drifted out of sync with
+  the detail pane (which polls), so it was removed. Phone-detail = a command bar (record
+  start/stop, watch live, Gallery, calibrate, unpair) + an **editable** device-config form + a
+  read-only status panel + a battery drawn as a cell/bolt glyph (never text); raw `/api/status`
+  and `/api/config` JSON and the sync-internals card are gone. New `SetRecording` / `SetConfig`
+  bindings — `SetConfig` renames the local `phones` row when `deviceName` changes (new
+  `UpdatePhoneName` query) so the name propagates through Fleet / Gallery filters / clip
+  attribution. Gallery/Trash: shift/ctrl multi-select, bulk trash/restore/delete, arrow-key +
+  Delete-key nav, and `ClipPlayer` now plays **through** every clip in a run (an `autoplay` prop
+  carried across a per-clip remount `key`). **Camera controls** are the ported phone
+  Preview-screen UX (`frontend/src/components/phonecam/*` + `CameraControls.tsx`): frosted
+  drag-rulers over the live `<video>`, a drag-scroller mode bar, categorical dropdowns, per-slider
+  reset, a "Full auto" button, a 2s idle-fade held while the pointer is over the preview, and one
+  shared drag-box rect picker for Zoom/Focus/Exposure (applies on pointer-up, Esc cancels, not
+  kept on screen, manual-mode only, never toggles the mode); combined adjusters show if *either*
+  capability is present and hide sub-controls that aren't supported. **Phone HTTP API:**
+  `rotationDegrees` moved from `/api/config` onto `/api/camera/state`; new `afRegionNorm` /
+  `aeRegionNorm` keys (+ `maxAfRegions` / `maxAeRegions` caps), applied only alongside
+  `manualFocus` / `manualExposure` as the alternative to the dials; new **`videoResolution`** on
+  `/api/camera/state` + **`outputResolutions`** on `/api/camera/capabilities` (union of the
+  MediaRecorder + SurfaceTexture ~16:9 sizes, 480p–4K, ±0.06 aspect) — a right-aligned resolution
+  `<select>` on the live-preview section title re-attaches the player like a camera switch when
+  changed. **Live-start arming contract:** `POST /api/live/start` now answers
+  `503 {error:"camera still starting", retryAfterMs:2000}` + a `Retry-After` header while the
+  camera is still coming up (a cold **front camera** takes several seconds); a bare
+  `503 {error:"live camera unavailable"}` (no `retryAfterMs`) stays a hard, no-retry failure.
+  `phoneapi.LiveStartAwaitReady` retries the hinted 503 for ~20s and `App.StartLivePreview` uses
+  it, so the front camera connects instead of erroring (frontend `reattach` loop shrank to 3
+  passes). Phone side: `LivePipeline.startBroadcasting()` waits ~10s for the camera to arm and
+  returns a `STILL_ARMING` (-1) sentinel vs `0` for a genuine arm failure. **mock-phone** grew a
+  real HLS stream (physics sim → `ffmpeg` → rolling segments; degrades to 503 without `ffmpeg`;
+  frame size follows `videoResolution`) and a `-live-arm-ms` flag (default 1500) that mimics the
+  cold start so the retry path is testable. **Recording aspect ratio:** honouring a >1080p
+  selection exposed a GL `SurfaceTexture` anamorphic squash on the 4:3 sensor — fixed by driving
+  the SurfaceTexture at a sensor-aspect source size + a GL centre-crop uniform
+  (`CameraGlPipeline.pickSourceSize()` / `computeTexCrop()`; **new QUIRK**). **Verified on the
+  Pixel 6:** front + back live connect through the arming retry; a fresh `3840×2160` recording is
+  correctly proportioned and its framing matches the live preview. tsc / `vite build` / `go test`
+  (controller + mock) / `./gradlew compileDebugKotlin testDebugUnitTest lintDebug` all clean.
+  **Deferred:** adaptive bitrate, a scoped `/live/*` token, LL-HLS, on-device calibration of the
+  motion thresholds.
 
 ## Where things live
 
@@ -197,8 +244,9 @@ section) but none of its code was reused.
   "what's here" / "what's deferred" breakdown.
 - **controller**: Go/Wails tray app with embedded SQLite (sqlc+goose managed, see below),
   pairing (Add-phone), a background sync loop, plain-HLS live preview (a `/live/<phoneID>/*`
-  proxy + an hls.js `<video>` in Phone detail), Fleet/Phone-detail/Gallery/Trash screens in
-  TypeScript+JSX on Preact. See `controller/README.md` for the same breakdown.
+  proxy + an hls.js `<video>` with phone-style camera controls in Phone detail), a **master-detail**
+  Fleet / command-bar Phone-detail / multi-select Gallery / Trash, all TypeScript+JSX on Preact.
+  See `controller/README.md` for the same breakdown.
 - **Cross-verified together**, not just independently: the controller has actually paired with
   the real Pixel 6, synced real clips from it, and self-unpaired — this is real interop, not two
   slices built in isolation against a shared paper spec.
@@ -250,10 +298,11 @@ candidates for "the next slice":
 - ~~**Calibration.**~~ **Implemented** (both sides), including the real empirical zoom probe and
   Pixel 6 verification — see "Slices added since the initial handoff" above. The controller-side
   zoom-rect picker that consumes `EffectiveRect` is now built too (camera-controls slice).
-- ~~**Live HLS view.**~~ **Implemented as plain HLS** (both sides) — see "Slices added since the
-  initial handoff" below. Deferred within it: LL-HLS (`EXT-X-PART`/parts + the hls.js latency
-  workarounds the prototype paid for, catalogued in `docs/QUIRKS.md`), adaptive bitrate, live
-  resolution changes, a scoped `/live/*` token, and a sustained on-device verification run.
+- ~~**Live HLS view.**~~ **Implemented as plain HLS** (both sides), with a selectable
+  record/broadcast resolution and a cold-camera arming-retry contract on `POST /api/live/start`
+  (see the "Controller UX overhaul" slice). Deferred within it: LL-HLS (`EXT-X-PART`/parts + the
+  hls.js latency workarounds the prototype paid for, catalogued in `docs/QUIRKS.md`), adaptive
+  bitrate, a scoped `/live/*` token, and a sustained on-device verification run.
 - ~~**Manual Camera2 controls / digital zoom / multi-camera.**~~ **Implemented and verified on
   the Pixel 6** (both sides) — see "Slices added since the initial handoff" above. Nothing
   outstanding here; a Compose UI on the phone side is the only camera-control thing not built,

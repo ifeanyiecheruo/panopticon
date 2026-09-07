@@ -81,7 +81,13 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   from `standby`, which must be entered explicitly (`POST /api/mode {"mode":"standby"}` or the
   Calibrate screen's "Stop recording"). `live` is single-stream (camera straight into the encoder
   surface, no GL) and arms idle - `POST /api/live/start` begins broadcasting, a 15s inactivity
-  watchdog stops it.
+  watchdog stops it. Start has a cold-camera contract: it returns `503 {error,retryAfterMs} +
+  Retry-After` while the camera is still arming (`STILL_ARMING`, common on a cold front camera)
+  vs `503 {"error":"live camera unavailable"}` for a hard failure; the controller retries the
+  hinted form for ~20s. Both `LivePipeline` and `CameraGlPipeline` honour the configured
+  `videoResolution` (`pickRecordingSize()`); the GL record path additionally centre-crops the
+  sensor to that aspect (`pickSourceSize()` + a `uTexCrop` shader uniform) so a >1080p 16:9
+  pick on a 4:3 sensor isn't anamorphically squashed - see `docs/QUIRKS.md`.
 - **Compose UI** - Home (device identity, storage, recording status), Connect (generate an
   invite code + show this phone's LAN address), Gallery (list clips - contiguous segments grouped
   by time gap - play the run via the system video viewer, delete a whole clip), Calibrate (stop recording → run/re-run a sweep, live progress, per-camera
@@ -146,13 +152,21 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
 
 The Controllers/Configuration screens, QR-code invite display (code/URL are shown as plain
 text, which is enough for manual entry). Live view is implemented as **plain HLS** — LL-HLS,
-adaptive bitrate, live resolution changes and a scoped `/live/*` token are all deferred.
-Manual Camera2 controls (`/api/camera/*` — zoom, crop rect, exposure, focus, white balance
-incl. manual RGGB gains, video + optical stabilization) and multi-camera selection
-(`/api/cameras*`, incl. per-physical sub-camera targeting) are implemented (see "what's here").
-No Compose UI for any of it on the phone side — it's driven entirely from the controller. The
-`/api/camera/state` GET reports `rotationDegrees` for spec fidelity but it's still written
-through `/api/config`.
+adaptive bitrate and a scoped `/live/*` token are deferred. The record/broadcast resolution
+**is** selectable now (`videoResolution` on `/api/camera/state`, one of
+`capabilities.outputResolutions`); a change rebuilds the running pipeline. `POST /api/live/start`
+has a cold-camera arming contract — it answers `503 {error,retryAfterMs} + Retry-After` while
+the camera is still coming up (a cold front camera takes several seconds) vs a bare
+`503 {"error":"live camera unavailable"}` for a hard failure; the controller retries the hinted
+form. Manual Camera2 controls (`/api/camera/*` — zoom, crop rect, exposure, focus incl. AF/AE
+metering regions, white balance incl. manual RGGB gains, video + optical stabilization) and
+multi-camera selection (`/api/cameras*`, incl. per-physical sub-camera targeting) are
+implemented (see "what's here"). No Compose UI for any of it on the phone side — it's driven
+entirely from the controller. `rotationDegrees` and `videoResolution` are read+written through
+`/api/camera/state` (both are camera-pipeline settings; `rotationDegrees` is no longer on
+`/api/config`). The `CameraGlPipeline` record path centre-crops the sensor to the selected
+aspect in GL (`pickSourceSize()` / `uTexCrop`) so a >1080p 16:9 selection on a 4:3 sensor isn't
+anamorphically squashed — see `docs/QUIRKS.md`.
 
 ## Build / install / run
 
