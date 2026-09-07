@@ -20,6 +20,9 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
 
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [anchorKey, setAnchorKey] = useState<string | null>(null);
+  // Set only when the selection advances because a clip finished — carries the
+  // play-through across the ClipPlayer remount. Cleared on any manual pick.
+  const [autoplay, setAutoplay] = useState(false);
 
   // Refetch only on a real input change (filter or a post-mutation reload) —
   // never on selection. Keep the previous list painted during the refetch so
@@ -87,6 +90,7 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
         e.preventDefault();
         const target = stepKey(clips, cur, e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1);
         if (!target) return;
+        setAutoplay(false);
         if (e.shiftKey) {
           setSelectedKeys(rangeKeys(clips, anchorKey, target));
         } else {
@@ -120,6 +124,7 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
   const days = groupByDay(orderedClips);
 
   const handleSelect = (key: string, mods: ClickMods) => {
+    setAutoplay(false);
     if (mods.shift) {
       setSelectedKeys(rangeKeys(orderedClips, anchorKey, key));
       return;
@@ -142,8 +147,11 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
     const next = idx >= 0 ? orderedClips[idx + 1] : undefined;
     if (next) {
       const k = clipKey(next);
+      setAutoplay(true); // keep playing through the next clip across the remount
       setSelectedKeys(new Set([k]));
       setAnchorKey(k);
+    } else {
+      setAutoplay(false); // reached the end of the list — stop the play-through
     }
   };
 
@@ -181,7 +189,13 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
         <div className="viewer-pane">
           {viewer ? (
             <>
-              <ClipPlayer clip={viewer} controls onFinished={handleClipFinished} />
+              <ClipPlayer
+                key={viewerKey ?? undefined}
+                clip={viewer}
+                controls
+                autoplay={autoplay}
+                onFinished={handleClipFinished}
+              />
               <div className="viewer-meta">
                 <div>
                   <div className="who">{viewer.phoneName}</div>

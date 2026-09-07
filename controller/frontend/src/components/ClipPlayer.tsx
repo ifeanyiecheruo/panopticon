@@ -6,6 +6,9 @@ interface ClipPlayerProps {
   /** Gallery's viewer shows transport controls; Trash's does not (matches the
    * pre-split behaviour of each screen). */
   controls?: boolean;
+  /** Start playing on mount — set by the caller when this clip was reached by
+   * auto-advance so a play-through continues across every clip. */
+  autoplay?: boolean;
   /** Fired when the clip's last segment finishes playing — the caller advances
    * the selection to the next clip. */
   onFinished?: () => void;
@@ -13,22 +16,22 @@ interface ClipPlayerProps {
 
 /** Plays a clip as a playlist of its segments: on `ended` it advances to the
  * next segment and keeps playing, and when the final segment ends it calls
- * `onFinished`. Resets to the first segment whenever the clip changes. */
-export function ClipPlayer({ clip, controls = false, onFinished }: ClipPlayerProps) {
+ * `onFinished`. Give it a `key` per clip so it remounts cleanly on selection
+ * change; `autoplay` carries the play-through across that remount. */
+export function ClipPlayer({ clip, controls = false, autoplay = false, onFinished }: ClipPlayerProps) {
   const [segIdx, setSegIdx] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
-
-  // New clip selected -> back to its first segment.
-  useEffect(() => {
-    setSegIdx(0);
-  }, [clip.phoneId, clip.clipId]);
 
   const segments = clip.segments ?? [];
   const current = segments[segIdx] ?? segments[0] ?? null;
 
-  // When we've advanced to a later segment (not on the initial frame, and not
-  // on a fresh clip), load and play it. Autoplay may be blocked by the
-  // embedder — swallow that and leave the frame paused.
+  // Autoplay on mount when we got here by auto-advance.
+  useEffect(() => {
+    if (autoplay) void videoRef.current?.play().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Advancing to a later segment within the same clip: load + play it.
   useEffect(() => {
     const v = videoRef.current;
     if (!v || segIdx === 0) return;
@@ -53,6 +56,7 @@ export function ClipPlayer({ clip, controls = false, onFinished }: ClipPlayerPro
       ref={videoRef}
       controls={controls}
       preload="metadata"
+      autoPlay={autoplay}
       poster={segIdx === 0 ? clip.thumbnailUrl : undefined}
       src={current.videoUrl}
       onEnded={handleEnded}

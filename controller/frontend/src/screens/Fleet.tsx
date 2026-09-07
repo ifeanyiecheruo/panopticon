@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { ListPhones, type PhoneView } from '../api';
-import { fmtBytes, statusLabel } from '../lib/format';
+import { fmtBytes } from '../lib/format';
 import { RefreshIcon } from '../lib/icons';
-import { BatteryIcon } from '../components/BatteryIcon';
 import { PhoneDetail } from './PhoneDetail';
 
 interface FleetProps {
@@ -72,25 +71,14 @@ export function Fleet({ selectedPhoneId, onSelectPhone, onDeselect, onViewGaller
           </div>
         ) : (
           phones.map((p) => (
+            // Name only — status/battery live in the detail pane, which polls
+            // fresh; a second copy here just drifts out of sync.
             <button
               key={p.id}
-              className={`fleet-row ${p.id === selectedPhoneId ? 'active' : ''} ${
-                p.status === 'unreachable' ? 'is-unreachable' : ''
-              }`}
+              className={`fleet-row ${p.id === selectedPhoneId ? 'active' : ''}`}
               onClick={() => onSelectPhone(p.id)}
             >
               <span className="fleet-row-name">{p.name}</span>
-              <span className="fleet-row-meta">
-                <span
-                  className={`status-pill ${
-                    p.status === 'recording' ? 'recording' : p.status === 'unreachable' ? 'unreachable' : ''
-                  }`}
-                >
-                  <span className="dot"></span>
-                  {statusLabel(p.status)}
-                </span>
-                <BatteryIcon percent={p.batteryPercent} charging={p.charging} hasBattery={p.hasBattery} />
-              </span>
             </button>
           ))
         )}

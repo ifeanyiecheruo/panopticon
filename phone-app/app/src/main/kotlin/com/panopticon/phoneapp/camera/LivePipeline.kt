@@ -146,18 +146,28 @@ class LivePipeline(
     // ---- viewer-triggered (called from LiveRoutes, which is a suspend context) ----
 
     /** Idempotent. Begins broadcasting (repeating request targets the encoder, relay runs).
-     * Returns the viewer count (1), or 0 if the camera never armed. */
+     * Returns the viewer count (1); 0 if the camera failed to arm (hard failure);
+     * [STILL_ARMING] (-1) if arming is still in progress and the caller should retry. */
     suspend fun startBroadcasting(): Int = mutex.withLock {
         lastAccessMs.set(SystemClock.elapsedRealtime())
         if (broadcasting.get()) return@withLock 1
-        val ok = withTimeoutOrNull(4_000L) { armed.await() } ?: false
-        if (!ok) {
-            Log.w(TAG, "startBroadcasting: camera not armed")
-            return@withLock 0
+        // Arming (open camera + configure the capture session) can take several
+        // seconds on a cold front-facing camera. Distinguish "not done yet"
+        // (tell the caller to retry) from "arm() reported failure" (give up).
+        when (withTimeoutOrNull(10_000L) { armed.await() }) {
+            null -> {
+                Log.w(TAG, "startBroadcasting: camera still arming, ask caller to retry")
+                return@withLock STILL_ARMING
+            }
+            false -> {
+                Log.w(TAG, "startBroadcasting: camera failed to arm")
+                return@withLock 0
+            }
+            else -> {} // armed OK — fall through
         }
-        val device = cameraDevice ?: return@withLock 0
-        val session = captureSession ?: return@withLock 0
-        val surface = encoderInputSurface ?: return@withLock 0
+        val device = cameraDevice ?: return@withLock STILL_ARMING
+        val session = captureSession ?: return@withLock STILL_ARMING
+        val surface = encoderInputSurface ?: return@withLock STILL_ARMING
 
         relay = LiveHlsRelay(liveDir, segmentDurationUs)
         startDrain()
@@ -415,6 +425,11 @@ class LivePipeline(
         } catch (e: CameraAccessException) {
             cont.resumeWithException(e)
         }
+    }
+
+    companion object {
+        /** [startBroadcasting] return value: the camera is still coming up; retry shortly. */
+        const val STILL_ARMING = -1
     }
 
     private fun pickRecordingSize(id: String): Size {

@@ -343,6 +343,52 @@ func (c *Client) LiveStart(ctx context.Context) (LiveStartResponse, error) {
 	return out, err
 }
 
+// liveRetryBody is the phone's 503 payload while the camera is still coming up:
+// {"error":"camera still starting","retryAfterMs":2000}.
+type liveRetryBody struct {
+	Error       string `json:"error"`
+	RetryAfterMs int    `json:"retryAfterMs"`
+}
+
+// LiveStartAwaitReady calls LiveStart, retrying while the phone answers 503 with
+// a retryAfterMs hint (its camera is still arming — common on a cold
+// front-facing camera). It gives up after maxWait and returns the last error.
+// Any non-retryable error (409, unreachable, …) is returned immediately.
+func (c *Client) LiveStartAwaitReady(ctx context.Context, maxWait time.Duration) (LiveStartResponse, error) {
+	deadline := time.Now().Add(maxWait)
+	for attempt := 0; ; attempt++ {
+		out, err := c.LiveStart(ctx)
+		if err == nil {
+			return out, nil
+		}
+		wait, ok := retryAfterFromLiveErr(err)
+		if !ok || time.Now().Add(wait).After(deadline) {
+			return out, err
+		}
+		select {
+		case <-ctx.Done():
+			return out, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+// retryAfterFromLiveErr reports whether err is a retryable "camera still
+// starting" 503 and, if so, how long to wait before retrying.
+func retryAfterFromLiveErr(err error) (time.Duration, bool) {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusServiceUnavailable {
+		return 0, false
+	}
+	var body liveRetryBody
+	if json.Unmarshal([]byte(httpErr.Body), &body) == nil && body.RetryAfterMs > 0 {
+		return time.Duration(body.RetryAfterMs) * time.Millisecond, true
+	}
+	// A 503 with no hint (e.g. {"error":"live camera unavailable"}) is a hard
+	// failure — don't retry.
+	return 0, false
+}
+
 // LiveStop returns the phone's live pipeline to armed-idle. Best-effort — a
 // non-2xx is returned but callers generally ignore it (the phone's own
 // inactivity watchdog is the real stop).

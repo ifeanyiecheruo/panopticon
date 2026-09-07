@@ -218,9 +218,11 @@ export function useLivePreview(phoneId: string): LiveController {
     if (!startedRef.current) return;
     setState({ kind: 'starting' });
     teardown({ stopPhone: false }); // keep the phone in live mode; just drop hls.js
-    // A camera switch tears down + rebuilds the phone's live pipeline; the new
-    // sensor can take a moment to arm, so the first LiveStart(s) may 503. Retry.
-    const REATTACH_TRIES = 6;
+    // A camera switch tears down + rebuilds the phone's live pipeline. The arming
+    // wait is now handled inside StartLivePreview (it retries the phone's
+    // 503+retryAfter for ~20s), so this only needs a couple of passes to ride
+    // out the brief window where the rebuilt pipeline isn't up yet.
+    const REATTACH_TRIES = 3;
     for (let i = 0; i < REATTACH_TRIES; i++) {
       let res;
       try {

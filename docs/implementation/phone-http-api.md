@@ -196,7 +196,7 @@ plain HLS hold up (see `docs/QUIRKS.md`); the LL-HLS upgrade stays carried-forwa
 
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
-| POST | `/api/live/start` | — | `{}` | `{ "started": true, "viewerCount": 1 }` | Idempotently begins broadcasting; `409` unless the phone is in `live` mode (`503` if the camera can't arm). |
+| POST | `/api/live/start` | — | `{}` | `{ "started": true, "viewerCount": 1 }` | Idempotently begins broadcasting; `409` unless the phone is in `live` mode. `503 { "error": "camera still starting", "retryAfterMs": 2000 }` (plus a `Retry-After` header) while the camera is still arming — a cold front-facing camera can take several seconds; the caller should retry until it succeeds. `503 { "error": "live camera unavailable" }` (no `retryAfterMs`) is a hard failure — do not retry. |
 | DELETE | `/api/live/stop` | — | — | `{ "stopped": true, "viewerCount": 0 }` | Explicit stop (usually unnecessary — 15s inactivity watchdog handles it). |
 | GET | `/live/live.m3u8` | — | — | *(text `application/vnd.apple.mpegurl`)* | Rolling HLS playlist. `404` before broadcasting starts, `409` when not in `live` mode. |
 | GET | `/live/live-<n>.ts` | — | — | *(binary `video/mp2t`)* | One HLS segment; `404` once it's rolled out of the window. |

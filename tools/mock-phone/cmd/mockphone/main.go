@@ -83,12 +83,17 @@ type server struct {
 
 	// Live HLS stream (physics sim -> ffmpeg -> rolling .ts). See live.go.
 	live liveStream
+	// How long the camera "arms" after entering live mode: POST /api/live/start
+	// answers 503 + retryAfterMs until this elapses (mimics a cold front-facing
+	// camera). 0 disables it.
+	liveArmDelay time.Duration
 }
 
 func main() {
 	addr := flag.String("addr", ":8091", "listen address")
 	invite := flag.String("invite", "TEST-INVITE-CODE", "invite code this mock phone accepts (once)")
 	numSegments := flag.Int("segments", 6, "number of fake pre-existing segments to seed (as two runs split by a gap)")
+	liveArmMs := flag.Int("live-arm-ms", 1500, "ms the camera 'arms' after entering live mode; POST /api/live/start 503s with retryAfterMs until it elapses (0 disables)")
 	flag.Parse()
 
 	s := &server{
@@ -105,6 +110,7 @@ func main() {
 		calSweepDurMs:  6000,
 		activeCameraID: "0",
 		controlKeys:    map[string]any{},
+		liveArmDelay:   time.Duration(*liveArmMs) * time.Millisecond,
 	}
 	s.seedSegments(*numSegments)
 
@@ -303,7 +309,13 @@ func (s *server) handleMode(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "stop recording first: POST /api/mode {\"mode\":\"standby\"}"})
 			return
 		}
+		enteringLive := s.mode != "live"
 		s.mode = "live"
+		if enteringLive && s.liveArmDelay > 0 {
+			s.live.mu.Lock()
+			s.live.armAt = time.Now().Add(s.liveArmDelay)
+			s.live.mu.Unlock()
+		}
 	default:
 		s.mu.Unlock()
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be record|standby|live"})

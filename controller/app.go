@@ -379,7 +379,13 @@ func (a *App) StartLivePreview(phoneID string) LivePreviewResult {
 			return LivePreviewResult{Outcome: "other", Message: err.Error()}
 		}
 	}
-	if _, err := client.LiveStart(a.ctxOrBackground()); err != nil {
+	// A cold front-facing camera can take several seconds to arm; the phone
+	// answers 503 + retryAfterMs while it does. Keep retrying for ~20s before
+	// giving up so the caller doesn't see a spurious "live camera unavailable".
+	if _, err := client.LiveStartAwaitReady(a.ctxOrBackground(), 20*time.Second); err != nil {
+		if errors.Is(err, phoneapi.ErrUnreachable) {
+			return LivePreviewResult{Outcome: "unreachable", Message: "Could not reach the phone."}
+		}
 		return LivePreviewResult{Outcome: "other", Message: err.Error()}
 	}
 

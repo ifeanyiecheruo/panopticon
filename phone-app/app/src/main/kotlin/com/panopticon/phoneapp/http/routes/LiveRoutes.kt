@@ -3,8 +3,10 @@ package com.panopticon.phoneapp.http.routes
 import com.panopticon.phoneapp.camera.LivePipeline
 import com.panopticon.phoneapp.http.ErrorBody
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
@@ -16,6 +18,12 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class LiveStartResponse(val started: Boolean, val viewerCount: Int)
+
+/** 503 body when the camera is still coming up: retry after [retryAfterMs]. */
+@Serializable
+data class LiveRetryBody(val error: String, val retryAfterMs: Int)
+
+private const val LIVE_RETRY_AFTER_MS = 2_000
 
 @Serializable
 data class LiveStopResponse(val stopped: Boolean, val viewerCount: Int)
@@ -48,11 +56,20 @@ fun Route.liveRoutes(live: () -> LivePipeline?) {
                 HttpStatusCode.Conflict,
                 ErrorBody("not in live mode: POST /api/mode {\"mode\":\"live\"} first"),
             )
-            val count = pipeline.startBroadcasting()
-            if (count <= 0) {
-                call.respond(HttpStatusCode.ServiceUnavailable, ErrorBody("live camera unavailable"))
-            } else {
-                call.respond(LiveStartResponse(started = true, viewerCount = count))
+            when (val count = pipeline.startBroadcasting()) {
+                LivePipeline.STILL_ARMING -> {
+                    // Camera is coming up (cold front-camera start): tell the caller to retry.
+                    call.response.header(HttpHeaders.RetryAfter, "2")
+                    call.respond(
+                        HttpStatusCode.ServiceUnavailable,
+                        LiveRetryBody("camera still starting", LIVE_RETRY_AFTER_MS),
+                    )
+                }
+                0 -> call.respond(
+                    HttpStatusCode.ServiceUnavailable,
+                    ErrorBody("live camera unavailable"),
+                )
+                else -> call.respond(LiveStartResponse(started = true, viewerCount = count))
             }
         }
 

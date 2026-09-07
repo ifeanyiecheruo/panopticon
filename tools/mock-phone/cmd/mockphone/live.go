@@ -290,6 +290,9 @@ type liveStream struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
 	lastPoll time.Time
+	// armAt is when the camera finishes "arming" after entering live mode.
+	// POST /api/live/start 503s with a retryAfterMs hint until now >= armAt.
+	armAt time.Time
 }
 
 func (s *server) startLive() error {
@@ -437,6 +440,17 @@ func (s *server) handleLiveStart(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if mode != "live" {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "not in live mode"})
+		return
+	}
+	s.live.mu.Lock()
+	arming := time.Now().Before(s.live.armAt)
+	s.live.mu.Unlock()
+	if arming {
+		w.Header().Set("Retry-After", "2")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error":        "camera still starting",
+			"retryAfterMs": 2000,
+		})
 		return
 	}
 	if err := s.startLive(); err != nil {
