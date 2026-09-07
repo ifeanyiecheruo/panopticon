@@ -336,7 +336,10 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   if (caps) {
     modes.push({ id: 'zoom', label: 'Zoom', icon: 'zoom' });
     modes.push({ id: 'exposure', label: 'Exposure', icon: 'exposure' });
-    if (caps.hasManualFocus && caps.minFocusDistanceDiopters > 0)
+    // Focus adjuster: a manual-distance dial and/or drag-to-focus (AF regions).
+    // Cameras that expose only one of the two (e.g. the Pixel 6 back camera has
+    // AF regions but no manual focus distance) still get the mode.
+    if ((caps.hasManualFocus && caps.minFocusDistanceDiopters > 0) || caps.maxAfRegions > 0)
       modes.push({ id: 'focus', label: 'Focus', icon: 'focus' });
     if ((caps.awbModes && caps.awbModes.length > 1) || caps.hasManualWhiteBalance)
       modes.push({ id: 'wb', label: 'White bal.', icon: 'wb' });
@@ -457,45 +460,50 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
         }
         break;
       }
-      case 'focus':
+      case 'focus': {
+        const hasFocusDial = C.hasManualFocus && C.minFocusDistanceDiopters > 0;
         select = {
           label: 'Focus mode',
           value: keys.manualFocus ? 'manual' : 'auto',
           options: [
             { v: 'auto', label: 'auto (continuous)' },
-            { v: 'manual', label: 'manual' },
+            { v: 'manual', label: hasFocusDial ? 'manual' : 'manual (pick a point)' },
           ],
           onChange: (v) =>
-            v === 'manual'
-              ? applyKeys({ manualFocus: true, afRegionNorm: undefined }, true)
-              : applyKeys({ manualFocus: false }, true),
+            applyKeys({ manualFocus: v === 'manual', afRegionNorm: undefined }, true),
         };
         if (keys.manualFocus) {
-          rulers = [
-            {
-              key: 'focus',
-              spec: spec(0, C.minFocusDistanceDiopters, ['focusFar', 'focusNear']),
-              value: keys.lensFocusDistanceDiopters ?? 0,
-              dflt: 0,
-              set: (v, c) =>
-                applyKeys(
-                  { lensFocusDistanceDiopters: v, manualFocus: true, afRegionNorm: undefined },
-                  c,
-                ),
-            },
-          ];
+          if (hasFocusDial) {
+            rulers = [
+              {
+                key: 'focus',
+                spec: spec(0, C.minFocusDistanceDiopters, ['focusFar', 'focusNear']),
+                value: keys.lensFocusDistanceDiopters ?? 0,
+                dflt: 0,
+                set: (v, c) =>
+                  applyKeys(
+                    { lensFocusDistanceDiopters: v, manualFocus: true, afRegionNorm: undefined },
+                    c,
+                  ),
+              },
+            ];
+          }
+          // Focus-point rect: manual only, and it does NOT leave manual.
+          if (C.maxAfRegions > 0) {
+            rectTarget = {
+              key: 'afRegionNorm',
+              clears: hasFocusDial ? ['lensFocusDistanceDiopters'] : [],
+              applied: 'Focus point set.',
+            };
+            if (!hasFocusDial) note = 'Drag a box on the preview to lock focus on that area.';
+          }
         } else {
-          note = 'Set focus mode to “manual” to dial focus or pick a focus point.';
-        }
-        // Focus-point rect: manual focus only, and it does NOT leave manual.
-        if (keys.manualFocus && C.maxAfRegions > 0) {
-          rectTarget = {
-            key: 'afRegionNorm',
-            clears: ['lensFocusDistanceDiopters'],
-            applied: 'Focus point set.',
-          };
+          note = hasFocusDial
+            ? 'Set focus mode to “manual” to dial focus or pick a focus point.'
+            : 'Set focus mode to “manual” to pick a focus point.';
         }
         break;
+      }
       case 'wb': {
         const opts = (C.awbModes || []).map((m) => ({ v: `awb:${m}`, label: AWB_LABELS[m] ?? `mode ${m}` }));
         if (C.hasManualWhiteBalance) opts.push({ v: 'manual', label: 'manual (RGB gains)' });
