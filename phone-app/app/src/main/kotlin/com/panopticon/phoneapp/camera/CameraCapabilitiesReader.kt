@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.MediaRecorder
 import android.os.Build
 import com.panopticon.phoneapp.calibration.LogicalCameraApi28
 import com.panopticon.phoneapp.calibration.ZoomRatioApi30
@@ -98,17 +99,24 @@ object CameraCapabilitiesReader {
         val maxAeRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
         val maxAfRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
 
-        // Selectable record/broadcast sizes: ~16:9 output sizes from 480p..1080p,
-        // largest first. (4K live is intentionally excluded - too heavy for the
-        // plain-HLS pipeline.)
-        val outputResolutions = chars
-            .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            ?.getOutputSizes(SurfaceTexture::class.java)
-            ?.filter { it.width in 640..1920 && kotlin.math.abs(it.width.toDouble() / it.height - 16.0 / 9.0) < 0.02 }
-            ?.sortedByDescending { it.width.toLong() * it.height }
-            ?.map { "${it.width}x${it.height}" }
-            ?.distinct()
-            ?: emptyList()
+        // Selectable record/broadcast sizes: every ~16:9 output size this camera
+        // supports from 480p up to 4K, largest first. Both the recordable-video
+        // list and the SurfaceTexture (preview) list are unioned - some HALs
+        // populate one but not the other. A very large pick may be down-scaled
+        // by the live encoder, but recording honours it.
+        val streamMap = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val sizes = buildList {
+            streamMap?.getOutputSizes(MediaRecorder::class.java)?.let { addAll(it) }
+            streamMap?.getOutputSizes(SurfaceTexture::class.java)?.let { addAll(it) }
+        }
+        val outputResolutions = sizes
+            .filter {
+                it.width in 640..3840 &&
+                    kotlin.math.abs(it.width.toDouble() / it.height - 16.0 / 9.0) < 0.06
+            }
+            .distinctBy { it.width to it.height }
+            .sortedByDescending { it.width.toLong() * it.height }
+            .map { "${it.width}x${it.height}" }
 
         return CameraCapabilities(
             cameraId = cameraId,
