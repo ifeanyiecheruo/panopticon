@@ -67,7 +67,7 @@ than duplicating detail that already lives elsewhere and would drift.
   back, not on the front, neither lying about it in metadata; `qualityCollapseRatio ≈ 2.8×` on
   the Pixel 6 back vs. its declared 7× max. The controller-side **zoom-rect picker UI** that
   consumes `EffectiveRect` is now implemented as part of the camera-controls slice (above). See
-  `docs/QUIRKS.md`'s "Calibration zoom probe" for the full device findings + the weak-HAL quirks the
+  `docs/quirks/calibration-zoom.md` for the full device findings + the weak-HAL quirks the
   probe works around (API-gated-key `NoSuchFieldError`, session-recycle device disconnect,
   `ImageReader.close()` SIGSEGV race, front-camera control-interleaving readback corruption,
   metadata-only position check being unreliable).
@@ -163,7 +163,7 @@ than duplicating detail that already lives elsewhere and would drift.
   on both devices; then through a real `wails dev` controller (hls.js in the webview) the Pixel 6
   played 2.5+ min continuously (~50 segments, zero 404s, no stalls) and the BLU produced regular
   ~0.96s segments at real time. **Deferred:** LL-HLS + the rest of its hls.js latency workarounds
-  (catalogued in `docs/QUIRKS.md`), adaptive bitrate, a scoped `/live/*` token.
+  (catalogued in `docs/quirks/live-hls.md`), adaptive bitrate, a scoped `/live/*` token.
 
 - **Controller UX overhaul + selectable resolution + live-start arming (both sides).** Commits
   `381de5b`…`e3bb2fa`. **Controller frontend:** Fleet is **master-detail** — a device list beside
@@ -222,16 +222,17 @@ controller/          Desktop app (Go/Wails + Preact/TS frontend) - the client ma
 tools/dbstore/       sqlc+goose codegen CLI (shared infra, see below)
 tools/go-deps/       *.gen.json -> Make .stamp plumbing (shared infra, see below)
 tools/mock-phone/    throwaway HTTP server standing in for a phone-app, for controller dev/tests
-docs/                design docs (this file's directory), QUIRKS.md, storyboards, UX mocks
+docs/                design docs (this file's directory), quirks/, storyboards, UX mocks
 Makefile             single entry point for build/install/run/test/generate - `make help`
 go.work              ties controller/ and tools/*'s separate Go modules together (required -
-                     see docs/QUIRKS.md's "go run refuses to cross a module boundary" entry)
+                     see docs/quirks/dev-tooling-windows.md's "go run refuses to cross a module boundary" entry)
 ```
 
 `panopticon-prototype/` (a sibling directory, *not* inside this repo) is an earlier, abandoned
 attempt at this same product on a different stack (Node/TS server + Kotlin phone app). Its
-`QUIRKS.md`/`ARCHITECTURE.md` were mined for lessons (see `docs/QUIRKS.md`'s "Carried forward"
-section) but none of its code was reused.
+`QUIRKS.md`/`ARCHITECTURE.md` were mined for lessons (see `docs/quirks/`'s carried-forward
+entries and [`docs/quirks/README.md`](../quirks/README.md#the-carried-forward-tag)) but none of
+its code was reused.
 
 ## What's built and verified
 
@@ -266,13 +267,13 @@ for a full manual session (needs a phone connected and paired first).
   list of confirmed quirks (env vars stripped from spawned processes, its own `$(CURDIR)` and
   `command -v` resolving through a different mount alias than recipe shells actually use, pipes
   into `head`/`awk` intermittently breaking, `export` not reaching parse-time `$(shell)` calls,
-  and more) — **read `docs/QUIRKS.md` before assuming odd-looking Makefile code is over-engineered
-  or wrong.** Every entry there is a real, reproduced failure with a workaround, not speculative
-  hardening.
+  and more) — **read `docs/quirks/dev-tooling-windows.md` before assuming odd-looking Makefile
+  code is over-engineered or wrong.** Every entry there is a real, reproduced failure with a
+  workaround, not speculative hardening.
 - A Pixel 6 (adb serial varies by machine/USB port — don't hardcode it, `check-adb-devices` in
   the Makefile handles multi-device disambiguation) is the primary test device this was built and
   verified against. `adb devices` occasionally reports a physically-connected device as
-  `offline` — `adb kill-server && adb start-server` fixes it (see `docs/QUIRKS.md`).
+  `offline` — `adb kill-server && adb start-server` fixes it (see `docs/quirks/dev-tooling-windows.md`).
 - The controller binary occasionally fails its **very first** launch right after a fresh build
   with a WebView2 `80080005: Server execution failed` error, then launches fine on retry —
   observed to be a transient race (not reproduced on a second attempt in the same session), not
@@ -301,7 +302,7 @@ candidates for "the next slice":
 - ~~**Live HLS view.**~~ **Implemented as plain HLS** (both sides), with a selectable
   record/broadcast resolution and a cold-camera arming-retry contract on `POST /api/live/start`
   (see the "Controller UX overhaul" slice). Deferred within it: LL-HLS (`EXT-X-PART`/parts + the
-  hls.js latency workarounds the prototype paid for, catalogued in `docs/QUIRKS.md`), adaptive
+  hls.js latency workarounds the prototype paid for, catalogued in `docs/quirks/live-hls.md`), adaptive
   bitrate, a scoped `/live/*` token, and a sustained on-device verification run.
 - ~~**Manual Camera2 controls / digital zoom / multi-camera.**~~ **Implemented and verified on
   the Pixel 6** (both sides) — see "Slices added since the initial handoff" above. Nothing
@@ -334,8 +335,8 @@ is done — see above.)
   in favor of this approach.
 - **`tools/` as separate Go modules**, not packages inside `controller/`'s own module — `mock-phone`,
   `dbstore`, and `go-deps` each have their own `go.mod`. This is *why* `go.work` is required (see
-  docs/QUIRKS.md) — a tradeoff accepted deliberately for reusability across any future Go module
-  in this repo, not just controller's.
+  docs/quirks/dev-tooling-windows.md) — a tradeoff accepted deliberately for reusability across
+  any future Go module in this repo, not just controller's.
 - **sqlc + goose, ported from `../morsel`** (a sibling, unrelated project) as the template for
   SQL codegen + migrations, via the new `tools/dbstore`/`tools/go-deps` — see
   `controller/internal/dbstore/README.md` for the hand-written/generated split and
@@ -364,7 +365,7 @@ Largest remaining pieces:
   gone and drop them.
 - **LL-HLS upgrade for live view** if the plain-HLS latency (~4–6s) proves too high — the
   prototype's `EXT-X-PART` machinery and its hls.js latency workarounds are catalogued in
-  `docs/QUIRKS.md`'s carried-forward section, ready to adopt.
+  `docs/quirks/live-hls.md`'s carried-forward section, ready to adopt.
 - **On-device motion-threshold tuning** (Pixel 6) and a real background-subtraction model.
 - Smaller: bulk arm/stand-down; QR pairing; the Controllers/Configuration screens; a
   phone-side Compose UI for the camera controls.
@@ -372,4 +373,4 @@ Largest remaining pieces:
 Still open on shipped slices: on-device motion-threshold tuning (Pixel 6). Live view is verified
 end to end (phone → `liveproxy.go` → hls.js in a real `wails dev` webview) on the Pixel 6 and
 BLU G5; an LL-HLS upgrade (for lower than the current ~4–6s latency) stays deferred with its
-recipe in `docs/QUIRKS.md`.
+recipe in `docs/quirks/live-hls.md`.

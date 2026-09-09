@@ -192,7 +192,7 @@ the muxer is hand-rolled (`camera/ts/TsMuxer.kt`). Entering `live` mode arms the
 inactivity watchdog returns it to armed-idle. `/live/*` is behind the normal bearer token — the
 prototype's separate GET-only scoped token is deferred (the controller proxies these
 server-side). A deep DVR window + hls.js live config + a client stall watchdog are what make
-plain HLS hold up (see `docs/QUIRKS.md`); the LL-HLS upgrade stays carried-forward.
+plain HLS hold up (see `docs/quirks/live-hls.md`); the LL-HLS upgrade stays carried-forward.
 
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|

@@ -12,7 +12,7 @@ package com.panopticon.phoneapp.camera
  * Position is deliberately *not* rejected here: whether a HAL honours an
  * off-centre `SCALER_CROP_REGION` is exactly what calibration measures
  * empirically, and some devices that declare `CENTER_ONLY` honour it anyway
- * (see docs/QUIRKS.md). We only reject a crop rect that isn't a sane sub-rect
+ * (see docs/quirks/calibration-zoom.md). We only reject a crop rect that isn't a sane sub-rect
  * of the frame.
  */
 object CameraControlValidation {

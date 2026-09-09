@@ -17,7 +17,7 @@ import kotlin.math.roundToInt
  * a control change is a request rebuild - never a session/pipeline rebuild
  * (only a *camera switch* rebuilds).
  *
- * Two invariants from docs/QUIRKS.md:
+ * Two invariants from docs/quirks/calibration-zoom.md:
  *  - `SCALER_CROP_REGION` and `CONTROL_ZOOM_RATIO` are never set in the same
  *    request - interleaving them across a session corrupts the Pixel 6 front
  *    camera's readback. `cropRegionNorm` (an off-centre rect) takes the

@@ -46,7 +46,7 @@ node_modules/
 # go.work / go.work.sum are NOT ignored here (unusually for a Go project) - `make generate`
 # depends on them: crossing from controller/'s module into tools/dbstore's to run its generator
 # fails outright ("directory ... outside main module or its selected dependencies") without a
-# workspace tying the two together. See docs/QUIRKS.md.
+# workspace tying the two together. See docs/quirks/dev-tooling-windows.md.
 
 # Code-generation stamps (see `make generate` / tools/go-deps) - local build state, not source.
 **/*.gen.json.stamp

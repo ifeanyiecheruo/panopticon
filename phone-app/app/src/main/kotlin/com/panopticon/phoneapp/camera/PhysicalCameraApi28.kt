@@ -14,7 +14,7 @@ import java.util.concurrent.Executor
  * *physical* sub-camera of a logical multi-camera (`OutputConfiguration.setPhysicalCameraId`
  * + `SessionConfiguration`). Kept in its own class so the ART verifier only
  * loads it once the `SDK_INT >= P` check has passed - the same trap that bit
- * `CONTROL_ZOOM_RATIO` (see docs/QUIRKS.md).
+ * `CONTROL_ZOOM_RATIO` (see docs/quirks/calibration-zoom.md).
  *
  * The device is still opened on the *logical* id; only the session's output
  * targets are pinned to the physical sensor.

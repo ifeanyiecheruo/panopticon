@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * range reads. Just whole ~[segmentDurationUs] segments in a [playlistWindowSize]-deep sliding
  * window. Glass-to-glass latency is roughly `segmentDurationUs * 3` (hls.js starts 3 segments
  * back by default). The prototype's LL-HLS machinery and the hls.js latency workarounds it needed
- * are documented in `docs/QUIRKS.md` as carried-forward work to adopt if that latency proves too
+ * are documented in `docs/quirks/live-hls.md` as carried-forward work to adopt if that latency proves too
  * high in practice.
  *
  * This does NOT own a camera surface or an encoder - it's fed by [LivePipeline]'s drain thread.

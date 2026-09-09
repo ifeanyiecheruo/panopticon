@@ -64,4 +64,4 @@ is an implementation detail of that.
 `controller` and `tools/dbstore` are separate Go modules, that only resolves
 because of the `go.work` file at the repo root — without it, `go run` refuses
 a relative path outside the calling directory's own module ("directory ...
-outside main module or its selected dependencies"). See docs/QUIRKS.md.
+outside main module or its selected dependencies"). See docs/quirks/dev-tooling-windows.md.

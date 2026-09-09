@@ -36,7 +36,7 @@ ADB_SERIAL_FLAG = $(if $(ADB_SERIAL),-s $(ADB_SERIAL))
 # Deliberately $(shell pwd), not Make's own built-in $(CURDIR): this MSYS2 make's CURDIR resolves
 # through some other, wrong mount alias (observed reporting /home/<user>/... for a directory that
 # only exists under /c/Users/<user>/...) - a new, more surprising instance of the same "don't trust
-# this make's own idea of paths/env" theme as the other Windows-tooling quirks. See docs/QUIRKS.md.
+# this make's own idea of paths/env" theme as the other Windows-tooling quirks. See docs/quirks/dev-tooling-windows.md.
 ROOT := $(shell pwd)
 LOCAL_BIN := $(ROOT)/.local/bin
 LOCAL_GOBIN := $(ROOT)/.local/go/bin
@@ -45,10 +45,11 @@ NODE_VERSION := $(shell cat .nvmrc 2>/dev/null)
 CMDLINE_TOOLS_BUILD := 15859902
 
 # On Windows, route gradlew through the real cmd.exe rather than invoking it directly from this
-# MSYS2 shell - see docs/QUIRKS.md ("gradlew.bat invoked bare through cmd.exe //c isn't found")
-# and panopticon-prototype/QUIRKS.md ("gradlew/npm misbehave when launched directly from this
-# MSYS2 shell") for why. Note the explicit "./gradlew.bat" (not a bare "gradlew.bat") - this
-# project's own QUIRKS.md found the bare form isn't recognized even with the right cwd.
+# MSYS2 shell - see docs/quirks/dev-tooling-windows.md ("gradlew.bat invoked bare through cmd.exe
+# //c isn't found") and panopticon-prototype/QUIRKS.md ("gradlew/npm misbehave when launched
+# directly from this MSYS2 shell") for why. Note the explicit "./gradlew.bat" (not a bare
+# "gradlew.bat") - this project's own docs/quirks/dev-tooling-windows.md found the bare form isn't
+# recognized even with the right cwd.
 ifneq (,$(findstring MINGW,$(shell uname -s))$(findstring MSYS,$(shell uname -s))$(findstring CYGWIN,$(shell uname -s)))
 CMDEXE := /c/Windows/System32/cmd.exe //c
 GRADLEW := $(CMDEXE) .\\gradlew.bat
@@ -63,7 +64,7 @@ endif
 # Where a not-yet-installed Android SDK would go (see install-tools-android-sdk). Derived from an
 # already-found ADB when there is one (two directories up from platform-tools/adb.exe), otherwise
 # the standard per-user install location - built from `whoami`, not $LOCALAPPDATA/$USERPROFILE,
-# since those are exactly the vars this same make strips (see above and docs/QUIRKS.md).
+# since those are exactly the vars this same make strips (see above and docs/quirks/dev-tooling-windows.md).
 ANDROID_SDK_ROOT_POSIX := $(if $(ADB),$(shell dirname "$$(dirname "$(ADB)")"),/c/Users/$(shell whoami)/AppData/Local/Android/Sdk)
 ANDROID_SDK_ROOT_WIN := $(subst /c/,C:/,$(ANDROID_SDK_ROOT_POSIX))
 CMDLINE_TOOLS_URL := https://dl.google.com/android/repository/commandlinetools-win-$(CMDLINE_TOOLS_BUILD)_latest.zip
@@ -92,7 +93,7 @@ NODE_DIR := $(NVM_ROOT)/v$(NODE_VERSION)
 # create a work dir under C:\Windows (go's last-resort temp-dir fallback once TMP/TEMP/USERPROFILE
 # are all empty), which isn't writable. Same fix as ADB: glob/derive real paths instead of trusting
 # the env vars, and point TMP/TEMP at a scratch dir under GOPATH that this Makefile controls and
-# creates. See docs/QUIRKS.md.
+# creates. See docs/quirks/dev-tooling-windows.md.
 export GOPATH := $(firstword $(wildcard /c/Users/*/go))
 export TMP := $(GOPATH)/panopticon-make-tmp
 export TEMP := $(TMP)
@@ -208,7 +209,7 @@ install-tools-android-sdk:
 # (install-phone, run-phone, device-info). With ADB_SERIAL unset, adb happily targets "whichever
 # device" as long as exactly one is connected - but silently misbehaves (or just refuses) the
 # moment a second device (or emulator) shows up, which is exactly the situation this project's own
-# dev machine is in (see docs/QUIRKS.md's Pixel 6 + second-device notes). Catching that here, with
+# dev machine is in (see docs/quirks/dev-tooling-windows.md's Pixel 6 + second-device notes). Catching that here, with
 # a clear "set ADB_SERIAL" message, beats letting whichever adb command runs first fail confusingly.
 check-adb-devices:
 	@command -v "$(ADB)" >/dev/null 2>&1 || [ -f "$(ADB)" ] || { \
@@ -246,7 +247,7 @@ generate: $(_GEN_STAMP_FILES) ## Regenerate sqlc/goose-derived code (stamp-track
 # $(shell ...) call runs at Makefile-parse time, before this make actually applies its own
 # `export` lines to $(shell)'s environment (confirmed empirically - the same `export GOPATH` that
 # reliably reaches every *recipe* shell below is invisible to a parse-time $(shell go ...) call).
-# One more entry in the same "don't trust this make's env handling" family - see docs/QUIRKS.md.
+# One more entry in the same "don't trust this make's env handling" family - see docs/quirks/dev-tooling-windows.md.
 define gen-stamp-rule
 $(1): $(shell GOPATH="$(GOPATH)" TMP="$(TMP)" TEMP="$(TEMP)" GOCACHE="$(GOCACHE)" go run ./tools/go-deps get $(1:.stamp=))
 	go run ./tools/go-deps gen $(1:.stamp=)
@@ -265,7 +266,7 @@ build-phone: phone-app-local-properties ## Build the phone-app debug APK (./grad
 # Gradle needs to be told the SDK location one way or another; the standard mechanism is this
 # file (auto-written by Android Studio, normally gitignored, so a fresh checkout never has it).
 # Relying on the ANDROID_HOME env var instead doesn't work under this make (env vars get stripped
-# from spawned processes - see docs/QUIRKS.md), so this always regenerates it from the same
+# from spawned processes - see docs/quirks/dev-tooling-windows.md), so this always regenerates it from the same
 # ANDROID_SDK_ROOT_* this Makefile already resolves for install-tools-android-sdk. Cheap enough
 # (one line) to just always rewrite rather than guard on staleness.
 phone-app-local-properties:

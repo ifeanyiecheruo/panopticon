@@ -185,7 +185,7 @@ oversights:
   gains), and video + optical stabilization. Plus a drag-to-draw zoom-rect over the live
   `<video>` overlaying `App.ComputeEffectiveRect`'s calibration-predicted honoured crop. All
   verified end to end against the Pixel 6. LL-HLS, adaptive bitrate and a scoped live token
-  remain deferred (see `docs/QUIRKS.md`).
+  remain deferred (see `docs/quirks/live-hls.md`).
 - **Eviction-probe loop.** The handoff doc's tombstone-cleanup mechanism (probing
   `/api/segments/:filename/file` on a purged clip's segments until a 404 confirms the phone's
   ring buffer evicted them, then dropping the DB rows) is not implemented. `DeleteClipPermanently`

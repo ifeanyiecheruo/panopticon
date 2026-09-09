@@ -15,7 +15,7 @@ import androidx.annotation.RequiresApi
  * (API 30) directly inside a method also used on API 28 throws
  * `NoSuchFieldError` when that method is verified - the `if (SDK_INT >= R)`
  * guard around the *call* doesn't help. Reconfirmed on a real API 28 device
- * (BLU G5) - see docs/QUIRKS.md.
+ * (BLU G5) - see docs/quirks/calibration-zoom.md.
  */
 @RequiresApi(Build.VERSION_CODES.R)
 internal object ZoomRatioApi30 {

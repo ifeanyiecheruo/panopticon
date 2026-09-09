@@ -20,7 +20,8 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   rotating ~10s *segments* gaplessly (sync-frame requested at the boundary, muxer swapped at the
   next keyframe with PTS rebased per segment); it closes a trailer tail after motion stops.
   Using a single stream + GL fan-out (rather than a separate analysis `ImageReader`) is what lets
-  the pipeline run on HALs that reject two concurrent streams - see the note below and QUIRKS.md.
+  the pipeline run on HALs that reject two concurrent streams - see the note below and
+  `docs/quirks/camera2-recording-pipeline.md`.
 - **Motion gate** - the GL readback (a downscaled RGBA FBO, green channel taken as luma) feeds a
   frame-difference `MotionDetector`; its verdict gates the `MediaMuxer` (open on motion, hold for
   a trailer tail, then close). `motionSensitivity` from `/api/config` picks the threshold and is
@@ -62,7 +63,7 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   `lensFocusDistanceDiopters` (`AF_MODE_OFF`), `awbMode` (`CONTROL_AWB_MODE` preset),
   `manualWhiteBalance` + `wbRedGain`/`wbGreenGain`/`wbBlueGain` (`AWB_MODE_OFF` +
   `COLOR_CORRECTION_GAINS` + an identity `COLOR_CORRECTION_TRANSFORM` - both are required or
-  frames go black, see `docs/QUIRKS.md`; gated on `MANUAL_POST_PROCESSING`),
+  frames go black, see `docs/quirks/manual-camera-controls.md`; gated on `MANUAL_POST_PROCESSING`),
   `videoStabilizationMode` and `opticalStabilizationMode` - each validated against the camera's
   deduped available-modes list. `POST` is validate-then-apply (`camera/CameraControlValidation.kt`,
   pure) - `400 {"error","key"}` naming the first offending key, applies nothing. The applied
@@ -87,7 +88,7 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   hinted form for ~20s. Both `LivePipeline` and `CameraGlPipeline` honour the configured
   `videoResolution` (`pickRecordingSize()`); the GL record path additionally centre-crops the
   sensor to that aspect (`pickSourceSize()` + a `uTexCrop` shader uniform) so a >1080p 16:9
-  pick on a 4:3 sensor isn't anamorphically squashed - see `docs/QUIRKS.md`.
+  pick on a 4:3 sensor isn't anamorphically squashed - see `docs/quirks/camera2-recording-pipeline.md`.
 - **Compose UI** - Home (device identity, storage, recording status), Connect (generate an
   invite code + show this phone's LAN address), Gallery (list clips - contiguous segments grouped
   by time gap - play the run via the system video viewer, delete a whole clip), Calibrate (stop recording → run/re-run a sweep, live progress, per-camera
@@ -106,14 +107,14 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   `KEY_I_FRAME_INTERVAL=1` + an explicit sync-frame timer), a 16-deep window (~16s DVR),
   `#EXT-X-START:-4`; ~4–6s glass-to-glass. The deep window + the controller's hls.js config +
   stall watchdog are what keep it from spiralling into permanent rebuffering (see
-  `docs/QUIRKS.md`). RECORD/LIVE stay mutually exclusive (one camera-using pipeline at a time -
+  `docs/quirks/live-hls.md`). RECORD/LIVE stay mutually exclusive (one camera-using pipeline at a time -
   deliberate, low-end phones don't multi-task encode well). LL-HLS stays carried-forward.
   `/live/*` is served behind the normal bearer token (the prototype's scoped GET-only token is
   deferred - the controller proxies live server-side).
 - **No audio track** - video only, avoids `RECORD_AUDIO` permission entirely.
 - **Calibration sweep is long and rare.** Every output size × every camera × ~14 zoom steps,
   with a fresh `CameraDevice` per resolution (some HALs disconnect the device on plain session
-  recycling - see `docs/QUIRKS.md`). Tens of minutes on a phone with many resolutions and
+  recycling - see `docs/quirks/calibration-zoom.md`). Tens of minutes on a phone with many resolutions and
   cameras; it's meant to be run once, phone stood down. The `MAX_RESOLUTIONS_PER_CAMERA` cap is
   a safety net, not a normal limit.
 - **Sharpness + position checks want a lit, textured scene** and, for position, a device with a
@@ -121,7 +122,7 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   inconclusive. Verified against a lit scene on the **Pixel 6** (API 36): crossover at 1.15×,
   off-centre position honoured on the back camera / not the front (neither lies), digital-zoom
   softening from ~2.8× vs. a declared 7× max. **BLU G5** (API 28, legacy path): ratio/crop
-  honouring clean; its 2.0× max is too small to judge position. See `docs/QUIRKS.md`.
+  honouring clean; its 2.0× max is too small to judge position. See `docs/quirks/calibration-zoom.md`.
 - **Debug-only `adb` triggers.** `src/debug/…/DebugCalibrationReceiver` drives a calibration
   sweep, `src/debug/…/DebugGlSoakReceiver` runs the standalone `GlSoakTest` GL/encoder soak, and
   `src/debug/…/DebugLiveReceiver` runs a live-broadcast probe (enters `live`, broadcasts, dumps
@@ -136,7 +137,8 @@ See those docs (and `../docs/design/ux-mocks/phone-ux-mock.html`) for the full i
   alongside the video stream; the BLU G5's Unisoc SC9863A HAL rejects two concurrent streams
   (`sendRequestsBatch: Function not implemented` → the device errors out), which is why analysis
   now rides the single stream through GL. A 10-minute BLU soak (`GlSoakTest`) held 24 fps with
-  zero dropped frames, 59 muxer rotations, no GL errors and flat memory. See QUIRKS.md.
+  zero dropped frames, 59 muxer rotations, no GL errors and flat memory. See
+  `docs/quirks/camera2-recording-pipeline.md`.
 - **Bottom nav bar instead of the mock's left icon rail + top status pill** - visual language
   (dark/teal theme, `ui/theme/Theme.kt`) carried over; exact chrome layout wasn't a priority for
   this slice.
@@ -166,7 +168,7 @@ entirely from the controller. `rotationDegrees` and `videoResolution` are read+w
 `/api/camera/state` (both are camera-pipeline settings; `rotationDegrees` is no longer on
 `/api/config`). The `CameraGlPipeline` record path centre-crops the sensor to the selected
 aspect in GL (`pickSourceSize()` / `uTexCrop`) so a >1080p 16:9 selection on a 4:3 sensor isn't
-anamorphically squashed — see `docs/QUIRKS.md`.
+anamorphically squashed — see `docs/quirks/camera2-recording-pipeline.md`.
 
 ## Build / install / run
 
@@ -196,5 +198,5 @@ To reach the HTTP API from your dev machine: `adb -s <serial> forward tcp:8080 t
 tab, which shows an invite code/URL, then `POST http://127.0.0.1:8080/api/pair?invite=<code>`
 with a JSON body `{"publicKey": "...", "name": "...", "kind": "..."}`).
 
-See `../docs/QUIRKS.md` for Camera2/MediaCodec/OpenGL/HTTP-server findings from building this,
-and which of the old prototype's quirks were reconfirmed vs. only carried forward.
+See `../docs/quirks/` for Camera2/MediaCodec/OpenGL/HTTP-server findings from building this,
+split by domain, and which of the old prototype's quirks were reconfirmed vs. only carried forward.

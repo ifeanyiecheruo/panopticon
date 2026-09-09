@@ -111,7 +111,7 @@ data class CameraControlKeys(
     /** Off-centre zoom rect as a fraction of the sensor active array. */
     val cropRegionNorm: RectNorm? = null,
     val aeExposureCompensation: Int? = null,
-    /** AE metering freeze - not a manual-exposure dial (see docs/QUIRKS.md). */
+    /** AE metering freeze - not a manual-exposure dial (see docs/quirks/manual-camera-controls.md). */
     val aeLock: Boolean? = null,
     /** Spot-metering rect (`CONTROL_AE_REGIONS`). Needs AE on, so it wins over
      *  [manualExposure] at apply time. Gated on [CameraCapabilities.maxAeRegions]. */

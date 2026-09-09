@@ -13,7 +13,7 @@ import java.io.ByteArrayOutputStream
  * "PTS == DTS" (fine for a live camera feed with no B-frames).
  *
  * Ported verbatim from the abandoned prototype (`panopticon-prototype/`), which paid for the
- * 188-byte-packet bug called out in [TsMuxer]'s test - see `docs/QUIRKS.md`'s Live HLS section.
+ * 188-byte-packet bug called out in [TsMuxer]'s test - see `docs/quirks/mpeg-ts.md`.
  */
 class TsMuxer(private val videoPid: Int = 0x100, private val pmtPid: Int = 0x1000) {
 

@@ -258,7 +258,7 @@ class CalibrationRunner(
 
         // One camera open per resolution. Reusing a single CameraDevice across
         // session teardown+recreate disconnects the device entirely on some
-        // HALs (reproduced on the BLU G5, API 28 - see docs/QUIRKS.md); a fresh
+        // HALs (reproduced on the BLU G5, API 28 - see docs/quirks/calibration-zoom.md); a fresh
         // device per resolution is slower but every resolution actually gets
         // probed.
         val perResolution = LinkedHashMap<String, ResolutionZoomMap>()
@@ -350,7 +350,7 @@ class CalibrationRunner(
                 // never both, and the position sub-probe below is a one-shot so
                 // it never disturbs this stream; mixing the two paths in the
                 // repeating request corrupts the Pixel 6 front camera's
-                // readback - see docs/QUIRKS.md).
+                // readback - see docs/quirks/calibration-zoom.md).
                 fun primaryRequest(): CaptureRequest {
                     val b = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                     b.addTarget(reader.surface)
@@ -473,7 +473,7 @@ class CalibrationRunner(
             // for any in-flight callback to finish on the callback thread, THEN
             // free the reader - otherwise `close()` unmaps a native buffer a
             // callback is still reading and the process takes a SIGSEGV
-            // (reproduced on the Pixel 6). See docs/QUIRKS.md.
+            // (reproduced on the Pixel 6). See docs/quirks/calibration-zoom.md.
             runCatching { session.stopRepeating() }
             synchronized(frameLock) { readerClosing = true }
             runCatching { reader.setOnImageAvailableListener(null, callbackHandler) }

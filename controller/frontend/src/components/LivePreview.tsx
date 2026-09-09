@@ -11,7 +11,7 @@ export type LiveState =
 
 // The phone's encoder takes a beat to produce segment 0, so the very first
 // playlist fetch can 404 — and hls.js treats a manifest 404/parse failure as
-// fatal after one try (video-dev/hls.js, see docs/QUIRKS.md). Retry the load a
+// fatal after one try (video-dev/hls.js, see docs/quirks/live-hls.md). Retry the load a
 // bounded number of times before giving up. The budget resets once playback
 // actually starts, so a mid-stream blip gets its own fresh allowance.
 const MANIFEST_RETRY_LIMIT = 8;
@@ -20,7 +20,7 @@ const MANIFEST_RETRY_MS = 700;
 // Stall watchdog: hls.js has a documented failure mode where its load queue
 // stops requesting fragments after a stall with no error event, and another
 // where its live-latency target ratchets up after every stall and never
-// recovers (docs/QUIRKS.md). Poll playback progress; if it's wedged, kick the
+// recovers (docs/quirks/live-hls.md). Poll playback progress; if it's wedged, kick the
 // loader and jump back to the live edge.
 const STALL_POLL_MS = 2000;
 const STALL_AFTER_MS = 6000;

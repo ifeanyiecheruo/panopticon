@@ -22,7 +22,7 @@ import com.panopticon.phoneapp.calibration.ZoomRatioApi30
  * API-gated keys (`CONTROL_ZOOM_RATIO_RANGE` API 30, `physicalCameraIds` API 28)
  * are funnelled through the `@RequiresApi` objects in `calibration/ZoomApiCompat.kt`
  * so the ART verifier never touches the field on an older device (the
- * `NoSuchFieldError`-behind-a-guard trap - see docs/QUIRKS.md).
+ * `NoSuchFieldError`-behind-a-guard trap - see docs/quirks/calibration-zoom.md).
  */
 object CameraCapabilitiesReader {
 

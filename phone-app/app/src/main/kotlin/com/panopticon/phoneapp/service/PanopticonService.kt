@@ -82,7 +82,7 @@ class PanopticonService : Service() {
                 httpServer = server
             } catch (e: Exception) {
                 // A bind failure here must never take down the camera/recording pipeline -
-                // see docs/QUIRKS.md ("crashed process's socket isn't released fast enough").
+                // see docs/quirks/android-service.md ("crashed process's socket isn't released fast enough").
                 Log.e(TAG, "HTTP server failed to start after retries", e)
             }
         }
