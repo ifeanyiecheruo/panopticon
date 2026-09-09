@@ -43,9 +43,7 @@ These terms are used unqualified throughout the component design descriptions in
 ### 1.4 Acronyms and abbreviations
 
 Every component design description in [`components/`](components/) links the acronyms in its
-§1.5 back to a row here. For a narrative walk-through of the Android camera / media / GL / HLS
-machinery these expand to — aimed at a reader who is *not* an Android camera-stack specialist —
-see [`android-media-primer.md`](android-media-primer.md).
+§1.5 back to a row here.
 
 - <a id="acr-adr"></a>**ADR** — architecture decision record ([`decisions/`](decisions/))
 - <a id="acr-sdd"></a>**SDD** — software design description (ISO/IEC/IEEE 1016)
@@ -97,7 +95,7 @@ see [`android-media-primer.md`](android-media-primer.md).
 
 - [`decisions/`](decisions/) — the architecture decision records.
 - [`android-media-primer.md`](android-media-primer.md) — background on the Android camera /
-  media / GL / HLS APIs the `phone-*` and live components assume, for a non-specialist.
+  media / GL / HLS APIs for a non-specialist.
 - [`http-api.md`](http-api.md) — the phone HTTP contract.
 - [`components/`](components/) — per-subsystem design descriptions.
 - [`../status/README.md`](../status/README.md) — build/verify status and remaining-work plans.
