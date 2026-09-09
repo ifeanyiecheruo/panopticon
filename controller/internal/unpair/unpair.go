@@ -1,5 +1,5 @@
 // Package unpair implements the controller side of unpairing, per
-// HANDOFF-controller-ux.md's "Pairing & unpairing":
+// docs/design/decisions/0003-pairing-and-unpairing.md:
 //
 //   - Unpair (safe): before revoking, check GET /api/clips for clips the phone
 //     still has that we never archived and warn if there are any; require the

@@ -141,9 +141,10 @@ every `tools/*` module here deliberately is - see the "tools/ as separate module
 selected dependencies`. This is true even for a path that's a perfectly valid, buildable module on
 its own - the restriction is specifically about crossing a module boundary via a bare relative
 path, and it bit both `controller/internal/dbstore/queries.gen.json`'s declared generator command
-(`go run ../../../tools/dbstore ...`) and `tools/mock-phone`'s own documented usage from
-`controller/README.md` (`go run ../tools/mock-phone/cmd/mockphone`) - the latter had apparently
-never actually been run exactly as documented until this was diagnosed.
+(`go run ../../../tools/dbstore ...`) and `tools/mock-phone`'s own then-documented usage
+(`go run ../tools/mock-phone/cmd/mockphone` from `controller/`) - the latter had apparently
+never actually been run exactly as documented until this was diagnosed. (`CONTRIBUTING.md` now
+documents the repo-root `go run ./tools/mock-phone/cmd/mockphone` form instead.)
 **Workaround:** a `go.work` file at the repo root listing every module (`controller`,
 `tools/dbstore`, `tools/go-deps`, `tools/mock-phone`) makes `go run`/`go build` workspace-aware,
 resolving relative paths across any module the workspace lists rather than just the calling

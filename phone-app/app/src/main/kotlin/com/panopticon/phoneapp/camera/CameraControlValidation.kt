@@ -3,7 +3,7 @@ package com.panopticon.phoneapp.camera
 /**
  * Validate a requested [CameraControlKeys] against one camera's declared
  * [CameraCapabilities], the "validate-then-apply" half of `POST /api/camera/state`
- * (phone-http-api.md): the route returns `400 {"error": ..., "key": ...}` for
+ * (docs/design/http-api.md): the route returns `400 {"error": ..., "key": ...}` for
  * the first offending key and applies nothing.
  *
  * Framework-free - unit-tested directly. Only non-null fields are checked; a

@@ -28,7 +28,7 @@ type Result struct {
 }
 
 // Outcome classifies a failure the UI must render distinctly, per
-// HANDOFF-controller-ux.md's Add-phone flow ("distinguishing an unreachable
+// docs/design/decisions/0003-pairing-and-unpairing.md's Add-phone flow ("distinguishing an unreachable
 // address ... from a bad invite").
 type Outcome int
 
@@ -120,7 +120,7 @@ func AddPhone(ctx context.Context, store *dbstore.Store, address, inviteCode str
 		return Result{}, fmt.Errorf("save paired phone: %w", err)
 	}
 
-	// Opportunistic calibration ingest, per HANDOFF-controller-ux.md's data
+	// Opportunistic calibration ingest, per docs/design/decisions/0009-calibration-model.md's data
 	// model: if this phone already has a persisted sweep result, pull it now
 	// so its model is calibrated for the whole fleet without anyone running a
 	// sweep. Best-effort — a phone that never calibrated, or dropped off wifi

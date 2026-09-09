@@ -23,7 +23,7 @@ var (
 	ErrPhoneRecording = errors.New("phone is recording; stop it before calibrating")
 
 	// ErrNoCalibrationResult is GET /api/calibration/result's 404: this phone
-	// has never completed a calibration. Per HANDOFF-controller-ux.md this is
+	// has never completed a calibration. Per docs/design/decisions/0009-calibration-model.md this is
 	// a normal "nothing to ingest yet", not a failure.
 	ErrNoCalibrationResult = errors.New("phone has no completed calibration result")
 )

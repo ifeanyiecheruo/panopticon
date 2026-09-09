@@ -11,7 +11,7 @@ import (
 
 // Identity is the controller's own persistent Ed25519 keypair plus the
 // display name sent as `name` in POST /api/pair. One row, created on first
-// run and reused for the life of the install — phone-http-api.md's pairing
+// run and reused for the life of the install — docs/design/http-api.md's pairing
 // model keys each phone's bearer token to this controller's public key, so
 // it must be stable across restarts.
 type Identity struct {

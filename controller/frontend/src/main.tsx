@@ -7,7 +7,7 @@ import { App } from './App';
 // Panopticon controller — vertical-slice UI.
 //
 // Screens implemented: Fleet, Phone detail (stub: raw status/config),
-// Gallery, Trash, Add phone. Deferred (see README.md): live preview
+// Gallery, Trash, Add phone. Deferred (see docs/status/README.md): live preview
 // adjusters, calibration UI, per-clip Trash-vs-eviction-probe niceties.
 // ---------------------------------------------------------------------
 

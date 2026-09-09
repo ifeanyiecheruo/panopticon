@@ -27,7 +27,7 @@ import (
 var assets embed.FS
 
 // syncPollInterval is how often the background sync loop polls each paired
-// phone's GET /api/clips. The handoff doc leaves cadence as an open item
+// phone's GET /api/clips. docs/status/sync-cadence-and-backoff.md tracks cadence/backoff as an open item
 // ("Cadence/backoff strategy for the background sync loop... how often") —
 // 30s is this slice's concrete pick, kept as a single named constant so
 // it's trivial to retune.

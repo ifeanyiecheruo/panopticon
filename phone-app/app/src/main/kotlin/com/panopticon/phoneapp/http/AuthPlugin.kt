@@ -15,7 +15,7 @@ import kotlinx.serialization.Serializable
 data class ErrorBody(val error: String)
 
 /**
- * Bearer-token auth gate, per phone-http-api.md: "every route below" requires
+ * Bearer-token auth gate, per docs/design/http-api.md: "every route below" requires
  * `Authorization: Bearer <per-controller-token>` except `POST /api/pair` (which is how a token
  * is obtained in the first place). Missing/unknown/revoked token -> 401.
  *

@@ -38,9 +38,9 @@ private sealed class Dest(val route: String, val label: String) {
 
 /**
  * Navigation shell for this vertical slice's three screens. The full mock uses a left icon rail
- * + top bar with a recording-status pill (see HANDOFF-phone-ux.md) - deliberately simplified here
+ * + top bar with a recording-status pill (see docs/design/decisions/0012-ux-shape.md) - deliberately simplified here
  * to a bottom nav bar to keep this slice's UI effort proportionate; visual language (dark/teal,
- * see ui/theme/Theme.kt) is carried over, exact chrome layout is not. See README.md "Deferred".
+ * see ui/theme/Theme.kt) is carried over, exact chrome layout is not. See docs/design/components/phone-ui.md.
  */
 @Composable
 fun PanopticonNavHost(app: PanopticonApplication) {

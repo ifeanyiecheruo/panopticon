@@ -37,7 +37,7 @@ CREATE INDEX idx_clips_state ON clips (state);
 CREATE INDEX idx_clips_created_at ON clips (created_at_ms);
 
 -- Calibration data model: shared by manufacturer+model, not per-phone.
--- See docs/implementation/HANDOFF-controller-ux.md "Calibration data model".
+-- See docs/design/decisions/0009-calibration-model.md.
 -- Not populated/consumed by this vertical slice (no calibration UI yet),
 -- but the table exists so the shape is settled and a later pass just fills
 -- it in.

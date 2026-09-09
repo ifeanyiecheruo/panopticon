@@ -46,7 +46,7 @@ data class ConfigResponse(
 )
 
 // `rotationDegrees` is a camera-pipeline setting - read/written via
-// GET/POST /api/camera/state, not here (phone-http-api.md).
+// GET/POST /api/camera/state, not here (docs/design/http-api.md).
 @Serializable
 data class ConfigPatch(
     val deviceName: String? = null,

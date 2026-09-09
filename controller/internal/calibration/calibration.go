@@ -1,5 +1,5 @@
 // Package calibration implements the controller side of the calibration
-// data model from HANDOFF-controller-ux.md: a shared resource keyed by
+// data model from docs/design/decisions/0009-calibration-model.md: a shared resource keyed by
 // manufacturer+model (not per-phone), populated opportunistically by pulling
 // GET /api/calibration/result from a paired phone and reused for every other
 // phone of the same model.

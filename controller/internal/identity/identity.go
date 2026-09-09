@@ -1,6 +1,6 @@
 // Package identity manages the controller's persistent Ed25519 keypair,
 // used as this controller's identity when pairing with a phone (POST
-// /api/pair's "publicKey" field per phone-http-api.md).
+// /api/pair's "publicKey" field per docs/design/http-api.md).
 package identity
 
 import (

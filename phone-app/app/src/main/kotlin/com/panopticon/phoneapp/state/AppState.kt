@@ -40,7 +40,7 @@ class AppState {
 
     // Motion currently detected by the analysis stream (RECORD mode only).
     // Phone-local UI state - deliberately not surfaced on /api/status, per
-    // phone-http-api.md's "motion detection stays out of the API" decision.
+    // docs/design/decisions/0005-motion-detection.md.
     private val _motionActive = MutableStateFlow(false)
     val motionActive: StateFlow<Boolean> = _motionActive
 

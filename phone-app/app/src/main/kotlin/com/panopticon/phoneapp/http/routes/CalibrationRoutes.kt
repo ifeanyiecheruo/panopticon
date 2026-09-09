@@ -12,7 +12,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 
 /**
- * Device-wide calibration routes (phone-http-api.md "Calibration"). One sweep
+ * Device-wide calibration routes (docs/design/http-api.md "Calibration"). One sweep
  * at a time, keyed by `runId`; the last completed result is persisted so
  * `GET /api/calibration/result` (no `runId`) answers straight from disk
  * without re-running anything - that's what lets a controller ingest it

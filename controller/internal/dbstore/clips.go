@@ -8,11 +8,11 @@ import (
 	"panopticon-controller/internal/dbstore/queries"
 )
 
-// ClipState mirrors the three-state lifecycle from HANDOFF-controller-ux.md:
+// ClipState mirrors the three-state lifecycle from docs/design/decisions/0006-segments-clips-and-tombstones.md:
 // active (visible in Gallery) -> trashed (visible in Trash, files still on
 // disk) -> purged (tombstone only, files gone). The tombstone is only dropped
 // once eviction from the phone's ring buffer is confirmed - that probe loop is
-// out of scope (see README.md), so purged rows accumulate here for now.
+// out of scope (see docs/status/eviction-probe-loop.md), so purged rows accumulate here for now.
 type ClipState string
 
 const (
@@ -118,7 +118,7 @@ func (s *Store) ListClips(phoneID string, state ClipState) ([]Clip, error) {
 }
 
 // SetClipState transitions a clip (Trash/Restore/Delete per the Trash bin
-// action table in HANDOFF-controller-ux.md). Callers are responsible for
+// action table in docs/design/decisions/0006-segments-clips-and-tombstones.md). Callers are responsible for
 // removing the on-disk segment files before transitioning to purged.
 func (s *Store) SetClipState(phoneID, clipID string, state ClipState) error {
 	return s.q.SetClipState(context.Background(), queries.SetClipStateParams{

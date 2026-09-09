@@ -123,7 +123,7 @@ type ParsedInvite struct {
 }
 
 // ParseInviteURL lets the frontend auto-fill both paste-form fields when
-// either receives a full invite URL, per HANDOFF-controller-ux.md's
+// either receives a full invite URL, per docs/design/decisions/0003-pairing-and-unpairing.md's
 // Add-phone flow.
 func (a *App) ParseInviteURL(raw string) ParsedInvite {
 	addr, code, ok := phoneapi.ParseInviteURL(raw)
@@ -139,7 +139,7 @@ type AddPhoneResult struct {
 
 // AddPhone drives POST /api/pair via internal/pairing and reports a
 // classified outcome so the UI can show the two distinct failure messages
-// the handoff doc calls for (unreachable address vs. invalid invite).
+// docs/design/decisions/0003-pairing-and-unpairing.md calls for (unreachable address vs. invalid invite).
 func (a *App) AddPhone(address, code string) AddPhoneResult {
 	ctx, cancel := context.WithTimeout(a.ctxOrBackground(), 20*time.Second)
 	defer cancel()
@@ -185,7 +185,7 @@ type PhoneDetailView struct {
 // GetPhoneDetail is the Phone-detail screen's data source: raw
 // GET /api/status + GET /api/config (live preview / adjusters are still out
 // of scope for this slice), plus the manufacturer+model calibration lookup
-// (HANDOFF-controller-ux.md "Calibration data model") — re-checked
+// (docs/design/decisions/0009-calibration-model.md) — re-checked
 // opportunistically against the phone on every open.
 func (a *App) GetPhoneDetail(phoneID string) (PhoneDetailView, error) {
 	phone, err := a.store.GetPhone(phoneID)
@@ -634,7 +634,7 @@ func (a *App) ListClips(phoneID string) ([]ClipView, error) {
 }
 
 // ListTrash returns trashed clips across every phone (Trash has no
-// phone-filter chip row per the handoff doc).
+// phone-filter chip row per docs/design/decisions/0012-ux-shape.md).
 func (a *App) ListTrash() ([]ClipView, error) {
 	return a.listClipsByState("", dbstore.ClipTrashed)
 }
@@ -703,10 +703,10 @@ func (a *App) RestoreClip(phoneID, clipID string) error {
 }
 
 // DeleteClipPermanently: trashed -> purged. Deletes every segment's on-disk
-// file + thumbnail immediately (permanent-on-disk right away per the handoff
-// doc) but keeps the DB rows as tombstones — the segment rows stop resync from
+// file + thumbnail immediately (permanent-on-disk right away per
+// docs/design/decisions/0006-segments-clips-and-tombstones.md) but keeps the DB rows as tombstones — the segment rows stop resync from
 // resurrecting the files, and the eviction-probe loop that would eventually
-// drop the tombstones entirely is out of scope for this slice (see README).
+// drop the tombstones entirely is out of scope for now (see docs/status/eviction-probe-loop.md).
 func (a *App) DeleteClipPermanently(phoneID, clipID string) error {
 	segs, err := a.store.ListSegmentsForClip(clipID)
 	if err != nil {
@@ -768,7 +768,7 @@ func unpairResult(r unpair.Result) UnpairResult {
 	return out
 }
 
-// UnpairPhone is the safe unpair path (HANDOFF-controller-ux.md). With
+// UnpairPhone is the safe unpair path (docs/design/decisions/0003-pairing-and-unpairing.md). With
 // confirmed=false it first checks for clips the phone still has that we never
 // archived and returns outcome "needs_confirmation" (changing nothing) if
 // there are any; call again with confirmed=true to proceed. It removes the

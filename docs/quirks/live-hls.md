@@ -29,7 +29,7 @@ flip it used to be. Decisions taken this slice:
   write-up: [`mpeg-ts.md`](mpeg-ts.md).
 - **No GL / no `SurfaceTexture` for live.** Unlike `CameraGlPipeline` (which fans one stream out
   to motion analysis *and* the encoder), live preview does no motion analysis
-  (phone-http-api.md: "motion detection stays out of live preview"), so the camera renders
+  (docs/design/http-api.md: "motion detection stays out of live preview"), so the camera renders
   straight into `MediaCodec.createInputSurface()` — one stream, no GL thread, no EGL. Also means
   the BLU G5's two-concurrent-stream rejection is a non-issue here by construction.
 - **Keyframe cadence: `KEY_I_FRAME_INTERVAL = 1s` *and* an explicit `REQUEST_SYNC_FRAME` timer**

@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'preact/hooks';
 
 /** Drag-to-scroll, item-snapping horizontal row — a direct port of the phone
  * Preview mock's `makeHScroll` / `computeSnapStops` / `centerItemInScroller` /
- * `padEndsForCentering` (docs/implementation/HANDOFF-phone-ux.md, "Adjust bar").
+ * `padEndsForCentering` (docs/design/decisions/0012-ux-shape.md, "Adjust bar").
  *
  * - Pointer-capture drag; on release, snap to the nearest valid item stop.
  * - A stop that would leave the FIRST or LAST child only partly visible is

@@ -16,7 +16,7 @@ export interface RulerSpec {
 /** Pixel-camera-style drag-to-scrub ruler — port of the phone Preview mock's
  * `renderRuler` + `wireRuler`. Fixed-width window; the tick strip is wider than
  * the window and slides under a thumb that never moves. No numeric readout
- * (removed per HANDOFF-phone-ux.md) — the live video is the feedback. */
+ * (removed per docs/design/decisions/0012-ux-shape.md) — the live video is the feedback. */
 export function Ruler({
   spec,
   value,

@@ -8,7 +8,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /**
- * Persisted device configuration - GET/POST /api/config in phone-http-api.md.
+ * Persisted device configuration - GET/POST /api/config in docs/design/http-api.md.
  * Backed by a single SharedPreferences JSON blob rather than per-field prefs: this is a thin
  * vertical slice and the whole document is small and always read/written together.
  *

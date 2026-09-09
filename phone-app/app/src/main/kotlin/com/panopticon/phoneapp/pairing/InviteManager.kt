@@ -12,7 +12,7 @@ data class Invite(
 )
 
 /**
- * Local library functions only, per phone-http-api.md - "Invite generation ... are NOT HTTP
+ * Local library functions only, per docs/design/http-api.md - "Invite generation ... are NOT HTTP
  * routes." Called from the on-device Connect screen; redeemed by POST /api/pair.
  *
  * In-memory only (not persisted across process death) - acceptable for this slice since an

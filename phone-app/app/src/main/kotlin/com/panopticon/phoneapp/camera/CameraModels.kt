@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 /**
  * Wire types for the camera-selection + manual-control API
  * (`/api/cameras`, `/api/cameras/active`, `/api/camera/capabilities`,
- * `/api/camera/state` in docs/implementation/phone-http-api.md).
+ * `/api/camera/state` in docs/design/http-api.md).
  *
  * `RectNorm` is reused from the calibration models on purpose - the controller
  * already decodes that exact `{l,t,r,b}` shape for `effectiveCropNorm`, and a

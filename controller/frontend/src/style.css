@@ -1,6 +1,6 @@
 /* Visual language ported from docs/design/ux-mocks/controller-ux-mock.html —
    inherited dark/teal placeholder theme, explicitly not settled per
-   HANDOFF-controller-ux.md. Trimmed to what this vertical slice's screens
+   docs/design/decisions/0012-ux-shape.md. Trimmed to what this vertical slice's screens
    actually use (no live-preview adjuster/ruler/calibration styling yet). */
 :root{
   --bg:#0b1210;
@@ -258,7 +258,7 @@ body{
 .ctl-row.bad > label, .ctl-row.bad .ctl-val{color:var(--warn);}
 
 /* Calibration section (Phone detail). Summary only — the per-check breakdown
-   lives on the phone app's own Calibrate screen, per HANDOFF-controller-ux.md. */
+   lives on the phone app's own Calibrate screen, per docs/design/decisions/0012-ux-shape.md. */
 .calib-row{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 2px;}
 .calib-state{font-size:12.5px; color:var(--text);}
 .calib-state.needed{color:var(--warn);}
@@ -323,7 +323,7 @@ a{color:var(--accent);}
 .live-frame-idle.error{color:var(--rec); border-color:var(--rec-dim);}
 
 /* ---- Phone-style camera controls (ported from docs/design/ux-mocks/phone-ux-mock.html
-   Preview screen — see docs/implementation/HANDOFF-phone-ux.md). Same narrow,
+   Preview screen — see docs/design/decisions/0012-ux-shape.md). Same narrow,
    space-constrained layout as the phone: frosted overlay ruler on the video,
    a drag-scroller mode bar below, pickers below that. ---- */
 /* section-title row that carries the resolution dropdown on its right */

@@ -1,5 +1,5 @@
 // Package trayapp wires up the system tray icon that is the app's
-// persistent presence — per HANDOFF-controller-ux.md, this is a tray-app,
+// persistent presence — per docs/design/decisions/0011-controller-runtime-and-state.md, this is a tray-app,
 // not a window-first app: background sync must not depend on a window
 // being open, and the tray icon is what makes that visible/controllable.
 package trayapp

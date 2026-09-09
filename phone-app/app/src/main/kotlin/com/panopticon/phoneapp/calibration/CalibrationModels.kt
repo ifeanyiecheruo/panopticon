@@ -4,7 +4,7 @@ import kotlinx.serialization.Serializable
 
 /**
  * Wire types for the device-wide calibration API (the `/api/calibration`
- * routes in docs/implementation/phone-http-api.md). Field names match the doc's
+ * routes in docs/design/http-api.md). Field names match the doc's
  * example bodies exactly so the controller can decode them without a mapping
  * layer.
  *
@@ -146,7 +146,7 @@ data class ResultDeviceIdentity(
  * [CalibrationStore] so a phone that has calibrated once can serve this on
  * every request - including after an app restart - without re-running the
  * sweep, which is what lets the controller ingest it opportunistically right
- * after pairing (see HANDOFF-controller-ux.md "Calibration data model").
+ * after pairing (see docs/design/decisions/0009-calibration-model.md).
  */
 @Serializable
 data class CalibrationResult(

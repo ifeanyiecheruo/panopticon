@@ -33,7 +33,7 @@ private val MP2T = ContentType("video", "mp2t")
 private val SEGMENT_NAME = Regex("""live-(\d+)\.ts""")
 
 /**
- * Live view (plain HLS). See phone-http-api.md's "Live view" section.
+ * Live view (plain HLS). See docs/design/http-api.md's "Live view" section.
  *
  *  - `POST /api/live/start` idempotently begins broadcasting; `409` unless the phone is in LIVE
  *    mode (enter it first via `POST /api/mode {"mode":"live"}`, which is itself a `409` from

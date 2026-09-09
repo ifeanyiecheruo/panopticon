@@ -9,7 +9,7 @@ import (
 )
 
 // Calibration is the controller's shared-by-manufacturer+model calibration
-// record, per HANDOFF-controller-ux.md's "Calibration data model": one entry
+// record, per docs/design/decisions/0009-calibration-model.md: one entry
 // per device model, populated by whichever phone of that model calibrates
 // first (or by a manual re-run), reused for every other phone of the same
 // model. ResultJSON is the phone's GET /api/calibration/result body stored

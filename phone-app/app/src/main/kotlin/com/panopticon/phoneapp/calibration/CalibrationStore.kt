@@ -14,7 +14,7 @@ private const val TAG = "CalibrationStore"
  * no permission needed, wiped on uninstall). One file, always read/written
  * whole - the document is small and there's only ever one "last result".
  *
- * phone-http-api.md frames this as "written to the phone's local DB"; this
+ * docs/design/http-api.md frames this as "written to the phone's local DB"; this
  * slice has no on-device DB (config + clip index are both SharedPreferences/
  * JSON), so a plain file matches the existing persistence style.
  */

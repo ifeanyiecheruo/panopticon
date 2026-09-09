@@ -6,7 +6,7 @@
 // directory relative to the current working directory (i.e. wherever the
 // user launches the binary from) rather than a proper per-OS app-data
 // directory (os.UserConfigDir()). That's a deliberate simplification for
-// development — see README.md's "Deferred" section.
+// development — see docs/status/controller-app-data-dir.md.
 package appdirs
 
 import (

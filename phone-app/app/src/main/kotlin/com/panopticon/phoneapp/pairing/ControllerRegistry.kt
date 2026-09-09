@@ -17,7 +17,7 @@ data class PairedController(
 )
 
 /**
- * Per-controller bearer-token registry, per phone-http-api.md's auth model: each paired
+ * Per-controller bearer-token registry, per docs/design/http-api.md's auth model: each paired
  * controller gets its own token (not one shared secret), so it can be revoked individually.
  * `list()`/`revoke(controllerId)` are deliberately NOT exposed as HTTP routes (per the doc,
  * they're a local/owner concern) - only `register()` (called from POST /api/pair) and

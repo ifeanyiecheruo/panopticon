@@ -27,7 +27,7 @@ import kotlinx.serialization.Serializable
 data class ControlErrorBody(val error: String, val key: String)
 
 /**
- * Camera-selection + manual-control routes (phone-http-api.md "Cameras" and
+ * Camera-selection + manual-control routes (docs/design/http-api.md "Cameras" and
  * "Camera control").
  *
  *  - `GET  /api/cameras`               - physical cameras + which is active

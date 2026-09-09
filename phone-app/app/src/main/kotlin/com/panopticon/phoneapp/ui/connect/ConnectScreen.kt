@@ -30,7 +30,7 @@ import java.util.Collections
 
 /**
  * On-device Connect screen. Invite generation is a local library call
- * (`InviteManager.createInvite()`), never an HTTP route - per phone-http-api.md, only a
+ * (`InviteManager.createInvite()`), never an HTTP route - per docs/design/http-api.md, only a
  * controller already holding a code can redeem it via `POST /api/pair`. A QR image is a
  * nice-to-have not built here; the code + full pairing URL are shown as plain text/mono, which
  * is enough for manual entry during controller-side testing.

@@ -43,7 +43,7 @@ private const val DEQUEUE_TIMEOUT_US = 10_000L
 /**
  * LIVE-mode camera pipeline: a single camera stream rendered **straight into a `MediaCodec` H.264
  * encoder's input surface** (no GL, no `SurfaceTexture` - live preview needs no motion analysis,
- * per phone-http-api.md's "motion detection stays out of live preview"), drained to a
+ * per docs/design/http-api.md's "motion detection stays out of live preview"), drained to a
  * [LiveHlsRelay] that produces a rolling plain-HLS playlist.
  *
  * RECORD and LIVE are mutually exclusive (see [com.panopticon.phoneapp.state.AppMode]); this only

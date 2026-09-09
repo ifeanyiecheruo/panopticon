@@ -645,7 +645,7 @@ func TestSyncLoop_SplitsOnGap(t *testing.T) {
 }
 
 // TestSyncLoop_TreatsEvictedSegmentAsSkipNotError verifies the "404 on
-// download == already evicted, normal skip" rule from phone-http-api.md and
+// download == already evicted, normal skip" rule from docs/design/http-api.md and
 // the old prototype's identical lesson: a segment that 404s on file download
 // must be skipped (never indexed, never retried forever) while the OTHER
 // listed segment still syncs normally.

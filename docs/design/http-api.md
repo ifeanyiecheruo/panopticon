@@ -1,84 +1,80 @@
-# Panopticon phone HTTP API — design summary
+# Phone HTTP API — contract
 
-Status as of 2026-09-04: this is the settled design for the HTTP interface the phone app
-exposes to paired controllers, worked out in a design session (no Kotlin/Ktor code written
-yet). Modeled on `../panopticon-prototype/shared/api-contract.md` (the old prototype's
-contract) but reworked for this project's pairing model, multi-camera support, and
-device-wide calibration. Use this doc as the starting point for the controller-side design
-session and, eventually, as the phone/server implementation contract.
+## 1. Introduction
 
-## Auth model
+### 1.1 Purpose
 
-Pairing exchanges a controller's public key for a per-controller bearer token — not a single
-shared secret like the old prototype. This lets each controller be individually revoked
-without invalidating the others.
+Specify the HTTP interface the phone app exposes to paired controllers. This is the
+**authoritative** contract for wire shapes and status codes: `phone-app` implements it,
+`controller` calls it, and `tools/mock-phone` fakes it.
+
+### 1.2 Scope
+
+All routes under `/api/*` and `/live/*`, plus the auth model. Modeled on the prototype's
+`shared/api-contract.md`, reworked for this project's pairing model, multi-camera support, and
+device-wide calibration. Component-level design of the code behind these routes is in
+[`components/`](components/); this document is the wire contract only.
+
+### 1.3 Definitions
+
+| Term | Meaning |
+|---|---|
+| segment | one recorded file in the phone's ring buffer — the phone's only unit of footage |
+| clip | a contiguous run of segments; assembled **by the controller**, not part of this API |
+| mode | `record` / `standby` / `live` — the phone's top-level camera state |
+| logical / physical camera | an id `CameraManager` reports / a `"<logical>:<physical>"` sub-sensor of a logical multi-camera |
+| capability gate | the declared range or flag a camera-control key is validated against |
+| arming | the interval after entering `live` before the camera can broadcast |
+
+### 1.4 Acronyms and abbreviations
+
+Linked to their row in [`architecture.md` §1.4](architecture.md#14-acronyms-and-abbreviations):
+[HTTP](architecture.md#acr-http),
+[JSON](architecture.md#acr-json),
+[HLS](architecture.md#acr-hls),
+[LL-HLS](architecture.md#acr-ll-hls),
+[TS](architecture.md#acr-ts),
+[AE / AF / AWB](architecture.md#acr-ae),
+[OIS](architecture.md#acr-ois),
+[ISO](architecture.md#acr-iso),
+[EV](architecture.md#acr-ev),
+[RGGB](architecture.md#acr-rggb),
+[API](architecture.md#acr-api) (both senses),
+[DVR](architecture.md#acr-dvr).
+
+### 1.5 References
+
+Design rationale is in the decision records, not here:
+[0002](decisions/0002-http-api-surface-and-auth.md) (surface + auth),
+[0003](decisions/0003-pairing-and-unpairing.md) (pairing),
+[0006](decisions/0006-segments-clips-and-tombstones.md) (segments vs clips),
+[0007](decisions/0007-live-preview-plain-hls.md) (live),
+[0008](decisions/0008-camera-control-and-multi-camera.md) (camera control),
+[0009](decisions/0009-calibration-model.md) (calibration),
+[0010](decisions/0010-mode-state-machine.md) (mode).
+Related quirks: [`../quirks/live-hls.md`](../quirks/live-hls.md),
+[`../quirks/manual-camera-controls.md`](../quirks/manual-camera-controls.md),
+[`../quirks/calibration-zoom.md`](../quirks/calibration-zoom.md).
+
+## 2. Auth model
+
+Pairing exchanges a controller's public key for a **per-controller bearer token** — not a single
+shared secret. Each controller can be revoked without invalidating the others.
 
 ```
 Authorization: Bearer <per-controller-token>
 ```
 
 Missing/unknown/revoked token → `401`. No permission tiers: every paired controller has full
-access to every route below (no read-only/view-only notion).
+access to every route below. `POST /api/pair` is the only unauthenticated route.
 
-## Decisions made this session (worth not re-litigating)
+Invite generation and controller-registry management (list/revoke other controllers) are **not
+HTTP routes** — they are local library functions called by the phone's own UI
+(`InviteManager.createInvite()/listPendingInvites()/revokeInvite()`,
+`ControllerRegistry.list()/revoke()`). `DELETE /api/pair` (self-unpair) is the single exception,
+because the remote party is the one who needs it.
 
-- **Invite generation and controller-registry management of *other* controllers (list/revoke
-  by `controllerId`) are NOT HTTP routes.** Invites are created on a phone physically in the
-  user's possession and presented to a controller also in the user's possession (not a
-  public-internet or Bluetooth-broadcast scenario), so there's no remote party that needs
-  those actions over HTTP — they're plain internal library functions called by the phone's
-  own local UI:
-  ```
-  InviteManager.createInvite(): Invite
-  InviteManager.listPendingInvites(): List<Invite>
-  InviteManager.revokeInvite(inviteId: String)
-
-  ControllerRegistry.list(): List<PairedController>
-  ControllerRegistry.revoke(controllerId: String)
-  ```
-  **Self-unpair is the one exception** — added during the controller-design session as
-  `DELETE /api/pair` above. Unlike the admin actions listed here, the remote party *is* the
-  one who needs it (a controller unpairing itself), so it has to be a route. It reuses the
-  bearer token as the target identity rather than taking a `controllerId`, so it can't be
-  repurposed to revoke a different controller.
-- **No human-confirmation step on pairing.** Considered and dropped — `POST /api/pair`
-  grants a fully active token immediately. The invite-in-both-hands trust model means the
-  mitigations that confirmation would add (against a leaked/broadcast invite) aren't needed.
-- **The set of paired controllers is not exposed over HTTP at all** — not even read-only to
-  other controllers. Purely a local/owner concern, hence `ControllerRegistry.list()` above
-  being a library function, not a route.
-- **Favoriting is removed entirely** — no favorite field on segments, no favorite route.
-- **This API speaks in "segments"** — one segment is one recorded file in the phone's ring
-  buffer. The user-facing "clip" (a contiguous run of segments recorded back-to-back during one
-  motion event) is assembled *by the controller* from the segments it syncs; the phone has no
-  notion of it and there is no clip route here. (An earlier draft of this doc used "clips" for
-  the individual files; that's now "segments", and "clip" is the group.)
-- **`/api/control/*` renamed to `/api/camera/*`.**
-- **Multi-camera is a first-class concept**: `/api/cameras` lists physical cameras (id,
-  facing, label, focal length, which is active); `/api/cameras/active` switches, which is a
-  disruptive reconfigure like a mode switch. `/api/camera/capabilities` and
-  `/api/camera/state` operate on "whichever camera is active" (capabilities takes an optional
-  `cameraId` to preview another camera's declared ranges without switching to it; state does
-  not, since live capture state only exists for the camera actually running).
-- **Calibration is device-wide, not per-camera-on-demand** — one `POST
-  /api/calibration/start` sweeps *every* camera the device reports, because calibration's
-  whole purpose is empirically catching a device's Camera2 API lying about its own
-  capabilities, and that risk exists per-camera, not just on the default one. Status reports
-  both which camera and which step; results are keyed by `cameraId`.
-- **Motion detection stays out of live preview** — no live "motion currently detected"
-  signal/badge in the API; it remains purely the `motionSensitivity` field in `/api/config`,
-  since Preview only runs `live` mode where the motion-gated recording pipeline isn't active.
-- **Calibration results are persisted on the phone**, not just held for the lifetime of a run —
-  `GET /api/calibration/result` without `runId` serves the last completed result straight from
-  disk. This is what lets the controller-side device-capability database (see
-  [HANDOFF-controller-ux.md](HANDOFF-controller-ux.md)) pull a phone's results opportunistically
-  — e.g. right after pairing — without asking that phone to actually run calibration.
-- Added along the way: `batteryPercent`/`charging`/`serverTimeMs` on `/api/status` (battery
-  display + clock-skew correction for a controller's segment timeline), and a new
-  `GET /api/build-info` endpoint so a controller/server can gate on the phone app's version
-  before calling a route it might not support.
-
-## Full route table
+## 3. Route table
 
 ### Pairing
 
@@ -91,7 +87,7 @@ access to every route below (no read-only/view-only notion).
 
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
-| GET | `/api/device` | — | — | `{ "manufacturer": "Google", "model": "Pixel 9a", "device": "tegu" }` | Hardware identity used to key the server's device-capability/quirks database. |
+| GET | `/api/device` | — | — | `{ "manufacturer": "Google", "model": "Pixel 9a", "device": "tegu" }` | Hardware identity used to key the controller's device-capability/calibration store. |
 | GET | `/api/build-info` | — | — | `{ "appVersionName": "1.4.2", "appVersionCode": 47, "buildType": "release", "gitSha": "a3f9c21" }` | Phone app's own build identity, for compatibility gating. |
 | GET | `/api/status` | — | — | `{ "mode": "live", "status": "idle", "cameraHealthy": true, "liveViewers": 0, "storageUsedBytes": 40200000000, "storageCapBytes": 64000000000, "batteryPercent": 78, "charging": true, "serverTimeMs": 1755270015231 }` | One-shot snapshot: mode, recording/broadcast state, storage, battery, phone clock. |
 | GET | `/api/config` | — | — | `{ "deviceName": "Garage cam", "motionSensitivity": "medium", "storageCapBytes": 64000000000, "ringBufferMaxAgeMs": 604800000 }` | Reads persisted device configuration. (`rotationDegrees` moved to `/api/camera/*` — it's a camera-pipeline setting.) |
@@ -112,14 +108,11 @@ them can run.
 
 ### Cameras (selection)
 
-> **Implemented** — phone-app `http/routes/CameraRoutes.kt` + `camera/CameraCatalog.kt`,
-> controller `internal/phoneapi/camera.go` + `App.ListCameras` / `SetActiveCamera` +
-> `frontend/src/components/CameraControls.tsx`. `cameraIdList` returns *logical* cameras only, so
-> the catalog also emits `"<logical>:<physical>"` ids for each physical sub-camera of a logical
-> multi-camera (API 28+). Opening one opens the *logical* device but pins the session's outputs
-> to that physical sensor via `OutputConfiguration.setPhysicalCameraId` (`camera/PhysicalCameraApi28.kt`).
-> On the Pixel 6 this exposes `0:2` (wide) and `0:3` (ultra-wide); the BLU G5 (single sensor per
-> facing) just lists `0`/`1`.
+`cameraIdList` returns *logical* cameras only, so the catalog also emits `"<logical>:<physical>"`
+ids for each physical sub-camera of a logical multi-camera (API 28+). Opening one opens the
+*logical* device but pins the session's outputs to that physical sensor via
+`OutputConfiguration.setPhysicalCameraId`. On the Pixel 6 this exposes `0:2` (wide) and `0:3`
+(ultra-wide); the BLU G5 (single sensor per facing) just lists `0`/`1`.
 
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
@@ -128,13 +121,9 @@ them can run.
 
 ### Camera control
 
-> **Implemented** — phone-app `http/routes/CameraRoutes.kt` +
-> `camera/CameraCapabilitiesReader.kt` / `CameraControlApply.kt` / `CameraControlValidation.kt`
-> (the last is framework-free + unit-tested), controller `internal/phoneapi/camera.go` +
-> `App.GetCameraControls` / `SetCameraControls` / `ComputeEffectiveRect`. The applied state
-> persists in `DeviceConfig.cameraControls` and is re-applied to whichever pipeline
-> (`record` or `live`) is running — a state dialled in while watching the live preview also
-> governs recording. Verified on the Pixel 6 (API 36) and BLU G5 (API 28).
+The applied state persists in `DeviceConfig.cameraControls` and is re-applied to whichever
+pipeline (`record` or `live`) is running — a state dialled in while watching the live preview
+also governs recording. Verified on the Pixel 6 (API 36) and BLU G5 (API 28).
 
 **The concrete `keys` set** (`CameraControlKeys`; a null/absent field = leave that control on
 auto). `POST` replaces the `keys` object wholesale — send the full desired set.
@@ -162,17 +151,16 @@ auto). `POST` replaces the `keys` object wholesale — send the full desired set
 
 ### Calibration (device-wide)
 
-> **Implemented** in `phone-app` (`CalibrationRunner` + `CalibrationRoutes`) and consumed by
-> `controller` (`internal/calibration`). It's now a **real empirical zoom probe**: for every
-> camera, at every `StreamConfigurationMap` output size, it applies a geometric range of zoom
-> requests (`CONTROL_ZOOM_RATIO` on API 30+, `SCALER_CROP_REGION` on every API) and records what
-> the HAL actually did — the effective crop rect (`effectiveCropNorm`), whether the requested
-> ratio/position was honoured, which physical camera was active (optical↔digital crossover), and
-> a frame-sharpness score. Result body carries `deviceIdentity`, and per camera `opticalRange` /
-> `digitalRange` / `crossoverRatio` / `positionHonored` / `qualityCollapseRatio` /
-> `perResolution` (the full `ZoomSample` list) plus a thin `steps` summary; the exact shape is
-> `phone-app`'s `calibration/CalibrationModels.kt` ↔ `controller`'s `internal/phoneapi/calibration.go`.
-> Needs exclusive camera access, so it only runs from `standby` (see Mode).
+A **real empirical zoom probe**: for every camera, at every `StreamConfigurationMap` output
+size, it applies a geometric range of zoom requests (`CONTROL_ZOOM_RATIO` on API 30+,
+`SCALER_CROP_REGION` on every API) and records what the HAL actually did — the effective crop
+rect (`effectiveCropNorm`), whether the requested ratio/position was honoured, which physical
+camera was active (optical↔digital crossover), and a frame-sharpness score. Result body carries
+`deviceIdentity`, and per camera `opticalRange` / `digitalRange` / `crossoverRatio` /
+`positionHonored` / `qualityCollapseRatio` / `perResolution` (the full `ZoomSample` list) plus a
+thin `steps` summary; the exact shape is `phone-app`'s `calibration/CalibrationModels.kt` ↔
+`controller`'s `internal/phoneapi/calibration.go`. Needs exclusive camera access, so it only
+runs from `standby`.
 
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
@@ -183,16 +171,14 @@ auto). `POST` replaces the `keys` object wholesale — send the full desired set
 
 ### Live view
 
-**Implemented as plain HLS** (whole ~1s `.ts` segments, 16-segment sliding window,
-`#EXT-X-VERSION:3`, `#EXT-X-START:TIME-OFFSET=-4`), not LL-HLS. Glass-to-glass latency ≈ 4–6s.
-The phone runs a dedicated single-stream `camera → MediaCodec → TsMuxer` pipeline
-(`phone-app`'s `camera/LivePipeline.kt` + `LiveHlsRelay.kt`); `MediaMuxer` can't emit MPEG-TS so
-the muxer is hand-rolled (`camera/ts/TsMuxer.kt`). Entering `live` mode arms the pipeline
-(camera warm, nothing encoding); `POST /api/live/start` begins broadcasting; a 15s no-request
-inactivity watchdog returns it to armed-idle. `/live/*` is behind the normal bearer token — the
-prototype's separate GET-only scoped token is deferred (the controller proxies these
-server-side). A deep DVR window + hls.js live config + a client stall watchdog are what make
-plain HLS hold up (see `docs/quirks/live-hls.md`); the LL-HLS upgrade stays carried-forward.
+**Plain HLS** (whole ~1s `.ts` segments, 16-segment sliding window, `#EXT-X-VERSION:3`,
+`#EXT-X-START:TIME-OFFSET=-4`), not LL-HLS. Glass-to-glass latency ≈ 4–6s. The phone runs a
+dedicated single-stream `camera → MediaCodec → TsMuxer` pipeline; `MediaMuxer` can't emit
+MPEG-TS so the muxer is hand-rolled. Entering `live` mode arms the pipeline (camera warm,
+nothing encoding); `POST /api/live/start` begins broadcasting; a 15s no-request inactivity
+watchdog returns it to armed-idle. `/live/*` is behind the normal bearer token — the controller
+proxies these server-side, so hls.js fetches same-origin (the prototype's separate GET-only
+scoped token is deferred). See [`../quirks/live-hls.md`](../quirks/live-hls.md).
 
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
@@ -217,16 +203,13 @@ user-facing **clip** is a controller/UX concern (the controller does it on sync,
 (The `filename` still carries a historical `clip_` prefix — it's an opaque on-disk name, not a
 statement that the file is a "clip" in the grouped sense.)
 
-## Open items for the controller-design session
+## 4. Open contract questions
 
-- How the controller stores/uses its per-pairing bearer token and public/private keypair.
-- Controller-side archive/sync strategy against `/api/segments` (polling cadence, how it dedupes
-  on `filename`, how it decides what to keep locally vs. re-fetch, how it groups contiguous
-  segments into clips).
-- ~~Server-side device-capability database (mentioned in the old prototype's contract, keyed by
-  manufacturer+model+device+`cameraId` now) — whether/how the controller design reuses that
-  concept.~~ **Resolved**: the controller owns this, keyed by manufacturer+model, populated by
-  pulling `GET /api/calibration/result` from whichever phone of that model calibrates first. See
-  "Calibration data model" in [HANDOFF-controller-ux.md](HANDOFF-controller-ux.md).
-- Multi-phone "fleet" concerns (the mock's Home screen fleet summary implies a controller
-  aggregates status across several phones — this session only designed the single-phone API).
+Tracked as implementation work:
+
+- Controller-side sync cadence / backoff against an unreachable phone, and the eviction-probe
+  loop's cadence — [`../status/sync-cadence-and-backoff.md`](../status/sync-cadence-and-backoff.md).
+- A scoped GET-only `/live/*` token (currently the full bearer token, mitigated by the
+  server-side proxy) — [`../status/ll-hls-upgrade.md`](../status/ll-hls-upgrade.md).
+- Multi-phone fleet concerns beyond the single-phone API surface — covered by
+  [`architecture.md`](architecture.md) §5.2 and the controller specs.

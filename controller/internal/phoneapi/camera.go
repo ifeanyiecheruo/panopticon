@@ -9,7 +9,7 @@ import (
 	"net/url"
 )
 
-// Camera-selection + manual-control routes (phone-http-api.md "Cameras" and
+// Camera-selection + manual-control routes (docs/design/http-api.md "Cameras" and
 // "Camera control"). Mirrors phone-app's camera/CameraModels.kt.
 
 // ErrUnknownCamera is POST /api/cameras/active's 404: the phone doesn't have a

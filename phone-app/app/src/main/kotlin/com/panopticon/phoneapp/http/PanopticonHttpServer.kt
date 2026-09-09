@@ -40,7 +40,7 @@ private const val TAG = "PanopticonHttpServer"
 const val SERVER_PORT = 8080
 
 /**
- * Embedded Ktor/Netty HTTP server implementing the subset of phone-http-api.md this vertical
+ * Embedded Ktor/Netty HTTP server implementing the subset of docs/design/http-api.md this vertical
  * slice covers. Bind-retry-on-crash-loop and explicit CORS header exposure are carried forward
  * from the old prototype's QUIRKS.md (see docs/quirks/android-service.md, and the CORS note in
  * docs/quirks/live-hls.md, for what was reconfirmed vs. carried forward without re-verification here).

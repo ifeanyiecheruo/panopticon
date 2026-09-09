@@ -2,7 +2,7 @@
 // GET /api/clips?since=<cursor>, downloading new clip files + thumbnails
 // into the local archive, and advancing the sync cursor only after each
 // clip is safely persisted (crash-safe, idempotent on filename) — per
-// HANDOFF-controller-ux.md and the old prototype's SyncService lesson
+// docs/design/components/controller-sync.md and the old prototype's SyncService lesson
 // (panopticon-prototype/ARCHITECTURE.md).
 //
 // One phone being slow or unreachable must never wedge the others: each
@@ -195,7 +195,7 @@ func (m *Manager) runOnce(ctx context.Context, phoneID string) {
 			if errors.Is(err, phoneapi.ErrEvicted) {
 				// Phone already evicted this segment from its ring buffer
 				// between listing it and us fetching it — a normal race,
-				// not an error (see phone-http-api.md and the old
+				// not an error (see docs/design/http-api.md and the old
 				// prototype's identical lesson). Never retry it: advance
 				// past it and move on.
 				log.Printf("syncer[%s]: segment %s already evicted, skipping", phoneID, seg.Filename)

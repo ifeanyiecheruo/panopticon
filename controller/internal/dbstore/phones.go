@@ -110,7 +110,7 @@ func (s *Store) AdvanceSyncCursor(id string, cursorMs int64) error {
 }
 
 // DeletePhone removes a phone's pairing record (used by unpair/force-unpair).
-// Per the handoff doc, already-synced clips are deliberately NOT deleted —
+// Per docs/design/decisions/0003-pairing-and-unpairing.md, already-synced clips are deliberately NOT deleted —
 // they remain visible in the aggregate Gallery as historical footage from a
 // now-unpaired phone.
 func (s *Store) DeletePhone(id string) error {

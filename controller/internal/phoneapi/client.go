@@ -1,5 +1,5 @@
 // Package phoneapi is the controller's HTTP client for the phone-side API
-// defined in docs/implementation/phone-http-api.md.
+// defined in docs/design/http-api.md.
 //
 // Every call here uses an explicit context timeout — Go's http.Client does
 // NOT default to one, and the old prototype (see panopticon-prototype's
@@ -48,7 +48,7 @@ var (
 	ErrInvalidInvite = errors.New("invalid or expired invite code")
 
 	// ErrEvicted is a 404 on a clip file/thumbnail download — the phone has
-	// already evicted this clip from its ring buffer. Per the handoff doc
+	// already evicted this clip from its ring buffer. Per docs/design/http-api.md
 	// and the old prototype's lesson, this is a normal skip, not a failure.
 	ErrEvicted = errors.New("clip evicted from phone")
 )
@@ -89,7 +89,7 @@ func New(baseURL, token string) *Client {
 // base URL with no path. Mirrors the controller-ux-mock.html's own
 // parseInviteUrl behavior: an address with no scheme defaults to plain
 // http://, not https:// — the design doc's own example URL happens to be
-// https, but the mock (ground truth for exact behavior per the handoff doc)
+// https, but the mock (ground truth for exact behavior per docs/design/decisions/0003-pairing-and-unpairing.md)
 // treats a bare address as http, and this codebase follows the mock.
 func NormalizeAddress(addr string) string {
 	addr = strings.TrimSpace(addr)
@@ -110,7 +110,7 @@ func NormalizeAddress(addr string) string {
 // "https://192.168.1.87/api/connect?invite=XYZF-EBDO-ORMS". Returns ok=false
 // if raw doesn't look like an invite URL (no "invite=" query param) — a bare
 // short code has no address embedded and must be entered separately, per
-// HANDOFF-controller-ux.md's Add-phone flow.
+// docs/design/decisions/0003-pairing-and-unpairing.md's Add-phone flow.
 func ParseInviteURL(raw string) (address, code string, ok bool) {
 	str := strings.TrimSpace(raw)
 	if str == "" || !strings.Contains(strings.ToLower(str), "invite=") {
@@ -212,7 +212,7 @@ type PairResponse struct {
 // Pair redeems an invite code against POST /api/pair. Distinguishes an
 // unreachable address (ErrUnreachable) from a bad invite (ErrInvalidInvite,
 // covering both 404 unknown-code and 410 expired/used) so the Add-phone flow
-// can show the two distinct error messages the handoff doc calls for.
+// can show the two distinct error messages docs/design/decisions/0003-pairing-and-unpairing.md calls for.
 func (c *Client) Pair(ctx context.Context, inviteCode string, req PairRequest) (PairResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
 	defer cancel()
@@ -454,7 +454,7 @@ func (c *Client) Segments(ctx context.Context, sinceMs int64) (SegmentsResponse,
 
 // downloadBinary is the shared implementation for segment file/thumbnail
 // downloads: on success the caller owns the returned ReadCloser and MUST
-// close it. A 404 becomes ErrEvicted — per phone-http-api.md ("404 if
+// close it. A 404 becomes ErrEvicted — per docs/design/http-api.md ("404 if
 // evicted") and the old prototype's lesson, this is a normal skip, not a
 // retryable failure.
 func (c *Client) downloadBinary(ctx context.Context, path string, timeout time.Duration) (io.ReadCloser, error) {

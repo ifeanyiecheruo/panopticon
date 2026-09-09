@@ -55,6 +55,6 @@ node_modules/
 # controller/.gitignore) lands here instead of under controller/ if the binary is ever launched
 # with the repo root as its working directory (e.g. `make run-controller`, which launches from
 # wherever `make` itself runs) - controller/internal/appdirs resolves these relative to launch
-# cwd, not a fixed app-data path. See docs/implementation/HANDOFF-implementation.md.
+# cwd, not a fixed app-data path. See docs/implementation/controller-app-data-dir.md.
 /data/
 /archive/

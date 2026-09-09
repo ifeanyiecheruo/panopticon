@@ -1,7 +1,7 @@
 //go:build !windows
 
-// Fallback for non-Windows builds: this project targets Windows (per the
-// controller handoff doc), so this is a best-effort PID-file implementation
+// Fallback for non-Windows builds: this project targets Windows (per
+// docs/design/decisions/0011-controller-runtime-and-state.md), so this is a best-effort PID-file implementation
 // kept only so `go build ./...` doesn't break on other platforms — it is
 // not exercised or hardened the way lock_windows.go is.
 package singleinstance

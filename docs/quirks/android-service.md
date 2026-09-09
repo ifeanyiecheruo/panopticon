@@ -46,4 +46,4 @@ around a `live`->`record` round trip), `GET /api/clips` (delta list), full-file 
 downloads of `/api/clips/:filename/file` (`206 Partial Content` with a correct `Content-Range`),
 `/api/clips/:filename/thumbnail`, `DELETE /api/clips/:filename` (with a following `404`), and
 self-unpair via `DELETE /api/pair` (with a following `401` on the now-revoked token). All matched
-`phone-http-api.md`'s documented shapes and status codes.
+`docs/design/http-api.md`'s documented shapes and status codes.
