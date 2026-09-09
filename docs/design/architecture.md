@@ -43,7 +43,9 @@ These terms are used unqualified throughout the component design descriptions in
 ### 1.4 Acronyms and abbreviations
 
 Every component design description in [`components/`](components/) links the acronyms in its
-§1.5 back to a row here.
+§1.5 back to a row here. For a narrative walk-through of the Android camera / media / GL / HLS
+machinery these expand to — aimed at a reader who is *not* an Android camera-stack specialist —
+see [`android-media-primer.md`](android-media-primer.md).
 
 - <a id="acr-adr"></a>**ADR** — architecture decision record ([`decisions/`](decisions/))
 - <a id="acr-sdd"></a>**SDD** — software design description (ISO/IEC/IEEE 1016)
@@ -94,6 +96,8 @@ Every component design description in [`components/`](components/) links the acr
 ### 1.5 References
 
 - [`decisions/`](decisions/) — the architecture decision records.
+- [`android-media-primer.md`](android-media-primer.md) — background on the Android camera /
+  media / GL / HLS APIs the `phone-*` and live components assume, for a non-specialist.
 - [`http-api.md`](http-api.md) — the phone HTTP contract.
 - [`components/`](components/) — per-subsystem design descriptions.
 - [`../status/README.md`](../status/README.md) — build/verify status and remaining-work plans.
@@ -173,6 +177,10 @@ Rationale: [`decisions/0011-controller-runtime-and-state.md`](decisions/0011-con
 ## 5. Logical / component view
 
 ### 5.1 phone-app
+
+*The `Camera2 → SurfaceTexture → GL fan-out → MediaCodec → MediaMuxer` and
+`Camera2 → MediaCodec → TsMuxer` chains below are walked through, API by API, in
+[`android-media-primer.md`](android-media-primer.md) §9.*
 
 ```mermaid
 flowchart TB

@@ -1,5 +1,11 @@
 # phone-app — live pipeline — software design description
 
+*Prerequisite: this description assumes the Android `Camera2` and `MediaCodec` APIs and the
+MPEG-TS / HLS delivery model (PAT / PMT / PCR / PES, 188-byte packets, sliding-window playlist,
+live edge, LL-HLS). If any of those are unfamiliar, read
+[`../android-media-primer.md`](../android-media-primer.md) first — §4 and §6 cover exactly this
+path.*
+
 ## 1. Introduction
 
 ### 1.1 Purpose

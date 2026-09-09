@@ -1,5 +1,11 @@
 # phone-app — camera control & selection — software design description
 
+*Prerequisite: this description assumes the Android `Camera2` model — `CameraCharacteristics`,
+capture requests, the 3A (AE / AF / AWB) controls and their manual overrides, `SCALER_CROP_REGION`
+vs `CONTROL_ZOOM_RATIO`, RGGB colour gains, logical vs physical multi-camera, and `@RequiresApi`
+class isolation. [`../android-media-primer.md`](../android-media-primer.md) §2 and §8 introduce
+all of it for a generalist.*
+
 ## 1. Introduction
 
 ### 1.1 Purpose

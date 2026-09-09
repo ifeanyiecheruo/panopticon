@@ -22,6 +22,12 @@ System-wide terms (segment, clip, controller, mode, calibration, prototype) are 
 [`../architecture.md`](../architecture.md) §1.3, and acronyms in §1.4; each component's §1.4 /
 §1.5 add only what is local to it and link shared acronyms back to that glossary.
 
+The Android `Camera2`, `MediaCodec`, `MediaMuxer` / `MediaExtractor`, `SurfaceTexture` /
+OpenGL ES, and MPEG-TS / HLS / hls.js APIs that the `phone-*` files and
+[`controller-live-and-camera.md`](controller-live-and-camera.md) are written against are
+introduced for a non-specialist in [`../android-media-primer.md`](../android-media-primer.md);
+those files carry a prerequisite note pointing at the relevant section.
+
 ## Index
 
 ### phone-app

@@ -3,6 +3,7 @@
 | You want… | Go to |
 |---|---|
 | design intent and rationale — architecture, decisions, component specs, the HTTP contract, UX mocks | [`design/`](design/README.md) |
+| a plain-language intro to the Android camera / media / GL / HLS APIs the design docs assume | [`design/android-media-primer.md`](design/android-media-primer.md) |
 | current build status + what's left to build | [`status/README.md`](status/README.md) + the plans beside it |
 | a device / library / toolchain misbehaviour and its workaround | [`quirks/`](quirks/) |
 | how to build, run, and test the repo | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) |
@@ -14,6 +15,7 @@ docs/
   design/
     README.md              index for everything below
     architecture.md        system architecture description (42010) + diagrams + shared glossary
+    android-media-primer.md  Android camera/media/GL/HLS background for non-specialists
     decisions/             thematic architecture decision records (0001–00NN)
     components/            one IEEE 1016 design description per subsystem
     http-api.md            the phone HTTP API contract (authoritative)

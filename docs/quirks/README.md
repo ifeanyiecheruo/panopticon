@@ -15,6 +15,10 @@ directly. A second device, a **BLU G5, Android 9 (API 28)**, also gets used oppo
 a low-end/old-API check - see [`android-service.md`](android-service.md)'s foreground-service
 entry for what it caught that the Pixel 6 (API 36) couldn't have.
 
+New to the Android `Camera2` / `MediaCodec` / `MediaMuxer` / `SurfaceTexture` / MPEG-TS / HLS
+APIs these entries assume? [`../design/android-media-primer.md`](../design/android-media-primer.md)
+introduces them for a generalist.
+
 ## Domains
 
 | File | What's in it |

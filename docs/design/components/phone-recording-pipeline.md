@@ -1,5 +1,10 @@
 # phone-app — recording pipeline — software design description
 
+*Prerequisite: this description assumes the Android `Camera2`, `MediaCodec`, `MediaMuxer` /
+`MediaExtractor`, `SurfaceTexture`, and OpenGL ES (EGL, FBO, shader uniforms, `glReadPixels`)
+APIs. If any of those are unfamiliar, read [`../android-media-primer.md`](../android-media-primer.md)
+first — it introduces each one for a generalist and maps it back to this pipeline.*
+
 ## 1. Introduction
 
 ### 1.1 Purpose

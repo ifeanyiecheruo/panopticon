@@ -1,5 +1,11 @@
 # phone-app — calibration — software design description
 
+*Prerequisite: this description assumes the Android `Camera2` model — what
+`CameraCharacteristics` declares vs what `CaptureResult` reports, `SCALER_CROP_REGION` /
+`CONTROL_ZOOM_RATIO`, `ImageReader` read-back, and `@RequiresApi` class isolation.
+[`../android-media-primer.md`](../android-media-primer.md) §2, §5, §7 and §8 cover it for a
+generalist.*
+
 ## 1. Introduction
 
 ### 1.1 Purpose

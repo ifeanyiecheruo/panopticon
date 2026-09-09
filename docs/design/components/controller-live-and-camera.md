@@ -1,5 +1,11 @@
 # controller — live preview & camera control — software design description
 
+*Prerequisite: this description assumes the HLS delivery model and how hls.js plays it —
+playlist / sliding window / live edge / DVR, Media Source Extensions, LL-HLS, and the live-config
+knobs (`liveSyncDurationCount` etc.). [`../android-media-primer.md`](../android-media-primer.md)
+§6 covers it for a generalist; the phone side it consumes is
+[`phone-live-pipeline.md`](phone-live-pipeline.md).*
+
 ## 1. Introduction
 
 ### 1.1 Purpose
