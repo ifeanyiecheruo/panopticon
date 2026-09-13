@@ -441,12 +441,17 @@ class LivePipeline(
         }
         val caps = avc?.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)?.videoCapabilities
         val supported = camSizes.filter { caps == null || caps.isSizeSupported(it.width, it.height) }
-        parseVideoSize(videoResolution)?.let { want ->
-            supported.firstOrNull { it.width == want.width && it.height == want.height }?.let { return it }
+        val want = parseVideoSize(videoResolution)
+        // Match RECORD mode's aspect ratio (not just its exact size) so the live preview's
+        // viewport is the same field of view actually captured when recording - see
+        // RecordingSizeSelection's doc comment for why an aspect mismatch between the two
+        // pipelines' independently-enumerated size lists shows up as a viewport mismatch.
+        val recordSize = RecordingSizeSelection.recordModeSize(cameraManager, id, videoResolution)
+        return if (recordSize != null) {
+            RecordingSizeSelection.selectMatchingAspect(supported, want, recordSize)
+        } else {
+            RecordingSizeSelection.select(supported, want)
         }
-        return supported.firstOrNull { it.width == 1280 && it.height == 720 }
-            ?: supported.filter { it.width <= 1280 && it.height <= 720 }.maxByOrNull { it.width.toLong() * it.height }
-            ?: Size(1280, 720)
     }
 }
 

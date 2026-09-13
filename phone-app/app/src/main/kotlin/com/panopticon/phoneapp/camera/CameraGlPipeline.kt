@@ -10,7 +10,6 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
-import android.media.MediaCodecList
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
@@ -724,17 +723,7 @@ class CameraGlPipeline(
 
     private fun pickRecordingSize(): Size {
         val id = sizingCameraId() ?: return Size(1280, 720)
-        val map = cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val camSizes = map?.getOutputSizes(SurfaceTexture::class.java)?.toList() ?: emptyList()
-        val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-        val avc = codecList.codecInfos.firstOrNull { it.isEncoder && it.supportedTypes.any { t -> t.equals(MediaFormat.MIMETYPE_VIDEO_AVC, true) } }
-        val caps = avc?.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)?.videoCapabilities
-        val supported = camSizes.filter { caps == null || caps.isSizeSupported(it.width, it.height) }
-        parseVideoSize(appConfig.get().videoResolution)?.let { want ->
-            supported.firstOrNull { it.width == want.width && it.height == want.height }?.let { return it }
-        }
-        return supported.firstOrNull { it.width == 1280 && it.height == 720 }
-            ?: supported.filter { it.width <= 1280 && it.height <= 720 }.maxByOrNull { it.width.toLong() * it.height }
+        return RecordingSizeSelection.recordModeSize(cameraManager, id, appConfig.get().videoResolution)
             ?: Size(1280, 720)
     }
 
