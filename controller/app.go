@@ -62,10 +62,16 @@ type PhoneView struct {
 	DiskUsageBytes int64  `json:"diskUsageBytes"`
 }
 
-// ListPhones returns every paired phone with a fresh, best-effort live
-// status probe (short timeout — phoneapi.Status already applies its own
-// metadata timeout). Fetched concurrently since the Fleet screen wants all
-// cards to resolve without one slow phone stalling the others.
+// ListPhones returns every paired phone from the local DB only — no network
+// round trip. Name, id and disk usage are all known locally, and neither the
+// Fleet screen's row list nor the Gallery's phone-filter chips render the
+// live-status fields (Reachable/Status/BatteryPercent/Charging) this method
+// used to fetch by probing every phone's /status endpoint concurrently and
+// blocking on the slowest (or least reachable) one for up to its full
+// metadata timeout. That per-phone network probe is exactly what
+// GetPhoneDetail already does for the one phone actually being viewed, so
+// dropping it here costs nothing and removes the multi-second stall those
+// screens previously showed just to render names the DB already had.
 func (a *App) ListPhones() ([]PhoneView, error) {
 	phones, err := a.store.ListPhones()
 	if err != nil {
@@ -73,7 +79,6 @@ func (a *App) ListPhones() ([]PhoneView, error) {
 	}
 
 	views := make([]PhoneView, len(phones))
-	var wg sync.WaitGroup
 	for i, p := range phones {
 		views[i] = PhoneView{
 			ID: p.ID, Name: p.Name, Manufacturer: p.Manufacturer, Model: p.Model,
@@ -81,29 +86,7 @@ func (a *App) ListPhones() ([]PhoneView, error) {
 		}
 		usage, _ := a.store.DiskUsageBytes(p.ID)
 		views[i].DiskUsageBytes = usage
-
-		wg.Add(1)
-		go func(idx int, phone dbstore.Phone) {
-			defer wg.Done()
-			client := phoneapi.New(phone.BaseURL, phone.Token)
-			status, err := client.Status(a.ctxOrBackground())
-			if err != nil {
-				views[idx].Reachable = false
-				views[idx].Status = "unreachable"
-				return
-			}
-			views[idx].Reachable = true
-			views[idx].HasBattery = true
-			views[idx].BatteryPercent = status.BatteryPercent
-			views[idx].Charging = status.Charging
-			if status.Status == "recording" {
-				views[idx].Status = "recording"
-			} else {
-				views[idx].Status = "standby"
-			}
-		}(i, p)
 	}
-	wg.Wait()
 	return views, nil
 }
 
