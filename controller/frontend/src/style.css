@@ -160,7 +160,13 @@ body{
 
 .gallery-layout{display:flex; gap:18px; align-items:flex-start; padding:16px 26px 30px;}
 .viewer-pane{flex:0 0 460px; position:sticky; top:0;}
-.viewer-pane video{width:100%; border-radius:14px; background:#000; aspect-ratio:16/9; object-fit:contain; display:block;}
+/* ClipPlayer stacks two <video> elements (one preloading the next segment/clip
+   while the other plays) so it can swap the visible one instead of reloading -
+   see ClipPlayer.tsx. */
+.clip-player{position:relative; width:100%; aspect-ratio:16/9; border-radius:14px; overflow:hidden; background:#000;}
+.viewer-pane video{width:100%; height:100%; border-radius:14px; background:#000; object-fit:contain; display:block;}
+.clip-player video{position:absolute; inset:0;}
+.clip-player video[hidden]{display:none;}
 .viewer-empty{
   width:100%; aspect-ratio:16/9; border-radius:14px; background:var(--surface);
   border:1px dashed var(--border); display:flex; align-items:center; justify-content:center;

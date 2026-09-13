@@ -20,8 +20,9 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
 
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [anchorKey, setAnchorKey] = useState<string | null>(null);
-  // Set only when the selection advances because a clip finished — carries the
-  // play-through across the ClipPlayer remount. Cleared on any manual pick.
+  // Set only when the selection advances because a clip finished — tells
+  // ClipPlayer this is a continuation so it plays without a fresh gesture.
+  // Cleared on any manual pick.
   const [autoplay, setAutoplay] = useState(false);
 
   // Refetch only on a real input change (filter or a post-mutation reload) —
@@ -120,7 +121,10 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
 
   const orderedClips = clips;
   const viewerKey = anchorKey && selectedKeys.has(anchorKey) ? anchorKey : [...selectedKeys][0] ?? null;
-  const viewer = orderedClips.find((c) => clipKey(c) === viewerKey) || null;
+  const viewerIdx = viewerKey ? orderedClips.findIndex((c) => clipKey(c) === viewerKey) : -1;
+  const viewer = viewerIdx >= 0 ? orderedClips[viewerIdx] : null;
+  // orderedClips is newest-first, so forward-in-time is the lower index (see handleClipFinished).
+  const nextClip = viewerIdx > 0 ? orderedClips[viewerIdx - 1] : null;
   const days = groupByDay(orderedClips);
 
   const handleSelect = (key: string, mods: ClickMods) => {
@@ -144,10 +148,12 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
   const handleClipFinished = () => {
     if (!viewer) return;
     const idx = orderedClips.findIndex((c) => clipKey(c) === clipKey(viewer));
-    const next = idx >= 0 ? orderedClips[idx + 1] : undefined;
+    // orderedClips is newest-first (ListClips sorts DESC), so the next clip
+    // forward in time sits at a *lower* index, not idx + 1.
+    const next = idx > 0 ? orderedClips[idx - 1] : undefined;
     if (next) {
       const k = clipKey(next);
-      setAutoplay(true); // keep playing through the next clip across the remount
+      setAutoplay(true); // keep playing through the next clip
       setSelectedKeys(new Set([k]));
       setAnchorKey(k);
     } else {
@@ -190,11 +196,11 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
           {viewer ? (
             <>
               <ClipPlayer
-                key={viewerKey ?? undefined}
                 clip={viewer}
                 controls
                 autoplay={autoplay}
                 onFinished={handleClipFinished}
+                nextClip={nextClip}
               />
               <div className="viewer-meta">
                 <div>
