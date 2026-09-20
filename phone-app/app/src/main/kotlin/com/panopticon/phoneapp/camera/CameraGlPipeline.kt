@@ -228,7 +228,6 @@ class CameraGlPipeline(
                 openCameraIfNeeded()
                 recordingSize = pickRecordingSize()
                 sourceSize = pickSourceSize(recordingSize)
-                computeTexCrop()
                 texCropFinalized = false
                 rotationDegrees = CameraFraming.normalizedRotation(appConfig.get().rotationDegrees)
                 outputSize = CameraFraming.rotatedOutputSize(recordingSize, rotationDegrees)
@@ -284,7 +283,7 @@ class CameraGlPipeline(
         Log.i(
             TAG,
             "GL + encoder up (out ${outputSize.width}x${outputSize.height}, rotation $rotationDegrees, " +
-                "camera source ${sourceSize.width}x${sourceSize.height}, crop $texCropX,$texCropY)",
+                "camera source ${sourceSize.width}x${sourceSize.height})",
         )
     }
 
@@ -365,13 +364,10 @@ class CameraGlPipeline(
         }
         st.getTransformMatrix(stMatrix)
         if (!texCropFinalized) {
+            val (cropX, cropY) = CameraFraming.correctedTexCrop(sourceSize, recordingSize, stMatrix)
+            texCropX = cropX; texCropY = cropY
             texCropFinalized = true
-            val natural = CameraFraming.naturalSourceSize(sourceSize, stMatrix)
-            if (natural != sourceSize) {
-                val (cropX, cropY) = CameraFraming.computeTexCrop(natural, recordingSize)
-                texCropX = cropX; texCropY = cropY
-                Log.i(TAG, "corrected texCrop for swapped axes: natural=${natural.width}x${natural.height} crop=$texCropX,$texCropY")
-            }
+            Log.i(TAG, "texCrop for this camera's transform: $cropX,$cropY")
         }
         val tsNanos = st.timestamp
 
@@ -759,13 +755,6 @@ class CameraGlPipeline(
     private fun pickSourceSize(target: Size): Size {
         val id = sizingCameraId() ?: return target
         return CameraFraming.pickSourceSize(cameraManager, id, target)
-    }
-
-    /** Sets [texCropX]/[texCropY] to centre-crop [sourceSize] down to [recordingSize]'s
-     *  aspect ratio (1,1 when they already match). */
-    private fun computeTexCrop() {
-        val (x, y) = CameraFraming.computeTexCrop(sourceSize, recordingSize)
-        texCropX = x; texCropY = y
     }
 
     private fun segmentFileName(): String {

@@ -1,7 +1,6 @@
 package com.panopticon.phoneapp.http.routes
 
 import android.content.Context
-import android.hardware.camera2.CameraManager
 import com.panopticon.phoneapp.CameraConfigChange
 import com.panopticon.phoneapp.calibration.RectNorm
 import com.panopticon.phoneapp.camera.CameraCapabilities
@@ -9,13 +8,11 @@ import com.panopticon.phoneapp.camera.CameraCapabilitiesReader
 import com.panopticon.phoneapp.camera.CameraCatalog
 import com.panopticon.phoneapp.camera.CameraControlKeys
 import com.panopticon.phoneapp.camera.CameraControlValidation
-import com.panopticon.phoneapp.camera.CameraFraming
 import com.panopticon.phoneapp.camera.CamerasResponse
 import com.panopticon.phoneapp.camera.ActiveCameraRequest
 import com.panopticon.phoneapp.camera.ActiveCameraResponse
 import com.panopticon.phoneapp.camera.CameraStatePatch
 import com.panopticon.phoneapp.camera.CameraStateResponse
-import com.panopticon.phoneapp.camera.RecordingSizeSelection
 import com.panopticon.phoneapp.camera.ViewportRect
 import com.panopticon.phoneapp.http.ErrorBody
 import com.panopticon.phoneapp.state.AppConfig
@@ -52,6 +49,9 @@ fun Route.cameraRoutes(
     cameraCatalog: CameraCatalog,
     appConfig: AppConfig,
     onCameraConfigChanged: (CameraConfigChange) -> Unit,
+    /** The crop the live pipeline is currently rendering with, for mapping drawn rects back to
+     *  the sensor - see [adjustIncomingRects]. Null when no preview is running. */
+    liveTexCrop: () -> Pair<Float, Float>?,
 ) {
     // Authenticated by the global installAuth() intercept.
     run {
@@ -134,9 +134,7 @@ fun Route.cameraRoutes(
                         incoming = next.keys,
                         stored = cfg.cameraControls.keys,
                         rotationDegrees = cfg.rotationDegrees,
-                        androidContext = androidContext,
-                        sizingCameraId = CameraCapabilitiesReader.splitTarget(id).let { (logical, physical) -> physical ?: logical },
-                        videoResolution = nextResolution,
+                        liveTexCrop = liveTexCrop(),
                     ),
                 )
             }
@@ -179,29 +177,22 @@ fun Route.cameraRoutes(
  * ([com.panopticon.phoneapp.camera.CameraControlSpec.withPatch] replaces `keys` in full) and is
  * left alone - it's already sensor-relative from the last time it *was* fresh.
  *
- * Both rects also need GL's fixed [com.panopticon.phoneapp.camera.CameraFraming.computeTexCrop]
- * factored into the viewport itself - it crops the displayed frame, so even the full-frame
- * viewport isn't the whole sensor (see [ViewportRect]'s doc comment) - or a rect drawn near the
- * edge of the visible preview lands on the wrong point on the sensor.
+ * Both rects also need GL's fixed texCrop factored into the viewport itself - it crops the
+ * displayed frame, so even the full-frame viewport isn't the whole sensor (see [ViewportRect]'s
+ * doc comment) - or a rect drawn near the edge of the visible preview lands on the wrong point on
+ * the sensor. That crop is taken from the running live pipeline rather than recomputed here: it
+ * depends on the camera's `SurfaceTexture` transform matrix, which only the pipeline has (see
+ * [com.panopticon.phoneapp.camera.CameraFraming.correctedTexCrop]). A rect can only be drawn
+ * against a running preview, so in practice it is always available; if it isn't, fall back to the
+ * uncropped viewport rather than guessing a crop that could be wrong on the wrong axis.
  */
 private fun adjustIncomingRects(
     incoming: CameraControlKeys,
     stored: CameraControlKeys,
     rotationDegrees: Int,
-    androidContext: Context,
-    sizingCameraId: String,
-    videoResolution: String,
+    liveTexCrop: Pair<Float, Float>?,
 ): CameraControlKeys {
-    // GL applies its fixed texCrop regardless of zoom (see ViewportRect's doc comment), so every
-    // fresh rect needs it to land on the correct on-screen viewport.
-    val cameraManager = androidContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-    val recordingSize = RecordingSizeSelection.recordModeSize(cameraManager, sizingCameraId, videoResolution)
-    val (texCropX, texCropY) = if (recordingSize != null) {
-        val sourceSize = CameraFraming.pickSourceSize(cameraManager, sizingCameraId, recordingSize)
-        CameraFraming.computeTexCrop(sourceSize, recordingSize)
-    } else {
-        1f to 1f
-    }
+    val (texCropX, texCropY) = liveTexCrop ?: (1f to 1f)
 
     fun freshSensorRect(new: RectNorm?, old: RectNorm?): RectNorm? {
         if (new == null || new == old) return new

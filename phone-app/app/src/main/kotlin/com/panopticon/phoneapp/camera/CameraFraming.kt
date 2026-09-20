@@ -48,15 +48,15 @@ internal object CameraFraming {
         return pick
     }
 
-    /** (texCropX, texCropY) that centre-crop [sourceSize] down to [recordingSize]'s aspect ratio
-     *  (1,1 when they already match). [sourceSize] must already be in *natural* (post-
-     *  [uSTMatrix]) width/height terms - see [naturalSourceSize] when the camera's transform
-     *  matrix swaps axes. */
-    fun computeTexCrop(sourceSize: Size, recordingSize: Size): Pair<Float, Float> =
-        computeTexCrop(sourceSize.width, sourceSize.height, recordingSize.width, recordingSize.height)
-
-    /** Plain-Int core of [computeTexCrop] - the actual math, kept `android.util.Size`-free so it's
-     *  directly unit-testable on a plain JVM (Size's own accessors aren't mockable there). */
+    /**
+     * (texCropX, texCropY) that centre-crop a `srcWidth x srcHeight` frame down to
+     * `dstWidth x dstHeight`'s aspect ratio (1,1 when they already match). The source dimensions
+     * must be the ones actually *displayed*, which is what [correctedTexCrop] works out - a raw
+     * `sourceSize` lands on the wrong axis on cameras whose transform matrix swaps them.
+     *
+     * Takes plain `Int`s rather than `Size` so it is directly unit-testable on a plain JVM
+     * (`android.util.Size`'s accessors throw "not mocked" there).
+     */
     fun computeTexCrop(srcWidth: Int, srcHeight: Int, dstWidth: Int, dstHeight: Int): Pair<Float, Float> {
         val srcA = srcWidth.toDouble() / srcHeight
         val dstA = dstWidth.toDouble() / dstHeight
@@ -80,14 +80,21 @@ internal object CameraFraming {
     /** [sourceSize] as it actually comes out of the camera's transform matrix - width/height
      *  swapped when [axesSwapped] (the buffer is transposed relative to what Camera2 reports),
      *  else unchanged. Feed this, not the raw [sourceSize], to [computeTexCrop]. */
-    fun naturalSourceSize(sourceSize: Size, stMatrix: FloatArray): Size {
-        val (w, h) = naturalSourceSize(sourceSize.width, sourceSize.height, stMatrix)
-        return Size(w, h)
-    }
-
-    /** Plain-Int core of [naturalSourceSize] - see that overload's doc. */
     fun naturalSourceSize(width: Int, height: Int, stMatrix: FloatArray): Pair<Int, Int> =
         if (axesSwapped(stMatrix)) height to width else width to height
+
+    /**
+     * The (texCropX, texCropY) to actually render with: [computeTexCrop] against the size the
+     * camera really *displays*, which is [sourceSize] transposed when this camera's [stMatrix]
+     * swaps axes. This is the only crop a pipeline should hand to the shader - the raw
+     * `computeTexCrop(sourceSize, ...)` lands on the wrong axis on swapping devices, which is the
+     * squash bug in docs/quirks/camera2-recording-pipeline.md. [stMatrix] only exists once frames
+     * are flowing, so callers compute this on their first frame rather than at setup.
+     */
+    fun correctedTexCrop(sourceSize: Size, recordingSize: Size, stMatrix: FloatArray): Pair<Float, Float> {
+        val (naturalW, naturalH) = naturalSourceSize(sourceSize.width, sourceSize.height, stMatrix)
+        return computeTexCrop(naturalW, naturalH, recordingSize.width, recordingSize.height)
+    }
 
     /** [size] with width/height swapped when [rotationDegrees] is 90 or 270 - the actual encoder
      *  output dimensions once the GL rotation in [GlBlit.quad] is applied. */

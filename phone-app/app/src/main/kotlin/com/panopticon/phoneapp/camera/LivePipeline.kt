@@ -141,10 +141,15 @@ class LivePipeline(
     private var surfaceTexture: SurfaceTexture? = null
     private var cameraSurface: Surface? = null
     private val stMatrix = FloatArray(16)
-    // texCropX/Y are computed from sourceSize/recordingSize before the camera ever hands us a
-    // transform matrix - see CameraFraming.naturalSourceSize's doc. Corrected once the first real
-    // matrix is in, in case this camera's turns out to swap axes.
+    // The real crop needs the camera's transform matrix, which doesn't exist until frames flow, so
+    // it's computed on the first frame (before that first draw) rather than at setup.
     @Volatile private var texCropFinalized = false
+
+    /** The crop actually being rendered with, or null before the first frame has been drawn.
+     *  `POST /api/camera/state` needs it to map a rect drawn on the preview back to the sensor -
+     *  see `CameraRoutes.adjustIncomingRects`. */
+    fun currentTexCrop(): Pair<Float, Float>? =
+        if (texCropFinalized) texCropX to texCropY else null
 
     private var encoder: MediaCodec? = null
     private var encoderInputSurface: Surface? = null
@@ -293,8 +298,6 @@ class LivePipeline(
         val sizingId = physId ?: logicalId
         recordingSize = pickRecordingSize(sizingId)
         sourceSize = CameraFraming.pickSourceSize(cameraManager, sizingId, recordingSize)
-        val (cropX, cropY) = CameraFraming.computeTexCrop(sourceSize, recordingSize)
-        texCropX = cropX; texCropY = cropY
         outputSize = CameraFraming.rotatedOutputSize(recordingSize, rotationDegrees)
         cameraDevice = openCameraDevice(logicalId)
         setupGlAndEncoder()
@@ -311,7 +314,7 @@ class LivePipeline(
         Log.i(
             TAG,
             "live camera armed-idle (out ${outputSize.width}x${outputSize.height}, rotation $rotationDegrees, " +
-                "camera source ${sourceSize.width}x${sourceSize.height}, crop $texCropX,$texCropY)",
+                "camera source ${sourceSize.width}x${sourceSize.height})",
         )
     }
 
@@ -401,13 +404,10 @@ class LivePipeline(
         }
         st.getTransformMatrix(stMatrix)
         if (!texCropFinalized) {
+            val (cropX, cropY) = CameraFraming.correctedTexCrop(sourceSize, recordingSize, stMatrix)
+            texCropX = cropX; texCropY = cropY
             texCropFinalized = true
-            val natural = CameraFraming.naturalSourceSize(sourceSize, stMatrix)
-            if (natural != sourceSize) {
-                val (cropX, cropY) = CameraFraming.computeTexCrop(natural, recordingSize)
-                texCropX = cropX; texCropY = cropY
-                Log.i(TAG, "corrected texCrop for swapped axes: natural=${natural.width}x${natural.height} crop=$texCropX,$texCropY")
-            }
+            Log.i(TAG, "texCrop for this camera's transform: $cropX,$cropY")
         }
         val tsNanos = st.timestamp
         val quad = outputQuad ?: return

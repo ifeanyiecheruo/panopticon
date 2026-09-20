@@ -133,7 +133,9 @@ class PanopticonHttpServer(
             modeRoutes(appState, onModeChanged)
             segmentRoutes(segmentStore)
             calibrationRoutes(calibrationRunner)
-            cameraRoutes(androidContext, cameraCatalog, appConfig, onCameraConfigChanged)
+            cameraRoutes(androidContext, cameraCatalog, appConfig, onCameraConfigChanged) {
+                liveProvider()?.currentTexCrop()
+            }
             liveRoutes(liveProvider)
         }
     }
