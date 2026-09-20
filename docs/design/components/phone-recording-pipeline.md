@@ -105,6 +105,13 @@ Segment entry: `{filename, createdAtMs, durationMs, endMs, sizeBytes, width, hei
   buffer): `pickSourceSize()` drives the source at a sensor-aspect size and a `uTexCrop` shader
   uniform centre-crops to the output aspect — otherwise >1080p 16:9 on a 4:3 sensor is
   anamorphically squashed.
+- That crop is sized against the *displayed* dimensions, not the ones Camera2 reports: some
+  cameras' `getTransformMatrix()` swaps the axes, so the buffer is stored transposed and a
+  reported `4000×3000` is really `3000×4000` on screen. `CameraFraming.axesSwapped()` /
+  `naturalSourceSize()` detect that from the matrix (available only once the first frame lands,
+  hence the one-shot recompute in `onFrameAvailable()`). The crop applies to `aTex` *before*
+  `uSTMatrix` — display space — and must stay there. See
+  [`quirks/camera2-recording-pipeline.md`](../../quirks/camera2-recording-pipeline.md).
 - **Verified:** 10-min GL soak on the BLU G5 (24 fps camera==rendered==encoded, 0 dropped, 59
   rotations, flat memory); gapless real recording on both devices
   (`start[k+1] − start[k] − dur[k]` within ~8ms BLU / ~1ms Pixel), with pre-roll; delete-storm

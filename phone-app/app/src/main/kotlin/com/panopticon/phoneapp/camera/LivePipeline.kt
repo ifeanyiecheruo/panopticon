@@ -1,6 +1,7 @@
 package com.panopticon.phoneapp.camera
 
 import android.content.Context
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -11,6 +12,14 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.opengl.EGL14
+import android.opengl.EGLConfig
+import android.opengl.EGLContext
+import android.opengl.EGLDisplay
+import android.opengl.EGLExt
+import android.opengl.EGLSurface
+import android.opengl.GLES11Ext
+import android.opengl.GLES20
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -31,7 +40,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
@@ -39,19 +50,23 @@ import kotlin.coroutines.resumeWithException
 
 private const val TAG = "LivePipeline"
 private const val DEQUEUE_TIMEOUT_US = 10_000L
+private const val EGL_RECORDABLE_ANDROID = 0x3142
 
 /**
- * LIVE-mode camera pipeline: a single camera stream rendered **straight into a `MediaCodec` H.264
- * encoder's input surface** (no GL, no `SurfaceTexture` - live preview needs no motion analysis,
- * per docs/design/http-api.md's "motion detection stays out of live preview"), drained to a
- * [LiveHlsRelay] that produces a rolling plain-HLS playlist.
+ * LIVE-mode camera pipeline: a single camera stream rendered through a small GL blit (centre-crop
+ * to the target aspect ratio, then rotate per [rotationDegrees] - see [GlBlit] and
+ * [CameraFraming], shared with [CameraGlPipeline]'s RECORD path so the two apply both identically)
+ * into a `MediaCodec` H.264 encoder's input surface, drained to a [LiveHlsRelay] that produces a
+ * rolling plain-HLS playlist. No motion detection here (per docs/design/http-api.md's "motion
+ * detection stays out of live preview") - just the crop/rotate step RECORD also needs.
  *
  * RECORD and LIVE are mutually exclusive (see [com.panopticon.phoneapp.state.AppMode]); this only
  * exists while the phone is in LIVE mode. Two sub-states:
  *  - **armed-idle** ([start] done, [startBroadcasting] not called): camera open, capture session
- *    configured with the encoder surface, but the repeating request doesn't target it - no frames
- *    flow, nothing encodes. Costs a warm camera, not battery for encoding nobody's watching.
- *  - **broadcasting** ([startBroadcasting]): the repeating request targets the encoder surface and
+ *    configured with the SurfaceTexture-backed camera surface, but the repeating request doesn't
+ *    target it - no frames flow, nothing encodes. Costs a warm camera, not battery for encoding
+ *    nobody's watching.
+ *  - **broadcasting** ([startBroadcasting]): the repeating request targets the camera surface and
  *    the relay runs. A [inactivityTimeoutMs] no-request watchdog drops back to armed-idle.
  *
  * Keyframe cadence: `KEY_I_FRAME_INTERVAL = 1s` **and** an explicit `REQUEST_SYNC_FRAME` timer
@@ -67,6 +82,10 @@ class LivePipeline(
     initialControls: CameraControlSpec = CameraControlSpec(),
     /** Requested record/broadcast size "<w>x<h>"; "" = pick 720p-ish. */
     private val videoResolution: String = "",
+    /** Mounting-orientation correction (0/90/180/270) - see [CameraFraming.normalizedRotation].
+     *  A change requires recreating the pipeline (the encoder's dimensions may swap for 90/270),
+     *  same as a resolution/camera change - there's no light re-apply path for this. */
+    rotationDegreesConfig: Int = 0,
     private val bitRate: Int = 2_000_000,
     private val frameRate: Int = 24,
     private val segmentDurationUs: Long = LiveHlsRelay.DEFAULT_SEGMENT_DURATION_US,
@@ -75,6 +94,7 @@ class LivePipeline(
     private val onBroadcastingChanged: (Boolean) -> Unit = {},
 ) {
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    private val rotationDegrees = CameraFraming.normalizedRotation(rotationDegreesConfig)
 
     // Manual-control state (see CameraControlApply). Re-applied to the repeating request on
     // applyControls(); the caps are read once the camera id is resolved in arm().
@@ -90,9 +110,42 @@ class LivePipeline(
     private val scope = CoroutineScope(SupervisorJob() + workExecutor.asCoroutineDispatcher())
     private val mutex = Mutex()
 
+    // Sizing: recordingSize is the pre-rotation content-aspect target (matched to RECORD mode's
+    // choice, see pickRecordingSize); sourceSize is the camera -> SurfaceTexture buffer (sensor
+    // aspect, cropped to recordingSize's aspect via texCropX/Y); outputSize is recordingSize with
+    // width/height swapped for a 90/270 rotation - the actual encoder dimensions.
     private var recordingSize = Size(1280, 720)
+    private var sourceSize = Size(1280, 720)
+    private var texCropX = 1f
+    private var texCropY = 1f
+    private var outputSize = Size(1280, 720)
+    private var outputQuad: java.nio.FloatBuffer? = null
+
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
+
+    // GL thread (owns EGL + all GL objects) - mirrors CameraGlPipeline's, minus the
+    // motion-analysis FBO pass, which LIVE doesn't need.
+    private var glThread: HandlerThread? = null
+    private var glHandler: Handler? = null
+    private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
+    private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
+    private var eglConfig: EGLConfig? = null
+    private var encoderWindowSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+    private var program = 0
+    private var aPosLoc = 0
+    private var aTexLoc = 0
+    private var uStMatrixLoc = 0
+    private var uTexCropLoc = 0
+    private var oesTexId = 0
+    private var surfaceTexture: SurfaceTexture? = null
+    private var cameraSurface: Surface? = null
+    private val stMatrix = FloatArray(16)
+    // texCropX/Y are computed from sourceSize/recordingSize before the camera ever hands us a
+    // transform matrix - see CameraFraming.naturalSourceSize's doc. Corrected once the first real
+    // matrix is in, in case this camera's turns out to swap axes.
+    @Volatile private var texCropFinalized = false
+
     private var encoder: MediaCodec? = null
     private var encoderInputSurface: Surface? = null
 
@@ -145,7 +198,7 @@ class LivePipeline(
 
     // ---- viewer-triggered (called from LiveRoutes, which is a suspend context) ----
 
-    /** Idempotent. Begins broadcasting (repeating request targets the encoder, relay runs).
+    /** Idempotent. Begins broadcasting (repeating request targets the camera surface, relay runs).
      * Returns the viewer count (1); 0 if the camera failed to arm (hard failure);
      * [STILL_ARMING] (-1) if arming is still in progress and the caller should retry. */
     suspend fun startBroadcasting(): Int = mutex.withLock {
@@ -167,7 +220,7 @@ class LivePipeline(
         }
         val device = cameraDevice ?: return@withLock STILL_ARMING
         val session = captureSession ?: return@withLock STILL_ARMING
-        val surface = encoderInputSurface ?: return@withLock STILL_ARMING
+        val surface = cameraSurface ?: return@withLock STILL_ARMING
 
         relay = LiveHlsRelay(liveDir, segmentDurationUs)
         startDrain()
@@ -176,7 +229,7 @@ class LivePipeline(
         startWatchdog()
         startSyncFrameLoop()
         onBroadcastingChanged(true)
-        Log.i(TAG, "live broadcasting started (${recordingSize.width}x${recordingSize.height} @ ${bitRate / 1000}kbps)")
+        Log.i(TAG, "live broadcasting started (${outputSize.width}x${outputSize.height} @ ${bitRate / 1000}kbps)")
         1
     }
 
@@ -195,7 +248,7 @@ class LivePipeline(
         controls = spec
         val device = cameraDevice ?: return
         val session = captureSession ?: return
-        val surface = encoderInputSurface ?: return
+        val surface = cameraSurface ?: return
         if (!broadcasting.get()) return
         runCatching {
             session.setRepeatingRequest(buildLiveRequest(device, surface), null, callbackHandler)
@@ -237,10 +290,15 @@ class LivePipeline(
         val (logicalId, physId) = CameraCapabilitiesReader.splitTarget(id)
         physicalCameraId = physId?.takeIf { Build.VERSION.SDK_INT >= Build.VERSION_CODES.P }
         caps = runCatching { CameraCapabilitiesReader.read(context, id) }.getOrNull()
-        recordingSize = pickRecordingSize(physId ?: logicalId)
+        val sizingId = physId ?: logicalId
+        recordingSize = pickRecordingSize(sizingId)
+        sourceSize = CameraFraming.pickSourceSize(cameraManager, sizingId, recordingSize)
+        val (cropX, cropY) = CameraFraming.computeTexCrop(sourceSize, recordingSize)
+        texCropX = cropX; texCropY = cropY
+        outputSize = CameraFraming.rotatedOutputSize(recordingSize, rotationDegrees)
         cameraDevice = openCameraDevice(logicalId)
-        createEncoder()
-        val surface = encoderInputSurface ?: throw IllegalStateException("encoder has no input surface")
+        setupGlAndEncoder()
+        val surface = cameraSurface ?: throw IllegalStateException("no camera surface")
         val device = cameraDevice ?: throw IllegalStateException("camera closed")
         val failed = AtomicBoolean(false)
         val session = createCaptureSession(device, listOf(surface), failed)
@@ -250,11 +308,33 @@ class LivePipeline(
             throw IllegalStateException("live session failed to configure")
         }
         captureSession = session
-        Log.i(TAG, "live camera armed-idle (${recordingSize.width}x${recordingSize.height})")
+        Log.i(
+            TAG,
+            "live camera armed-idle (out ${outputSize.width}x${outputSize.height}, rotation $rotationDegrees, " +
+                "camera source ${sourceSize.width}x${sourceSize.height}, crop $texCropX,$texCropY)",
+        )
+    }
+
+    // ---- GL + encoder setup (blocking, driven from arm()'s coroutine) ----
+
+    private fun setupGlAndEncoder() {
+        val t = HandlerThread("PanopticonLiveGl").apply { start() }
+        glThread = t
+        glHandler = Handler(t.looper)
+        runOnGl {
+            createEncoder()
+            setupEgl()
+            setupGlObjects()
+            val st = SurfaceTexture(oesTexId)
+            st.setDefaultBufferSize(sourceSize.width, sourceSize.height)
+            st.setOnFrameAvailableListener({ onFrameAvailable() }, glHandler)
+            surfaceTexture = st
+            cameraSurface = Surface(st)
+        }
     }
 
     private fun createEncoder() {
-        val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, recordingSize.width, recordingSize.height).apply {
+        val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, outputSize.width, outputSize.height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
@@ -265,6 +345,87 @@ class LivePipeline(
         encoderInputSurface = codec.createInputSurface()
         codec.start()
         encoder = codec
+    }
+
+    private fun setupEgl() {
+        eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+        check(eglDisplay != EGL14.EGL_NO_DISPLAY) { "no EGL display" }
+        val ver = IntArray(2)
+        check(EGL14.eglInitialize(eglDisplay, ver, 0, ver, 1)) { "eglInitialize failed" }
+        val attribs = intArrayOf(
+            EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
+            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+            EGL_RECORDABLE_ANDROID, 1, EGL14.EGL_NONE,
+        )
+        val configs = arrayOfNulls<EGLConfig>(1)
+        val n = IntArray(1)
+        check(EGL14.eglChooseConfig(eglDisplay, attribs, 0, configs, 0, 1, n, 0) && n[0] > 0) { "eglChooseConfig failed" }
+        eglConfig = configs[0]
+        eglContext = EGL14.eglCreateContext(
+            eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT,
+            intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0,
+        )
+        check(eglContext != EGL14.EGL_NO_CONTEXT) { "eglCreateContext failed" }
+        encoderWindowSurface = EGL14.eglCreateWindowSurface(
+            eglDisplay, eglConfig, encoderInputSurface, intArrayOf(EGL14.EGL_NONE), 0,
+        )
+        check(encoderWindowSurface != EGL14.EGL_NO_SURFACE) { "eglCreateWindowSurface failed" }
+        check(EGL14.eglMakeCurrent(eglDisplay, encoderWindowSurface, encoderWindowSurface, eglContext)) { "eglMakeCurrent failed" }
+    }
+
+    private fun setupGlObjects() {
+        program = GlBlit.buildProgram()
+        outputQuad = GlBlit.quad(rotationDegrees)
+        aPosLoc = GLES20.glGetAttribLocation(program, "aPos")
+        aTexLoc = GLES20.glGetAttribLocation(program, "aTex")
+        uStMatrixLoc = GLES20.glGetUniformLocation(program, "uSTMatrix")
+        uTexCropLoc = GLES20.glGetUniformLocation(program, "uTexCrop")
+        val tex = IntArray(1); GLES20.glGenTextures(1, tex, 0); oesTexId = tex[0]
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexId)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+    }
+
+    // ---- per-frame (GL thread) ----
+
+    private fun onFrameAvailable() {
+        if (released) return
+        val st = surfaceTexture ?: return
+        try {
+            st.updateTexImage()
+        } catch (e: Exception) {
+            Log.w(TAG, "updateTexImage failed", e)
+            return
+        }
+        st.getTransformMatrix(stMatrix)
+        if (!texCropFinalized) {
+            texCropFinalized = true
+            val natural = CameraFraming.naturalSourceSize(sourceSize, stMatrix)
+            if (natural != sourceSize) {
+                val (cropX, cropY) = CameraFraming.computeTexCrop(natural, recordingSize)
+                texCropX = cropX; texCropY = cropY
+                Log.i(TAG, "corrected texCrop for swapped axes: natural=${natural.width}x${natural.height} crop=$texCropX,$texCropY")
+            }
+        }
+        val tsNanos = st.timestamp
+        val quad = outputQuad ?: return
+
+        GLES20.glUseProgram(program)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexId)
+        GLES20.glUniformMatrix4fv(uStMatrixLoc, 1, false, stMatrix, 0)
+        GLES20.glUniform2f(uTexCropLoc, texCropX, texCropY)
+        quad.position(0); GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
+        GLES20.glEnableVertexAttribArray(aPosLoc)
+        quad.position(2); GLES20.glVertexAttribPointer(aTexLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
+        GLES20.glEnableVertexAttribArray(aTexLoc)
+
+        GLES20.glViewport(0, 0, outputSize.width, outputSize.height)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        EGLExt.eglPresentationTimeANDROID(eglDisplay, encoderWindowSurface, tsNanos)
+        EGL14.eglSwapBuffers(eglDisplay, encoderWindowSurface)
     }
 
     private fun startDrain() {
@@ -355,21 +516,52 @@ class LivePipeline(
 
     private fun teardown() {
         drainRunning = false
-        runCatching { drainThread?.join(2000) }
-        drainThread = null
-        runCatching { relay?.stop() }
-        relay = null
-        runCatching { captureSession?.stopRepeating() }
-        runCatching { captureSession?.close() }
-        runCatching { cameraDevice?.close() }
-        runCatching { encoder?.stop() }
-        runCatching { encoder?.release() }
-        runCatching { encoderInputSurface?.release() }
+        runOnGl {
+            runCatching { captureSession?.stopRepeating() }
+            runCatching { captureSession?.close() }
+            runCatching { cameraDevice?.close() }
+        }
         captureSession = null
         cameraDevice = null
-        encoder = null
-        encoderInputSurface = null
+        runCatching { drainThread?.join(3000) }
+        drainThread = null
+
+        runOnGl {
+            runCatching { encoder?.signalEndOfInputStream() }
+            runCatching { encoder?.stop() }
+            runCatching { encoder?.release() }
+            encoder = null
+            runCatching { encoderInputSurface?.release() }
+            encoderInputSurface = null
+            runCatching { EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT) }
+            runCatching { EGL14.eglDestroySurface(eglDisplay, encoderWindowSurface) }
+            runCatching { EGL14.eglDestroyContext(eglDisplay, eglContext) }
+            runCatching { EGL14.eglTerminate(eglDisplay) }
+            runCatching { surfaceTexture?.release() }
+            runCatching { cameraSurface?.release() }
+        }
+        eglDisplay = EGL14.EGL_NO_DISPLAY
+        eglContext = EGL14.EGL_NO_CONTEXT
+        encoderWindowSurface = EGL14.EGL_NO_SURFACE
+        surfaceTexture = null
+        cameraSurface = null
         trackFormat = null
+
+        glHandler = null
+        glThread?.quitSafely()
+        glThread = null
+    }
+
+    private fun runOnGl(block: () -> Unit) {
+        val h = glHandler ?: return
+        if (Thread.currentThread() === glThread) { block(); return }
+        val latch = CountDownLatch(1)
+        var err: Throwable? = null
+        h.post {
+            try { block() } catch (e: Throwable) { err = e } finally { latch.countDown() }
+        }
+        if (!latch.await(8, TimeUnit.SECONDS)) throw IllegalStateException("GL op timed out")
+        err?.let { throw it }
     }
 
     // ---- camera helpers (same shape as CameraGlPipeline's, kept local) ----
@@ -432,27 +624,11 @@ class LivePipeline(
         const val STILL_ARMING = -1
     }
 
-    private fun pickRecordingSize(id: String): Size {
-        val map = cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val camSizes = map?.getOutputSizes(MediaCodec::class.java)?.toList() ?: emptyList()
-        val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-        val avc = codecList.codecInfos.firstOrNull {
-            it.isEncoder && it.supportedTypes.any { t -> t.equals(MediaFormat.MIMETYPE_VIDEO_AVC, true) }
-        }
-        val caps = avc?.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)?.videoCapabilities
-        val supported = camSizes.filter { caps == null || caps.isSizeSupported(it.width, it.height) }
-        val want = parseVideoSize(videoResolution)
-        // Match RECORD mode's aspect ratio (not just its exact size) so the live preview's
-        // viewport is the same field of view actually captured when recording - see
-        // RecordingSizeSelection's doc comment for why an aspect mismatch between the two
-        // pipelines' independently-enumerated size lists shows up as a viewport mismatch.
-        val recordSize = RecordingSizeSelection.recordModeSize(cameraManager, id, videoResolution)
-        return if (recordSize != null) {
-            RecordingSizeSelection.selectMatchingAspect(supported, want, recordSize)
-        } else {
-            RecordingSizeSelection.select(supported, want)
-        }
-    }
+    /** Match RECORD mode's aspect ratio (indeed, since both now enumerate sizes the same way via
+     *  [RecordingSizeSelection.recordModeSize], the exact same size) so the live preview's
+     *  viewport is the same field of view actually captured when recording. */
+    private fun pickRecordingSize(id: String): Size =
+        RecordingSizeSelection.recordModeSize(cameraManager, id, videoResolution) ?: Size(1280, 720)
 }
 
 /** "1920x1080" -> Size(1920, 1080); anything unparseable -> null. */

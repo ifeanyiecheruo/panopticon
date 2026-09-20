@@ -108,9 +108,14 @@ GPU* for processing.
 - `updateTexImage()` — bind the most-recent frame to the texture (called on the GL thread).
 - `getTransformMatrix(float[16])` — a 4×4 matrix to apply to texture coordinates. It encodes
   whatever crop / flip / rotation the HAL applied, so the sampled image comes out upright and
-  correctly framed. Ignoring it, or the HAL returning ≈ identity when you didn't expect it, is
-  the root of the anamorphic-squash quirk
-  ([`quirks/camera2-recording-pipeline.md`](../quirks/camera2-recording-pipeline.md)).
+  correctly framed. Two things about it bite in practice, and both are written up in
+  [`quirks/camera2-recording-pipeline.md`](../quirks/camera2-recording-pipeline.md):
+  it maps **quad/display coordinates → buffer coordinates** (you transform *your* texcoord to get
+  the location to sample, so anything you do to the texcoord "in display terms" belongs *before*
+  the matrix); and it is not always just a flip — on some cameras it **swaps the axes**, meaning
+  the buffer is stored transposed and the size Camera2 reports (`4000×3000`) is *not* the size you
+  see (`3000×4000`). Ignoring the matrix, or the HAL returning ≈ identity when you didn't expect
+  it, is the root of the anamorphic-squash quirks.
 - The texture is not a normal 2D texture: it binds to `GL_TEXTURE_EXTERNAL_OES` and a fragment
   shader samples it via `samplerExternalOES` with `#extension GL_OES_EGL_image_external`. That is
   all "**OES**" means in these docs — the external-texture extension a `SurfaceTexture` feeds.

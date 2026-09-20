@@ -50,16 +50,13 @@ class CameraControlValidationTest {
     }
 
     @Test
-    fun `zoom in range passes, out of range names the key`() {
+    fun `zoomRatio is never range-checked while zoom is disabled`() {
+        // Zoom isn't applied to the HAL right now (CameraControlApply), so an
+        // out-of-range or stale-persisted zoomRatio must never block validation -
+        // it would otherwise wedge every other control patch forever.
         assertNull(CameraControlValidation.validate(CameraControlKeys(zoomRatio = 4.0f), fullCaps))
-        assertEquals(
-            "zoomRatio",
-            CameraControlValidation.validate(CameraControlKeys(zoomRatio = 9.0f), fullCaps)?.key,
-        )
-        assertEquals(
-            "zoomRatio",
-            CameraControlValidation.validate(CameraControlKeys(zoomRatio = 3.0f), weakCaps)?.key,
-        )
+        assertNull(CameraControlValidation.validate(CameraControlKeys(zoomRatio = 9.0f), fullCaps))
+        assertNull(CameraControlValidation.validate(CameraControlKeys(zoomRatio = 3.0f), weakCaps))
     }
 
     @Test

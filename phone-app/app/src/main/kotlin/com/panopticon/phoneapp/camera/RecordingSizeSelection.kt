@@ -6,25 +6,14 @@ import android.hardware.camera2.CameraManager
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.util.Size
-import kotlin.math.abs
 
 /**
- * Shared recording-size selection so RECORD ([CameraGlPipeline]) and LIVE ([LivePipeline]) agree
- * on the *aspect ratio* they capture at, even though they enumerate candidate sizes through two
- * different `StreamConfigurationMap` output classes (a `SurfaceTexture` for RECORD's GL layer, a
- * `MediaCodec` input surface for LIVE) and so can see different size lists for the same requested
- * `videoResolution`.
- *
- * Why this matters: both pipelines apply `SCALER_CROP_REGION` (zoom) as a centred crop of the
- * full sensor active array, then rely on the camera HAL's own further-crop-to-stream-aspect step
- * to fit that region into their capture stream. Two *centred* aspect-crops of the same base
- * region are equivalent regardless of whether they happen in one step or two - so RECORD's extra
- * GL crop ([CameraGlPipeline.computeTexCrop]) reproduces the exact same field of view as LIVE's
- * single HAL crop, PROVIDED both streams end up at the same aspect ratio. If they silently pick
- * different fallback aspects (e.g. RECORD falls back to a 16:9 720p while LIVE falls back to a
- * 4:3 size because 1280x720 isn't in the MediaCodec-class list on that device), the extra crop
- * each stream's HAL applies differs, and the mismatch is small in absolute terms but grows
- * proportionally larger the more the user has zoomed in - matching the reported symptom.
+ * Shared recording-size selection so RECORD ([CameraGlPipeline]) and LIVE ([LivePipeline]) pick
+ * the exact same size for the same requested `videoResolution` - both now capture through a
+ * `SurfaceTexture` (see [CameraFraming]/[GlBlit]), so there's a single, shared enumeration and
+ * fallback ladder rather than two pipelines guessing independently and risking divergent aspect
+ * ratios (which used to show up as a live-preview/recording viewport mismatch, worse the more the
+ * user had zoomed in).
  */
 internal object RecordingSizeSelection {
 
@@ -47,16 +36,6 @@ internal object RecordingSizeSelection {
         val supported = camSizes.filter { caps == null || caps.isSizeSupported(it.width, it.height) }
         select(supported, parseVideoSize(videoResolution))
     }.getOrNull()
-
-    /** Picks a LIVE-mode size from [supported] that matches [recordSize]'s aspect ratio, so the
-     *  live preview shows the same field of view RECORD would actually capture. Falls back to the
-     *  plain [select] ladder (restricted to aspect-matched candidates when any exist). */
-    fun selectMatchingAspect(supported: List<Size>, want: Size?, recordSize: Size): Size {
-        want?.let { w -> supported.firstOrNull { it.width == w.width && it.height == w.height }?.let { return it } }
-        val recordAspect = recordSize.width.toDouble() / recordSize.height
-        val aspectMatched = supported.filter { abs(it.width.toDouble() / it.height - recordAspect) < 0.02 }
-        return select(aspectMatched.ifEmpty { supported }, null)
-    }
 
     private fun avcVideoCapabilities() = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
         .firstOrNull { it.isEncoder && it.supportedTypes.any { t -> t.equals(MediaFormat.MIMETYPE_VIDEO_AVC, true) } }

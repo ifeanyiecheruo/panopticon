@@ -5,11 +5,9 @@ import {
   SetActiveCamera,
   GetCameraControls,
   SetCameraControls,
-  ComputeEffectiveRect,
   type CameraInfo,
   type CameraControlsView,
   type CameraCapabilities,
-  type EffectiveRectResult,
 } from '../api';
 import { LivePreviewVideo, type LiveController } from './LivePreview';
 import { HScroll } from './phonecam/HScroll';
@@ -21,8 +19,6 @@ import { modeIcon, CycleIcon, ResetIcon, type ModeIconName, type RulerIconName }
  * object literal structurally incompatible. The bound calls accept plain JSON. */
 type RectNorm = { l: number; t: number; r: number; b: number };
 type ControlKeys = {
-  zoomRatio?: number;
-  cropRegionNorm?: RectNorm;
   aeExposureCompensation?: number;
   aeLock?: boolean;
   aeRegionNorm?: RectNorm;
@@ -51,8 +47,6 @@ interface Props {
   ctl: LiveController;
 }
 
-const LIVE_W = 1280;
-const LIVE_H = 720;
 const APPLY_DEBOUNCE_MS = 200;
 /** Grace period after the pointer leaves the preview before the controls start
  * their (CSS, 2s) fade. */
@@ -88,7 +82,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   const [msg, setMsg] = useState<string | null>(null);
   const [invalidKey, setInvalidKey] = useState<string | null>(null);
 
-  const [openMode, setOpenMode] = useState('zoom');
+  const [openMode, setOpenMode] = useState('exposure');
   const [switchBusy, setSwitchBusy] = useState(false);
   const [confirmCam, setConfirmCam] = useState<string | null>(null);
   const [idle, setIdle] = useState(false);
@@ -177,6 +171,9 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
     pushControls(false, {}, true);
   };
 
+  // Like a camera/resolution switch, a rotation change rebuilds the phone pipeline (the
+  // encoder's dimensions swap for 90/270), so re-attach the live player afterwards - otherwise
+  // hls.js is left polling the old, now-dead stream and the preview never reflects the change.
   const applyRotation = async (deg: number) => {
     const prev = rotation;
     setRotation(deg);
@@ -188,6 +185,12 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
       if (!r.ok) {
         setRotation(prev);
         setMsg(r.message || 'Could not set rotation.');
+        return;
+      }
+      setMsg(null);
+      if (ctl.live || ctl.state.kind === 'error') {
+        await new Promise((res) => setTimeout(res, 1200));
+        await ctl.reattach();
       }
     } catch (err) {
       setRotation(prev);
@@ -258,11 +261,15 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   };
   const activeCamLabel = cams.find((c) => c.cameraId === activeCamId)?.label ?? activeCamId;
 
-  // ---- drag-a-box picker overlay, shared by Zoom / Exposure / Focus ----
+  // ---- drag-a-box picker overlay, shared by Exposure / Focus ----
   // The active adjuster names a `rectTarget` (below). Draw a box -> applied on
   // pointer-up -> the box is NOT kept on screen. Esc aborts an in-progress drag.
+  // No zoom rect here - see CameraFraming/CameraControlApply on the phone: zoom is being rebuilt
+  // from scratch. The video element has no fixed aspect-ratio CSS and no object-fit crop (see
+  // style.css) - it just sizes itself to the stream's own aspect ratio, so the picker overlay
+  // (inset:0 on the same box) always lines up with the visible frame with no extra alignment step.
   type RectTarget = {
-    key: 'cropRegionNorm' | 'aeRegionNorm' | 'afRegionNorm';
+    key: 'aeRegionNorm' | 'afRegionNorm';
     /** keys to clear (set undefined) when this rect is applied — the rect wins. */
     clears: (keyof ControlKeys)[];
     /** transient confirmation shown in the hint line after applying. */
@@ -288,67 +295,18 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
     setPickRect(null);
   }, []);
 
-  /** Grow a drawn box so that, mapped into the sensor active array, it has the
-   * output's 16:9 shape — then the phone crops to a rectangle that *contains*
-   * the whole selection instead of a distorted / re-fit sub-rect. Clamped to
-   * stay within the frame. */
-  const fitCropRect = useCallback(
-    (r: RectNorm): RectNorm => {
-      const aw = caps?.activeArrayWidth ?? 0;
-      const ah = caps?.activeArrayHeight ?? 0;
-      if (aw <= 0 || ah <= 0) return r;
-      const want = (LIVE_W / LIVE_H) * (ah / aw); // target (width/height) in 0..1 fraction space
-      let w = r.r - r.l;
-      let h = r.b - r.t;
-      if (w / h < want) w = h * want;
-      else h = w / want;
-      const cx = (r.l + r.r) / 2;
-      const cy = (r.t + r.b) / 2;
-      let l = cx - w / 2;
-      let t = cy - h / 2;
-      let rr = cx + w / 2;
-      let b = cy + h / 2;
-      if (l < 0) { rr -= l; l = 0; }
-      if (rr > 1) { l -= rr - 1; rr = 1; }
-      if (t < 0) { b -= t; t = 0; }
-      if (b > 1) { t -= b - 1; b = 1; }
-      return { l: clamp01(l), t: clamp01(t), r: clamp01(rr), b: clamp01(b) };
-    },
-    [caps],
-  );
-
   const commitRect = useCallback(
     async (drawn: RectNorm, target: RectTarget) => {
-      const rect = target.key === 'cropRegionNorm' ? fitCropRect(drawn) : drawn;
+      // Sent as drawn - relative to whatever's currently on screen (already rotated). The phone
+      // (ViewportRect.toSensorSpace) undoes the current rotation so the region the user saw and
+      // drew is the region that actually gets used.
       const clears: Partial<ControlKeys> = {};
       for (const c of target.clears) clears[c] = undefined;
-      applyKeys({ [target.key]: rect, ...clears } as Partial<ControlKeys>, true);
-
-      if (target.key === 'cropRegionNorm') {
-        // Best-effort: surface the calibration-predicted honoured crop.
-        try {
-          const w = rect.r - rect.l;
-          const h = rect.b - rect.t;
-          const res: EffectiveRectResult = await ComputeEffectiveRect(
-            phoneId, activeCamId, LIVE_W, LIVE_H,
-            1 / Math.max(0.05, Math.max(w, h)),
-            (rect.l + rect.r) / 2, (rect.t + rect.b) / 2,
-          );
-          flashNote(
-            res.note ||
-              (res.positionHonored
-                ? target.applied
-                : 'This model recentres off-centre zoom rects — the crop may not match your box.'),
-          );
-        } catch {
-          flashNote(target.applied);
-        }
-      } else {
-        flashNote(target.applied);
-      }
+      applyKeys({ [target.key]: drawn, ...clears } as Partial<ControlKeys>, true);
+      flashNote(target.applied);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [phoneId, activeCamId, keys, manualOn, fitCropRect],
+    [phoneId, keys, manualOn],
   );
 
   // Esc aborts an in-progress drag.
@@ -367,8 +325,6 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   // Per-capability flags for the combined adjusters. Each adjuster shows if
   // *either* of its two capabilities is present; inside, only the sub-controls
   // (rulers, dropdown options) whose capability is supported get rendered.
-  const canZoomDial = !!caps && caps.zoomRatioRange.hi - caps.zoomRatioRange.lo > 0.01;
-  const canZoomRect = canZoomDial; // digital crop needs the same digital-zoom headroom
   const canFocusDial = !!caps && caps.hasManualFocus && caps.minFocusDistanceDiopters > 0;
   const canFocusPoint = !!caps && caps.maxAfRegions > 0;
   const canExpComp = !!caps && caps.aeCompensationRange.hi > caps.aeCompensationRange.lo;
@@ -377,7 +333,6 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
 
   const modes: Mode[] = [];
   if (caps) {
-    if (canZoomDial || canZoomRect) modes.push({ id: 'zoom', label: 'Zoom', icon: 'zoom' });
     modes.push({ id: 'exposure', label: 'Exposure', icon: 'exposure' });
     if (canFocusDial || canFocusPoint) modes.push({ id: 'focus', label: 'Focus', icon: 'focus' });
     if ((caps.awbModes && caps.awbModes.length > 1) || caps.hasManualWhiteBalance)
@@ -387,7 +342,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
     if (canVideoStab || canOptStab) modes.push({ id: 'stabilize', label: 'Stabilize', icon: 'stabilize' });
     modes.push({ id: 'rotate', label: 'Rotation', icon: 'rotate' });
   }
-  const validOpen = modes.some((m) => m.id === openMode) ? openMode : 'zoom';
+  const validOpen = modes.some((m) => m.id === openMode) ? openMode : (modes[0]?.id ?? 'exposure');
 
   // ---- descriptor for the active mode: 0+ overlay rulers, an optional dropdown ----
   type RulerDef = {
@@ -413,25 +368,6 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   if (caps && playing) {
     const C = caps;
     switch (validOpen) {
-      case 'zoom':
-        // Zoom = a centred-zoom ruler AND the drag-a-box off-centre picker.
-        // The rect (like every rect) is only offered while manual controls are
-        // engaged, and never toggles that state itself.
-        if (canZoomDial) {
-          rulers = [
-            {
-              key: 'zoom',
-              spec: spec(C.zoomRatioRange.lo, C.zoomRatioRange.hi, ['zoomOut', 'zoomIn']),
-              value: keys.zoomRatio ?? C.zoomRatioRange.lo,
-              dflt: C.zoomRatioRange.lo,
-              set: (v, c) => applyKeys({ zoomRatio: v, cropRegionNorm: undefined }, c),
-            },
-          ];
-        }
-        if (canZoomRect && manualOn) {
-          rectTarget = { key: 'cropRegionNorm', clears: ['zoomRatio'], applied: 'Zoom rect applied.' };
-        }
-        break;
       case 'exposure': {
         // Folded: metering mode + (comp ruler | shutter+ISO rulers) + a
         // drag-a-box spot-metering rect. Only capabilities the camera has are
@@ -824,11 +760,9 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
         {playing && (
           <div className="calib-sub phonecam-hint">
             {rectTarget
-              ? validOpen === 'zoom'
-                ? 'Drag the ruler to zoom centred, or drag a box on the preview for an off-centre zoom rect (applied on release, Esc cancels).'
-                : validOpen === 'focus'
-                  ? 'Drag the ruler for manual focus, or drag a box on the preview to focus on that area (applied on release, Esc cancels).'
-                  : 'Drag the ruler for exposure, or drag a box on the preview to spot-meter that area (applied on release, Esc cancels).'
+              ? validOpen === 'focus'
+                ? 'Drag the ruler for manual focus, or drag a box on the preview to focus on that area (applied on release, Esc cancels).'
+                : 'Drag the ruler for exposure, or drag a box on the preview to spot-meter that area (applied on release, Esc cancels).'
               : 'Drag the ruler over the live preview. Values apply to recording too.'}
             {rectNote && <div style={{ marginTop: '4px' }}>{rectNote}</div>}
             {msg && <div style={{ color: 'var(--warn)', marginTop: '4px' }}>{msg}</div>}

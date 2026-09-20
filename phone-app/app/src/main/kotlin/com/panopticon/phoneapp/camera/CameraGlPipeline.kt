@@ -127,6 +127,12 @@ class CameraGlPipeline(
     private var sourceSize = Size(1280, 720)
     private var texCropX = 1f
     private var texCropY = 1f
+    // User-configured mounting-orientation correction (0/90/180/270), re-read on every pipeline
+    // (re)start in runLoop(). outputSize is recordingSize with width/height swapped for a 90/270
+    // rotation - the actual encoder/segment dimensions once GlBlit's rotated quad is applied.
+    private var rotationDegrees = 0
+    private var outputSize = Size(1280, 720)
+    private var outputQuad: java.nio.FloatBuffer? = null
 
     // camera
     private var cameraDevice: CameraDevice? = null
@@ -153,6 +159,9 @@ class CameraGlPipeline(
         put(floatArrayOf(-1f, -1f, 0f, 0f, 1f, -1f, 1f, 0f, -1f, 1f, 0f, 1f, 1f, 1f, 1f, 1f)); position(0)
     }
     private val stMatrix = FloatArray(16)
+    // See LivePipeline's identical field - texCrop is computed before we've seen a real
+    // transform matrix, then corrected once we have one in case this camera swaps axes.
+    @Volatile private var texCropFinalized = false
     private val readback = ByteBuffer.allocateDirect(READBACK_W * READBACK_H * 4).order(ByteOrder.nativeOrder())
     private val lumaPlane = ByteArray(READBACK_W * READBACK_H)
     @Volatile private var detector = MotionDetector(appConfig.get().motionSensitivity)
@@ -220,6 +229,9 @@ class CameraGlPipeline(
                 recordingSize = pickRecordingSize()
                 sourceSize = pickSourceSize(recordingSize)
                 computeTexCrop()
+                texCropFinalized = false
+                rotationDegrees = CameraFraming.normalizedRotation(appConfig.get().rotationDegrees)
+                outputSize = CameraFraming.rotatedOutputSize(recordingSize, rotationDegrees)
                 setupGlAndEncoder()
                 startDrain()
                 openSessionAndRequest()
@@ -271,13 +283,13 @@ class CameraGlPipeline(
         }
         Log.i(
             TAG,
-            "GL + encoder up (out ${recordingSize.width}x${recordingSize.height}, " +
+            "GL + encoder up (out ${outputSize.width}x${outputSize.height}, rotation $rotationDegrees, " +
                 "camera source ${sourceSize.width}x${sourceSize.height}, crop $texCropX,$texCropY)",
         )
     }
 
     private fun createEncoder() {
-        val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, recordingSize.width, recordingSize.height).apply {
+        val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, outputSize.width, outputSize.height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, ENCODER_BIT_RATE)
             setInteger(MediaFormat.KEY_FRAME_RATE, 30)
@@ -317,7 +329,8 @@ class CameraGlPipeline(
     }
 
     private fun setupGlObjects() {
-        program = buildProgram()
+        program = GlBlit.buildProgram()
+        outputQuad = GlBlit.quad(rotationDegrees)
         aPosLoc = GLES20.glGetAttribLocation(program, "aPos")
         aTexLoc = GLES20.glGetAttribLocation(program, "aTex")
         uStMatrixLoc = GLES20.glGetUniformLocation(program, "uSTMatrix")
@@ -351,6 +364,15 @@ class CameraGlPipeline(
             fatal.compareAndSet(null, "updateTexImage: ${e.message}"); return
         }
         st.getTransformMatrix(stMatrix)
+        if (!texCropFinalized) {
+            texCropFinalized = true
+            val natural = CameraFraming.naturalSourceSize(sourceSize, stMatrix)
+            if (natural != sourceSize) {
+                val (cropX, cropY) = CameraFraming.computeTexCrop(natural, recordingSize)
+                texCropX = cropX; texCropY = cropY
+                Log.i(TAG, "corrected texCrop for swapped axes: natural=${natural.width}x${natural.height} crop=$texCropX,$texCropY")
+            }
+        }
         val tsNanos = st.timestamp
 
         GLES20.glUseProgram(program)
@@ -371,9 +393,14 @@ class CameraGlPipeline(
         GLES20.glReadPixels(0, 0, READBACK_W, READBACK_H, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, readback)
         detectMotion()
 
-        // record: full frame -> encoder input surface
+        // record: full frame, rotated per rotationDegrees -> encoder input surface
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-        GLES20.glViewport(0, 0, recordingSize.width, recordingSize.height)
+        val rotQuad = outputQuad
+        if (rotQuad != null) {
+            rotQuad.position(0); GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 16, rotQuad)
+            rotQuad.position(2); GLES20.glVertexAttribPointer(aTexLoc, 2, GLES20.GL_FLOAT, false, 16, rotQuad)
+        }
+        GLES20.glViewport(0, 0, outputSize.width, outputSize.height)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         EGLExt.eglPresentationTimeANDROID(eglDisplay, encoderWindowSurface, tsNanos)
         EGL14.eglSwapBuffers(eglDisplay, encoderWindowSurface)
@@ -546,7 +573,7 @@ class CameraGlPipeline(
         if (!file.exists() || file.length() == 0L) { runCatching { file.delete() }; return }
         Log.i(TAG, "segment ${file.name}: start=$startedAtMs dur=${durationMs}ms size=${file.length()}B")
         logKeyframeCadence(file)
-        onSegmentFinished(file, startedAtMs, durationMs.coerceAtLeast(0L), recordingSize.width, recordingSize.height)
+        onSegmentFinished(file, startedAtMs, durationMs.coerceAtLeast(0L), outputSize.width, outputSize.height)
     }
 
     // ---- camera ----
@@ -727,77 +754,24 @@ class CameraGlPipeline(
             ?: Size(1280, 720)
     }
 
-    /**
-     * The camera → SurfaceTexture buffer size. When the sensor's native aspect
-     * ratio matches [target]'s, this is just [target] (the HAL centre-crops to it
-     * cleanly). Otherwise it's the smallest sensor-aspect SurfaceTexture size that
-     * covers [target] in both dimensions — the HAL then fills that buffer with the
-     * full un-squashed sensor image and [computeTexCrop] trims it to [target]'s
-     * aspect in GL. Falls back to [target] if the camera exposes no usable
-     * sensor-aspect size (the pre-existing squashed behaviour — logged).
-     */
+    /** The camera → SurfaceTexture buffer size for [target]'s aspect ratio - see
+     *  [CameraFraming.pickSourceSize]. */
     private fun pickSourceSize(target: Size): Size {
         val id = sizingCameraId() ?: return target
-        val chars = cameraManager.getCameraCharacteristics(id)
-        val active = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-        val targetA = target.width.toDouble() / target.height
-        val sensorA =
-            if (active != null && active.height() > 0) active.width().toDouble() / active.height() else targetA
-        if (kotlin.math.abs(sensorA - targetA) < 0.02) return target
-
-        val stSizes = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            ?.getOutputSizes(SurfaceTexture::class.java)?.toList().orEmpty()
-        val sensorAspect = stSizes.filter {
-            kotlin.math.abs(it.width.toDouble() / it.height - sensorA) < 0.04
-        }
-        val pick = sensorAspect
-            .filter { it.width >= target.width && it.height >= target.height }
-            .minByOrNull { it.width.toLong() * it.height }
-            ?: sensorAspect.maxByOrNull { it.width.toLong() * it.height }
-        if (pick == null) {
-            Log.w(TAG, "pickSourceSize: no sensor-aspect SurfaceTexture size (sensorA=$sensorA); recording may be squashed")
-            return target
-        }
-        return pick
+        return CameraFraming.pickSourceSize(cameraManager, id, target)
     }
 
     /** Sets [texCropX]/[texCropY] to centre-crop [sourceSize] down to [recordingSize]'s
      *  aspect ratio (1,1 when they already match). */
     private fun computeTexCrop() {
-        val srcA = sourceSize.width.toDouble() / sourceSize.height
-        val dstA = recordingSize.width.toDouble() / recordingSize.height
-        if (srcA > dstA + 1e-4) {
-            texCropX = (dstA / srcA).toFloat(); texCropY = 1f
-        } else if (srcA < dstA - 1e-4) {
-            texCropX = 1f; texCropY = (srcA / dstA).toFloat()
-        } else {
-            texCropX = 1f; texCropY = 1f
-        }
+        val (x, y) = CameraFraming.computeTexCrop(sourceSize, recordingSize)
+        texCropX = x; texCropY = y
     }
 
     private fun segmentFileName(): String {
         val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(java.util.Date())
         val suffix = (Math.random() * 0xffff).toInt().toString(16).padStart(4, '0')
         return "clip_${ts}_$suffix.mp4"
-    }
-
-    private fun buildProgram(): Int {
-        val vs = compile(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)
-        val fs = compile(GLES20.GL_FRAGMENT_SHADER, FRAGMENT_SHADER)
-        val p = GLES20.glCreateProgram()
-        GLES20.glAttachShader(p, vs); GLES20.glAttachShader(p, fs); GLES20.glLinkProgram(p)
-        val st = IntArray(1); GLES20.glGetProgramiv(p, GLES20.GL_LINK_STATUS, st, 0)
-        check(st[0] == GLES20.GL_TRUE) { "link failed: ${GLES20.glGetProgramInfoLog(p)}" }
-        GLES20.glDeleteShader(vs); GLES20.glDeleteShader(fs)
-        return p
-    }
-
-    private fun compile(type: Int, src: String): Int {
-        val s = GLES20.glCreateShader(type)
-        GLES20.glShaderSource(s, src); GLES20.glCompileShader(s)
-        val st = IntArray(1); GLES20.glGetShaderiv(s, GLES20.GL_COMPILE_STATUS, st, 0)
-        check(st[0] == GLES20.GL_TRUE) { "shader compile failed: ${GLES20.glGetShaderInfoLog(s)}" }
-        return s
     }
 
     private fun logKeyframeCadence(file: File) {
@@ -825,27 +799,4 @@ class CameraGlPipeline(
         }
     }
 
-    private companion object {
-        const val VERTEX_SHADER = """
-            uniform mat4 uSTMatrix;
-            uniform vec2 uTexCrop;
-            attribute vec4 aPos;
-            attribute vec4 aTex;
-            varying vec2 vTex;
-            void main() {
-                gl_Position = aPos;
-                // Centre-crop the sampled region to the output aspect ratio before
-                // the SurfaceTexture transform (uTexCrop is 1,1 when no crop is needed).
-                vec2 c = vec2(0.5) + (aTex.xy - vec2(0.5)) * uTexCrop;
-                vTex = (uSTMatrix * vec4(c, aTex.zw)).xy;
-            }
-        """
-        const val FRAGMENT_SHADER = """
-            #extension GL_OES_EGL_image_external : require
-            precision mediump float;
-            varying vec2 vTex;
-            uniform samplerExternalOES sTex;
-            void main() { gl_FragColor = texture2D(sTex, vTex); }
-        """
-    }
 }

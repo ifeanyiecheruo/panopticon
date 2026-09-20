@@ -20,12 +20,11 @@ object CameraControlValidation {
     data class Error(val key: String, val reason: String)
 
     fun validate(keys: CameraControlKeys, caps: CameraCapabilities): Error? {
-        keys.zoomRatio?.let { z ->
-            val r = caps.zoomRatioRange
-            if (z < r.lo || z > r.hi) {
-                return Error("zoomRatio", "must be in ${r.lo}..${r.hi}, got $z")
-            }
-        }
+        // zoomRatio is never applied to the HAL right now (see CameraControlApply's doc
+        // comment - zoom is being rebuilt from scratch), so it's not range-checked here
+        // either: a value a phone persisted from before that rework would otherwise fail
+        // this check forever and block every *other* control patch, since validate() runs
+        // against the merged stored+patch keys, not just what the caller actually changed.
 
         keys.cropRegionNorm?.let { c ->
             val sane = c.l in 0f..1f && c.t in 0f..1f && c.r in 0f..1f && c.b in 0f..1f &&

@@ -5,10 +5,7 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.RggbChannelVector
-import android.os.Build
 import com.panopticon.phoneapp.calibration.RectNorm
-import com.panopticon.phoneapp.calibration.ZoomMath
-import com.panopticon.phoneapp.calibration.ZoomRatioApi30
 import kotlin.math.roundToInt
 
 /**
@@ -17,13 +14,13 @@ import kotlin.math.roundToInt
  * a control change is a request rebuild - never a session/pipeline rebuild
  * (only a *camera switch* rebuilds).
  *
- * Two invariants from docs/quirks/calibration-zoom.md:
- *  - `SCALER_CROP_REGION` and `CONTROL_ZOOM_RATIO` are never set in the same
- *    request - interleaving them across a session corrupts the Pixel 6 front
- *    camera's readback. `cropRegionNorm` (an off-centre rect) takes the
- *    `SCALER_CROP_REGION` path; a bare `zoomRatio` takes the ratio API on
- *    API 30+, else a centred `SCALER_CROP_REGION`.
- *  - the API-30 zoom-ratio field is only ever touched through [ZoomRatioApi30].
+ * Zoom (`zoomRatio` / `cropRegionNorm`) is temporarily disabled entirely - neither reaches the
+ * HAL, so the camera always captures at its default full field of view. The zoom feature is being
+ * rebuilt from scratch (see the "zoom rect doesn't show what was selected" investigation: this
+ * hardware declares `SCALER_CROPPING_TYPE = CENTER_ONLY` and doesn't honour an off-centre
+ * `SCALER_CROP_REGION`, and a GL-side pan/zoom attempt introduced its own on-device-only bug -
+ * neither is worth carrying forward half-working). `caps`/`active` are still threaded through for
+ * the AE/AF region denormalization below.
  */
 object CameraControlApply {
 
@@ -32,17 +29,6 @@ object CameraControlApply {
         val k = spec.keys
         val active = Rect(0, 0, caps.activeArrayWidth, caps.activeArrayHeight)
         val haveActive = active.width() > 0 && active.height() > 0
-
-        val cropNorm = k.cropRegionNorm
-        val zoom = k.zoomRatio
-        when {
-            cropNorm != null && haveActive ->
-                builder.set(CaptureRequest.SCALER_CROP_REGION, denorm(cropNorm, active))
-            zoom != null && caps.zoomViaRatioApi && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R ->
-                ZoomRatioApi30.setRequest(builder, zoom)
-            zoom != null && haveActive ->
-                builder.set(CaptureRequest.SCALER_CROP_REGION, centeredCrop(active, zoom))
-        }
 
         k.aeExposureCompensation?.let {
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, it)
@@ -113,14 +99,6 @@ object CameraControlApply {
     private val IDENTITY_TRANSFORM = ColorSpaceTransform(
         intArrayOf(1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1),
     )
-
-    private fun centeredCrop(active: Rect, ratio: Float): Rect {
-        val ir = ZoomMath.centeredCropForRatio(
-            ZoomMath.IntRect(active.left, active.top, active.right, active.bottom),
-            ratio,
-        )
-        return Rect(ir.left, ir.top, ir.right, ir.bottom)
-    }
 
     private fun denorm(n: RectNorm, active: Rect): Rect {
         val w = active.width()

@@ -157,6 +157,7 @@ class PanopticonService : Service() {
             cameraId = app.cameraCatalog.resolveActiveId(cfg.activeCameraId),
             initialControls = cfg.cameraControls,
             videoResolution = cfg.videoResolution,
+            rotationDegreesConfig = cfg.rotationDegrees,
             onHealthChanged = { healthy -> app.appState.setCameraHealthy(healthy) },
             onBroadcastingChanged = { broadcasting ->
                 app.appState.setLiveViewers(if (broadcasting) 1 else 0)

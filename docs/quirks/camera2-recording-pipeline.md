@@ -145,6 +145,54 @@ framing matches the live preview (both a 16:9 centre-crop of the sensor).
 **Where:** `phone-app/.../camera/CameraGlPipeline.kt` (`pickSourceSize()`, `computeTexCrop()`,
 `VERTEX_SHADER`'s `uTexCrop`). Commit `e3bb2fa`.
 
+### `getTransformMatrix()` can SWAP the axes, so the size Camera2 reports for a buffer is not the size you see
+**What we assumed:** the entry above says the matrix "comes back ≈ identity (no crop encoded)",
+and the crop math that grew out of it assumed the matrix is at most a flip — i.e. that
+`sourceSize`'s reported `width × height` are also the *displayed* width and height, so
+`computeTexCrop()` could compare that aspect against the recording target directly.
+**Actually observed (Pixel 6 back camera, `sourceSize` `4000×3000`):** the matrix is a genuine
+**axis swap**. Logged verbatim (column-major, via a one-off `Log.i` of the array):
+`[0,-1,0,0, -1,0,0,0, 0,0,1,0, 1,1,0,1]`, which maps `(x,y) → (1-y, 1-x)`. The OES buffer is
+stored **transposed** relative to the `4000×3000` Camera2 reports for it, and the matrix undoes
+that transpose during sampling. So the image you actually see is **`3000×4000` — portrait** —
+even though every size the API hands you says `4000×3000` landscape. (This is also why the frame
+still comes out upright with `rotationDegrees = 0`: the swap is corrective, not a visible
+rotation, so nothing *looks* rotated to tip you off.)
+**Consequence:** `computeTexCrop(4000×3000 → 3840×2160)` returned `(1.0, 0.75)`, but applied to a
+display that is really `3000×4000` that selects a `3000×3000` **square** region, which is then
+stretched across the 16:9 encoder surface — a **1.78× horizontal stretch** on every recorded and
+live frame.
+**What we do about it:** `CameraFraming.axesSwapped()` reads the swap straight off the matrix
+(compares `stMatrix[0]`, how much natural-X moves per unit raw-X, against `stMatrix[4]`, the same
+for raw-Y) and `naturalSourceSize()` transposes the size when it fires. The crop is then computed
+against *that*, giving `(1.0, 0.421875)`. The matrix isn't known until the first frame arrives, so
+both pipelines recompute the crop once, on first frame (`texCropFinalized`).
+**Do not "fix" the crop ordering:** `uSTMatrix` maps **quad/display coords → buffer coords**, so
+`aTex` is already in display space and `uTexCrop` must be applied to it **before** the matrix.
+Moving the crop after the matrix (an attractive-looking change, since the crop is "about" the
+buffer) puts it in buffer space and re-breaks this on exactly the devices this entry is about —
+it was tried, and measured *worse* than the original bug (window h/w 0.644 → 0.464).
+**How it was verified — don't eyeball this class of bug:** an anamorphic stretch is genuinely hard
+to see by inspection, and several rounds of "looks fine to me" on screenshots got it wrong in both
+directions. What settled it was rendering the camera's full natural image into a **letterboxed
+viewport whose aspect equals the natural size** (`3000×4000` into a centred `1620×2160` box inside
+the normal `3840×2160` surface). That mapping is a uniform scale on both axes *by construction*,
+so it is a guaranteed-undistorted picture of whatever the camera is pointed at — ground truth, on
+the spot, with no reference object needed. Measuring the same windows in both framings:
+
+| framing | window height/width |
+| --- | --- |
+| before the fix | 0.644 |
+| letterboxed reference (ground truth) | 1.129 |
+| after the fix | 1.121 (0.7% off truth) |
+
+The model also predicts the broken value independently — a square region stretched to 16:9 gives
+`1.129 / 1.778 = 0.635` vs the 0.644 measured, within 1.4%.
+**Where:** `phone-app/.../camera/CameraFraming.kt` (`axesSwapped()`, `naturalSourceSize()`),
+`GlBlit.kt` (`VERTEX_SHADER`), `LivePipeline.kt` / `CameraGlPipeline.kt` (`onFrameAvailable()`'s
+`texCropFinalized` block). Pinned by `CameraFramingTest`, which asserts the cropped region's
+aspect ratio equals the recording target's for both swapping and non-swapping matrices.
+
 ## Carried forward, not yet re-verified in this project
 
 Adopted from `panopticon-prototype/QUIRKS.md` as defensive workarounds, not independently
