@@ -52,9 +52,15 @@ node_modules/
 **/*.gen.json.stamp
 
 # controller's runtime state (SQLite DB, single-instance lock, downloaded clip archive - see
-# controller/.gitignore) lands here instead of under controller/ if the binary is ever launched
-# with the repo root as its working directory (e.g. `make run-controller`, which launches from
-# wherever `make` itself runs) - controller/internal/appdirs resolves these relative to launch
-# cwd, not a fixed app-data path. See docs/implementation/controller-app-data-dir.md.
-/data/
-/archive/
+# controller/.gitignore). controller/internal/appdirs resolves these relative to the *launch*
+# cwd, not a fixed app-data path, so they appear under whichever directory the binary was
+# started from - the repo root for `make run-controller`, controller/ for a plain `go run`, and
+# any other directory someone happens to launch from (a stray phone-app/data/ is how this rule
+# got widened). Unanchored so a stray launch anywhere can't leave untracked noise behind.
+# See docs/implementation/controller-app-data-dir.md.
+#
+# These names are runtime state everywhere in this repo - nothing source-controlled lives under
+# a data/ or archive/ dir. If that ever changes, negate the specific path (e.g. `!docs/data/`)
+# rather than re-anchoring these, or the stray-launch dirs come back.
+data/
+archive/
