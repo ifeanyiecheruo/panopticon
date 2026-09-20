@@ -24,7 +24,7 @@ by `App` methods or run on a background goroutine started by `main.go` (the sync
 | Wails binding | an exported `App` method exposed to the frontend as `window.go.main.App.*` |
 | tray-app model | the app's persistent presence is a system-tray icon, not a window; background work runs window-open or not |
 | asset-server middleware | Wails' HTTP layer serving frontend assets, which `liveproxy` and `/archive/` hook into |
-| app-data dir | the resolved location of `data/` (SQLite + lock) and `archive/<phoneId>/` |
+| app-data dir | the resolved location of `panopticon-data/` (SQLite + lock) and `panopticon-archive/<phoneId>/` |
 
 System-wide terms: architecture §1.3.
 
@@ -68,7 +68,7 @@ package.
 | `main.go` | entrypoint | `wails.Run()` + config (`syncPollInterval`, 30s). Starts the syncer and tray goroutines. |
 | `trayapp` | tray menu | `getlantern/systray` Open/Quit; its own goroutine alongside the Wails message loop. Closing the window hides it; only Quit (or `RequestQuit`) exits. |
 | `singleinstance` | lock | Windows: an exclusive `CreateFile` share-mode handle (OS-released on crash, unlike a PID file). Second launch prints a message and exits. Other OSes: a best-effort PID file. |
-| `appdirs` | path resolver | `data/` and `archive/<phoneId>/`, resolved **relative to cwd** — dev convenience. |
+| `appdirs` | path resolver | `panopticon-data/` and `panopticon-archive/<phoneId>/`, resolved **relative to cwd** — dev convenience. |
 | `liveproxy` | asset-server handler | Proxies `GET /live/<phoneID>/live.m3u8` and `.../live-<n>.ts` from the phone with the stored bearer token, so hls.js fetches same-origin (token server-side, no CORS/mixed-content). Playlist segment URIs are relative — no rewriting. |
 
 ### 3.2 Dependencies
@@ -92,7 +92,7 @@ runtime.
 - The tray and syncer goroutines outlive any window; closing the window only hides it.
 - A transient WebView2 `80080005` on the very first launch after a fresh build is a known race,
   not a regression.
-- Running the binary from the wrong cwd creates a stray `data/`/`archive/` there (gitignored,
+- Running the binary from the wrong cwd creates a stray `panopticon-data/`/`panopticon-archive/` there (gitignored,
   harmless).
 
 ## 4. Design rationale and decisions

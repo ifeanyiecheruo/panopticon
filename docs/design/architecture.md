@@ -137,7 +137,7 @@ flowchart LR
         C["controller\n(Go/Wails + Preact)\ntray app · embedded SQLite"]
     end
     Owner(["Owner / operator"])
-    Disk[("controller archive/\n+ data/ (SQLite)")]
+    Disk[("controller panopticon-archive/\n+ panopticon-data/ (SQLite)")]
 
     Owner -->|"launches, configures,\nviews gallery"| C
     Owner -->|"physically holds phone,\ngenerates invite"| P1
@@ -161,8 +161,8 @@ to a controller they also hold. There is no discovery protocol and no third part
 - **controller** — a single Go binary, no bundled runtime. A system-tray presence (model:
   Syncthing/Tailscale) keeps a background sync loop running whether or not a window is open. The
   window is an OS-native embedded webview (Wails: WebView2 / WebKitGTK / WKWebView) rendering a
-  Preact frontend. Local state is one embedded SQLite DB (`data/panopticon.db`, pure-Go
-  `modernc.org/sqlite` driver — no CGO); synced footage lands in `archive/<phoneId>/`.
+  Preact frontend. Local state is one embedded SQLite DB (`panopticon-data/panopticon.db`, pure-Go
+  `modernc.org/sqlite` driver — no CGO); synced footage lands in `panopticon-archive/<phoneId>/`.
 - **tools/** — build-time only: `mock-phone` (a fake phone for controller dev/tests), `dbstore`
   and `go-deps` (sqlc/goose codegen plumbing). Each is its own Go module; `go.work` ties them
   together. Not shipped.
@@ -248,7 +248,7 @@ sequenceDiagram
                 P-->>S: 404 → treat as already-evicted, skip
             else 200
                 P-->>S: bytes
-                S->>DB: write file to archive/<phoneId>/, insert segment row
+                S->>DB: write file to panopticon-archive/<phoneId>/, insert segment row
                 S->>DB: extend open clip if gap ≤ GroupingGapMs (500ms), else open new clip
                 S->>DB: advance sync cursor (only after durable + assigned)
             end

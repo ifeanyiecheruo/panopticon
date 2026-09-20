@@ -2,11 +2,16 @@
 // state: the SQLite database, the downloaded-clip archive, and the
 // single-instance lock file.
 //
-// For this vertical slice, everything lives under a "data"/"archive"
-// directory relative to the current working directory (i.e. wherever the
-// user launches the binary from) rather than a proper per-OS app-data
-// directory (os.UserConfigDir()). That's a deliberate simplification for
-// development — see docs/status/controller-app-data-dir.md.
+// For this vertical slice, everything lives under a "panopticon-data" /
+// "panopticon-archive" directory relative to the current working directory
+// (i.e. wherever the user launches the binary from) rather than a proper
+// per-OS app-data directory (os.UserConfigDir()). That's a deliberate
+// simplification for development — see docs/status/controller-app-data-dir.md.
+//
+// The names are deliberately project-prefixed rather than plain "data" /
+// "archive": because they land in whatever directory the binary was launched
+// from, they have to be ignorable repo-wide, and a bare `data/` ignore rule
+// would also swallow any legitimate source directory of that name.
 package appdirs
 
 import (
@@ -32,8 +37,8 @@ func Resolve() (Dirs, error) {
 
 	d := Dirs{
 		Root:       root,
-		DataDir:    filepath.Join(root, "data"),
-		ArchiveDir: filepath.Join(root, "archive"),
+		DataDir:    filepath.Join(root, "panopticon-data"),
+		ArchiveDir: filepath.Join(root, "panopticon-archive"),
 	}
 	for _, dir := range []string{d.DataDir, d.ArchiveDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

@@ -83,8 +83,8 @@ cd controller && wails dev
 `wails dev` also serves `http://localhost:34115` for calling bound Go methods from an ordinary
 browser tab — the main way the Go backend is exercised manually.
 
-On first launch the controller creates `data/` (SQLite DB + single-instance lock) and
-`archive/` (downloaded segments, one subdir per phone) **next to wherever the binary runs from**
+On first launch the controller creates `panopticon-data/` (SQLite DB + single-instance lock) and
+`panopticon-archive/` (downloaded segments, one subdir per phone) **next to wherever the binary runs from**
 — both gitignored, runtime state not source. (A stable per-OS location is
 [planned](docs/status/controller-app-data-dir.md).) Closing the window hides it (sync
 keeps running); only the tray's "Quit" exits. A second launch prints a message and exits.

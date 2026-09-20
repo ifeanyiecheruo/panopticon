@@ -38,7 +38,7 @@ plain PID file). A second launch prints a message and exits.
 
 ### App-data layout resolved relative to cwd (for now)
 
-`internal/appdirs` resolves `data/`/`archive/` relative to the launch directory — convenient for
+`internal/appdirs` resolves `panopticon-data/`/`panopticon-archive/` relative to the launch directory — convenient for
 `wails dev` / manual runs. A packaged installer should point this at a stable per-OS path
 (`os.UserConfigDir()`); deferred
 ([`../../status/controller-app-data-dir.md`](../../status/controller-app-data-dir.md)).
@@ -48,5 +48,5 @@ plain PID file). A second launch prints a message and exits.
 - Sync progress is decoupled from the UI; opening a window shows already-current data.
 - A crash can't corrupt a half-written sync step — the cursor only advances after a segment is
   durably written, assigned, and indexed.
-- Running the binary from the wrong cwd creates a stray `data/`/`archive/` there (gitignored,
+- Running the binary from the wrong cwd creates a stray `panopticon-data/`/`panopticon-archive/` there (gitignored,
   harmless, worth cleaning up).

@@ -55,12 +55,11 @@ node_modules/
 # controller/.gitignore). controller/internal/appdirs resolves these relative to the *launch*
 # cwd, not a fixed app-data path, so they appear under whichever directory the binary was
 # started from - the repo root for `make run-controller`, controller/ for a plain `go run`, and
-# any other directory someone happens to launch from (a stray phone-app/data/ is how this rule
-# got widened). Unanchored so a stray launch anywhere can't leave untracked noise behind.
-# See docs/implementation/controller-app-data-dir.md.
+# any other directory someone happens to launch from. Unanchored, so a stray launch anywhere
+# can't leave untracked noise behind. See docs/status/controller-app-data-dir.md.
 #
-# These names are runtime state everywhere in this repo - nothing source-controlled lives under
-# a data/ or archive/ dir. If that ever changes, negate the specific path (e.g. `!docs/data/`)
-# rather than re-anchoring these, or the stray-launch dirs come back.
-data/
-archive/
+# The dirs are project-prefixed precisely so these rules can be unanchored without being broad:
+# a bare `data/` would also swallow a legitimate source directory of that name anywhere in the
+# repo. Keep the prefix if appdirs' layout ever changes.
+panopticon-data/
+panopticon-archive/

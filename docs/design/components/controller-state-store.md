@@ -74,7 +74,7 @@ clips, calibration.
 
 ### 3.2 Dependencies
 
-- The SQLite file under `appdirs`' `data/`.
+- The SQLite file under `appdirs`' `panopticon-data/`.
 - Codegen tooling (`tools/dbstore`, `tools/go-deps`) — build-time only.
 
 ### 3.3 Interfaces

@@ -9,5 +9,7 @@ frontend/package.json.md5
 
 # Runtime state: SQLite DB, single-instance lock, downloaded clip archive.
 # Not part of the shipped source — recreated on first run (see internal/appdirs).
-/data/
-/archive/
+# Also covered repo-wide by the root .gitignore, since these land in whichever
+# directory the binary was launched from, not necessarily this one.
+/panopticon-data/
+/panopticon-archive/
