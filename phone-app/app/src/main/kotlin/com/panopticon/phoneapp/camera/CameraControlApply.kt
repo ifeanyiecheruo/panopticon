@@ -2,10 +2,12 @@ package com.panopticon.phoneapp.camera
 
 import android.graphics.Rect
 import android.hardware.camera2.CaptureRequest
+import android.os.Build
 import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.RggbChannelVector
 import com.panopticon.phoneapp.calibration.RectNorm
+import com.panopticon.phoneapp.calibration.ZoomRatioApi30
 import kotlin.math.roundToInt
 
 /**
@@ -14,13 +16,13 @@ import kotlin.math.roundToInt
  * a control change is a request rebuild - never a session/pipeline rebuild
  * (only a *camera switch* rebuilds).
  *
- * Zoom (`zoomRatio` / `cropRegionNorm`) is temporarily disabled entirely - neither reaches the
- * HAL, so the camera always captures at its default full field of view. The zoom feature is being
- * rebuilt from scratch (see the "zoom rect doesn't show what was selected" investigation: this
- * hardware declares `SCALER_CROPPING_TYPE = CENTER_ONLY` and doesn't honour an off-centre
- * `SCALER_CROP_REGION`, and a GL-side pan/zoom attempt introduced its own on-device-only bug -
- * neither is worth carrying forward half-working). `caps`/`active` are still threaded through for
- * the AE/AF region denormalization below.
+ * Zoom does not travel with the other keys through [applyTo]. It is not a value that can be set
+ * and forgotten: the view the user asked for is split between a hardware zoom and a GL crop by
+ * [ZoomGeometry.split], against this phone's own calibration, and only the pipelines know the
+ * aspect trim that split depends on. So the pipelines compute the split, hand the hardware half
+ * here via [applyZoom], and render the other half themselves.
+ *
+ * `caps`/`active` are threaded through for the AE/AF region denormalization below.
  */
 object CameraControlApply {
 
@@ -93,6 +95,41 @@ object CameraControlApply {
         k.opticalStabilizationMode?.let {
             builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, it)
         }
+    }
+
+    /**
+     * Ask the camera for a **centred** zoom of [hwRatio] (`1.0` = ask for nothing).
+     *
+     * Called by the pipelines with [ZoomGeometry.Split.hwRatio], i.e. only ever a magnification
+     * the requested view can absorb - the hardware never crops away part of what the user chose;
+     * GL trims whatever is left (see [ZoomGeometry.split]).
+     *
+     * Two paths, and they are never mixed in one request: `CONTROL_ZOOM_RATIO` where the camera
+     * declares it, else a centred `SCALER_CROP_REGION`. Interleaving the two corrupts the readback
+     * on the Pixel 6 front camera (docs/quirks/calibration-zoom.md). The API-30 key is reached
+     * only through [ZoomRatioApi30], never named here, because ART resolves every field a method
+     * mentions when it verifies it - a runtime `SDK_INT` guard around the *call* is not enough and
+     * throws `NoSuchFieldError` on API 28 (same quirks file).
+     */
+    fun applyZoom(builder: CaptureRequest.Builder, hwRatio: Float, caps: CameraCapabilities) {
+        if (!hwRatio.isFinite() || hwRatio <= 1.001f) return
+        val ratio = hwRatio.coerceIn(
+            maxOf(1f, caps.zoomRatioRange.lo),
+            maxOf(1f, caps.zoomRatioRange.hi),
+        )
+        if (ratio <= 1.001f) return
+        if (caps.zoomViaRatioApi && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            ZoomRatioApi30.setRequest(builder, ratio)
+            return
+        }
+        val w = caps.activeArrayWidth
+        val h = caps.activeArrayHeight
+        if (w <= 0 || h <= 0) return
+        val cw = (w / ratio).roundToInt().coerceIn(1, w)
+        val ch = (h / ratio).roundToInt().coerceIn(1, h)
+        val l = (w - cw) / 2
+        val t = (h - ch) / 2
+        builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(l, t, l + cw, t + ch))
     }
 
     /** 3x3 identity as `ColorSpaceTransform` rationals (num/den pairs, row-major). */

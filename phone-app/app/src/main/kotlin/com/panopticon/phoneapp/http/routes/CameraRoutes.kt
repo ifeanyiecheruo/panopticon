@@ -7,6 +7,7 @@ import com.panopticon.phoneapp.camera.CameraCapabilities
 import com.panopticon.phoneapp.camera.CameraCapabilitiesReader
 import com.panopticon.phoneapp.camera.CameraCatalog
 import com.panopticon.phoneapp.camera.CameraControlKeys
+import com.panopticon.phoneapp.camera.CameraControlSpec
 import com.panopticon.phoneapp.camera.CameraControlValidation
 import com.panopticon.phoneapp.camera.CamerasResponse
 import com.panopticon.phoneapp.camera.ActiveCameraRequest
@@ -14,6 +15,9 @@ import com.panopticon.phoneapp.camera.ActiveCameraResponse
 import com.panopticon.phoneapp.camera.CameraStatePatch
 import com.panopticon.phoneapp.camera.CameraStateResponse
 import com.panopticon.phoneapp.camera.ViewportRect
+import com.panopticon.phoneapp.camera.ZoomCalibrationLut
+import com.panopticon.phoneapp.camera.ZoomGeometry
+import com.panopticon.phoneapp.calibration.CalibrationStore
 import com.panopticon.phoneapp.http.ErrorBody
 import com.panopticon.phoneapp.state.AppConfig
 import io.ktor.http.HttpStatusCode
@@ -50,7 +54,7 @@ fun Route.cameraRoutes(
     appConfig: AppConfig,
     onCameraConfigChanged: (CameraConfigChange) -> Unit,
     /** The crop the live pipeline is currently rendering with, for mapping drawn rects back to
-     *  the sensor - see [adjustIncomingRects]. Null when no preview is running. */
+     *  the sensor - see [resolveSelections]. Null when no preview is running. */
     liveTexCrop: () -> Pair<Float, Float>?,
 ) {
     // Authenticated by the global installAuth() intercept.
@@ -89,12 +93,13 @@ fun Route.cameraRoutes(
             val id = cameraCatalog.resolveActiveId(cfg.activeCameraId) ?: ""
             val caps = if (id.isNotEmpty()) CameraCapabilitiesReader.read(androidContext, id) else null
             call.respond(
-                CameraStateResponse(
-                    cameraId = id,
+                cameraStateResponse(
+                    androidContext = androidContext,
+                    id = id,
                     rotationDegrees = cfg.rotationDegrees,
                     videoResolution = effectiveResolution(cfg.videoResolution, caps),
-                    manualControlEnabled = cfg.cameraControls.manualControlEnabled,
-                    keys = cfg.cameraControls.keys,
+                    spec = cfg.cameraControls,
+                    liveTexCrop = liveTexCrop(),
                 ),
             )
         }
@@ -129,10 +134,16 @@ fun Route.cameraRoutes(
 
             var next = cfg.cameraControls.withPatch(patch)
             if (patch.keys != null) {
+                // Selections are checked before they are consumed, so a bad value is reported
+                // under the field the caller actually sent.
+                CameraControlValidation.validateSelections(patch.keys, caps)?.let { err ->
+                    call.respond(HttpStatusCode.BadRequest, ControlErrorBody(err.reason, err.key))
+                    return@post
+                }
                 next = next.copy(
-                    keys = adjustIncomingRects(
+                    keys = resolveSelections(
                         incoming = next.keys,
-                        stored = cfg.cameraControls.keys,
+                        storedSpec = cfg.cameraControls,
                         rotationDegrees = cfg.rotationDegrees,
                         liveTexCrop = liveTexCrop(),
                     ),
@@ -155,12 +166,13 @@ fun Route.cameraRoutes(
                 if (resolutionChanged || rotationChanged) CameraConfigChange.ACTIVE_CAMERA else CameraConfigChange.CONTROLS,
             )
             call.respond(
-                CameraStateResponse(
-                    cameraId = id,
+                cameraStateResponse(
+                    androidContext = androidContext,
+                    id = id,
                     rotationDegrees = nextRotation,
                     videoResolution = effectiveResolution(nextResolution, caps),
-                    manualControlEnabled = next.manualControlEnabled,
-                    keys = next.keys,
+                    spec = next,
+                    liveTexCrop = liveTexCrop(),
                 ),
             )
         }
@@ -168,41 +180,125 @@ fun Route.cameraRoutes(
 }
 
 /**
- * The controller's drag-a-box picker (AE spot / AF point - the zoom rect is temporarily disabled,
- * see [com.panopticon.phoneapp.camera.CameraControlApply]'s doc comment) draws over the live
- * preview - against whatever rotation is currently in effect - so a rect that differs from what's
- * already [stored] is a *fresh* draw and needs [ViewportRect.toSensorSpace] to land on the
- * sensor-relative rect [com.panopticon.phoneapp.camera.CameraControlApply] expects. A rect that's
- * unchanged from [stored] is just being carried forward wholesale by an unrelated control update
- * ([com.panopticon.phoneapp.camera.CameraControlSpec.withPatch] replaces `keys` in full) and is
- * left alone - it's already sensor-relative from the last time it *was* fresh.
+ * Turn the request-only, viewer-space **selections** in an incoming patch into the absolute state
+ * the pipelines and the HAL consume. See docs/design/http-api.md, "Coordinate spaces, and why some
+ * keys are request-only".
  *
- * Both rects also need GL's fixed texCrop factored into the viewport itself - it crops the
- * displayed frame, so even the full-frame viewport isn't the whole sensor (see [ViewportRect]'s
- * doc comment) - or a rect drawn near the edge of the visible preview lands on the wrong point on
- * the sensor. That crop is taken from the running live pipeline rather than recomputed here: it
- * depends on the camera's `SurfaceTexture` transform matrix, which only the pipeline has (see
- * [com.panopticon.phoneapp.camera.CameraFraming.correctedTexCrop]). A rect can only be drawn
- * against a running preview, so in practice it is always available; if it isn't, fall back to the
- * uncropped viewport rather than guessing a crop that could be wrong on the wrong axis.
+ * The controller draws over the live preview and always sends what it drew, in the preview's own
+ * `0..1` coordinates - already rotated, already cropped by whatever zoom is in effect. It never
+ * converts to sensor coordinates. Everything below is that conversion, and it is the only place it
+ * happens.
+ *
+ * Precedence per control: a fresh `*SelectNorm` wins; failing that a `zoomRatio` (the slider);
+ * failing that an absolute value the caller sent outright; failing that whatever was already
+ * [stored]. That last rung is what lets a patch about some *other* control leave zoom and focus
+ * alone, while still allowing a deliberate clear - [CameraControlSpec.withPatch] replaces `keys`
+ * wholesale, so a field the controller omits comes through as null and clears.
+ *
+ * The viewport AE/AF rects are untransformed through is the one that was on screen *before* this
+ * request - the user drew on the old frame, not the one this patch is about to produce.
+ *
+ * Both rects also need GL's output-aspect trim factored into that viewport - it crops the
+ * displayed frame, so even the un-zoomed viewport isn't the whole sensor - or a rect drawn near
+ * the edge of the preview lands on the wrong point on the sensor. That trim is taken from the
+ * running live pipeline rather than recomputed here: it depends on the camera's `SurfaceTexture`
+ * transform matrix, which only the pipeline has (see [CameraFraming.correctedTexCrop]). A rect can
+ * only be drawn against a running preview, so in practice it is always available; if it isn't,
+ * fall back to the untrimmed viewport rather than guessing a crop that could be wrong on the wrong
+ * axis.
  */
-private fun adjustIncomingRects(
+private fun resolveSelections(
     incoming: CameraControlKeys,
-    stored: CameraControlKeys,
+    storedSpec: CameraControlSpec,
     rotationDegrees: Int,
     liveTexCrop: Pair<Float, Float>?,
 ): CameraControlKeys {
     val (texCropX, texCropY) = liveTexCrop ?: (1f to 1f)
+    // What was on screen when the user drew. With the manual master switch off the pipelines run
+    // full auto and render no zoom at all, so the frame they drew on was the un-zoomed one -
+    // composing onto a stored-but-inactive zoom would land the rect somewhere they never saw.
+    val stored = if (storedSpec.manualControlEnabled) storedSpec.keys else CameraControlKeys()
 
-    fun freshSensorRect(new: RectNorm?, old: RectNorm?): RectNorm? {
-        if (new == null || new == old) return new
-        return ViewportRect.toSensorSpace(new, stored, rotationDegrees, texCropX, texCropY)
+    val currentView = stored.zoomViewNorm ?: ZoomGeometry.FULL
+    val nextView = when {
+        // A freshly-drawn box composes ONTO the current view, so selections compound: drawing the
+        // same box twice zooms twice.
+        incoming.zoomSelectNorm != null ->
+            ZoomGeometry.compose(currentView, incoming.zoomSelectNorm, rotationDegrees)
+        // The slider magnifies about the current view's centre, so it never throws away the
+        // framing a rect selection set up.
+        incoming.zoomRatio != null -> ZoomGeometry.viewForRatio(currentView, incoming.zoomRatio)
+        else -> incoming.zoomViewNorm
+    }
+
+    // The viewport the user was looking at when they drew - the pre-patch zoom state.
+    val viewport = ViewportRect.currentViewport(stored, texCropX, texCropY)
+    fun sensorRect(selection: RectNorm?, absolute: RectNorm?): RectNorm? {
+        if (selection == null) return absolute
+        val preRotation = ViewportRect.inverseRotateRect(selection, rotationDegrees)
+        return ViewportRect.composeWithViewport(preRotation, viewport)
     }
 
     return incoming.copy(
-        aeRegionNorm = freshSensorRect(incoming.aeRegionNorm, stored.aeRegionNorm),
-        afRegionNorm = freshSensorRect(incoming.afRegionNorm, stored.afRegionNorm),
+        // Selections are instructions, not state: they are consumed here and never persisted or
+        // echoed back, which is what stops a read-modify-write from re-applying them.
+        zoomSelectNorm = null,
+        aeSelectNorm = null,
+        afSelectNorm = null,
+        zoomViewNorm = nextView,
+        zoomRatio = nextView?.let { ZoomGeometry.ratioOf(it) },
+        aeRegionNorm = sensorRect(incoming.aeSelectNorm, incoming.aeRegionNorm),
+        afRegionNorm = sensorRect(incoming.afSelectNorm, incoming.afRegionNorm),
     )
+}
+
+/**
+ * A state response, with the zoom split reported alongside the keys so the UI can say where the
+ * magnification is coming from: [CameraStateResponse.hwZoomRatio] is what the camera was asked
+ * for, [CameraStateResponse.glResidual] the upscale GL adds on top (which buys no new detail -
+ * the capture resolution is deliberately not raised to feed it).
+ *
+ * The split is decided against this phone's own calibration sweep. An uncalibrated phone yields
+ * an empty map, which simply means "ask the hardware for nothing, let GL do it all" - always
+ * safe, and it still shows exactly the region the user selected, just softer.
+ */
+private fun cameraStateResponse(
+    androidContext: Context,
+    id: String,
+    rotationDegrees: Int,
+    videoResolution: String,
+    spec: CameraControlSpec,
+    liveTexCrop: Pair<Float, Float>?,
+): CameraStateResponse {
+    val (texCropX, texCropY) = liveTexCrop ?: (1f to 1f)
+    val zoomView = spec.keys.zoomViewNorm.takeIf { spec.manualControlEnabled } ?: ZoomGeometry.FULL
+    val (w, h) = parseSize(videoResolution)
+    val lut = runCatching {
+        ZoomCalibrationLut.build(CalibrationStore(androidContext).load(), id, w, h)
+    }.getOrNull() ?: ZoomCalibrationLut.Lut.NONE
+    val split = ZoomGeometry.split(
+        viewSensor = ZoomGeometry.viewToSensor(zoomView, texCropX, texCropY),
+        lut = lut.entries,
+        texCropX = texCropX,
+        texCropY = texCropY,
+    )
+    return CameraStateResponse(
+        cameraId = id,
+        rotationDegrees = rotationDegrees,
+        videoResolution = videoResolution,
+        manualControlEnabled = spec.manualControlEnabled,
+        keys = spec.keys,
+        hwZoomRatio = split.hwRatio,
+        glResidual = split.glResidual,
+    )
+}
+
+/** "<w>x<h>" -> the pair, falling back to 720p so a malformed value can't break a state read. */
+private fun parseSize(s: String): Pair<Int, Int> {
+    val parts = s.split('x')
+    val w = parts.getOrNull(0)?.toIntOrNull()
+    val h = parts.getOrNull(1)?.toIntOrNull()
+    return if (w != null && h != null && w > 0 && h > 0) w to h else 1280 to 720
 }
 
 /** The concrete record/broadcast size to report: the stored choice if it's

@@ -266,6 +266,7 @@ export namespace main {
 	    outcome: string;
 	    message?: string;
 	    invalidKey?: string;
+	    state?: phoneapi.CameraStateResponse;
 	
 	    static createFrom(source: any = {}) {
 	        return new CameraActionResult(source);
@@ -277,7 +278,26 @@ export namespace main {
 	        this.outcome = source["outcome"];
 	        this.message = source["message"];
 	        this.invalidKey = source["invalidKey"];
+	        this.state = this.convertValues(source["state"], phoneapi.CameraStateResponse);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class CameraControlsView {
 	    ok: boolean;
@@ -749,15 +769,18 @@ export namespace phoneapi {
 	}
 	export class CameraControlKeys {
 	    zoomRatio?: number;
-	    cropRegionNorm?: RectNorm;
+	    zoomSelectNorm?: RectNorm;
+	    zoomViewNorm?: RectNorm;
 	    aeExposureCompensation?: number;
 	    aeLock?: boolean;
+	    aeSelectNorm?: RectNorm;
 	    aeRegionNorm?: RectNorm;
 	    manualExposure?: boolean;
 	    sensorExposureTimeNs?: number;
 	    sensorSensitivityIso?: number;
 	    manualFocus?: boolean;
 	    lensFocusDistanceDiopters?: number;
+	    afSelectNorm?: RectNorm;
 	    afRegionNorm?: RectNorm;
 	    awbMode?: number;
 	    manualWhiteBalance?: boolean;
@@ -774,15 +797,18 @@ export namespace phoneapi {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.zoomRatio = source["zoomRatio"];
-	        this.cropRegionNorm = this.convertValues(source["cropRegionNorm"], RectNorm);
+	        this.zoomSelectNorm = this.convertValues(source["zoomSelectNorm"], RectNorm);
+	        this.zoomViewNorm = this.convertValues(source["zoomViewNorm"], RectNorm);
 	        this.aeExposureCompensation = source["aeExposureCompensation"];
 	        this.aeLock = source["aeLock"];
+	        this.aeSelectNorm = this.convertValues(source["aeSelectNorm"], RectNorm);
 	        this.aeRegionNorm = this.convertValues(source["aeRegionNorm"], RectNorm);
 	        this.manualExposure = source["manualExposure"];
 	        this.sensorExposureTimeNs = source["sensorExposureTimeNs"];
 	        this.sensorSensitivityIso = source["sensorSensitivityIso"];
 	        this.manualFocus = source["manualFocus"];
 	        this.lensFocusDistanceDiopters = source["lensFocusDistanceDiopters"];
+	        this.afSelectNorm = this.convertValues(source["afSelectNorm"], RectNorm);
 	        this.afRegionNorm = this.convertValues(source["afRegionNorm"], RectNorm);
 	        this.awbMode = source["awbMode"];
 	        this.manualWhiteBalance = source["manualWhiteBalance"];
@@ -873,6 +899,8 @@ export namespace phoneapi {
 	    videoResolution: string;
 	    manualControlEnabled: boolean;
 	    keys: CameraControlKeys;
+	    hwZoomRatio: number;
+	    glResidual: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new CameraStateResponse(source);
@@ -885,6 +913,8 @@ export namespace phoneapi {
 	        this.videoResolution = source["videoResolution"];
 	        this.manualControlEnabled = source["manualControlEnabled"];
 	        this.keys = this.convertValues(source["keys"], CameraControlKeys);
+	        this.hwZoomRatio = source["hwZoomRatio"];
+	        this.glResidual = source["glResidual"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

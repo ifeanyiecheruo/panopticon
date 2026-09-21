@@ -1,48 +1,36 @@
 package com.panopticon.phoneapp.camera
 
 import com.panopticon.phoneapp.calibration.RectNorm
-import kotlin.math.max
 
 /**
  * Coordinate transform for rects the controller's drag-a-box picker (zoom / AE-spot / AF-point)
  * draws over the live preview.
  *
  * The picker draws against what's actually ON SCREEN: the sensor's active array as already
- * cropped by the *current* zoom ([CameraControlKeys.cropRegionNorm] or [CameraControlKeys.zoomRatio]),
- * further cropped by GL's *fixed* [CameraFraming.computeTexCrop] (this applies even at zero zoom -
- * it's the same crop that made the very first "preview doesn't match record" bug), and then
- * rotated by `rotationDegrees` (see [GlBlit]) - so a freshly-drawn rect's `[0,1]` coordinates are relative to
+ * cropped by the *current* zoom ([CameraControlKeys.zoomViewNorm]), further cropped by GL's fixed
+ * output-aspect trim [CameraFraming.correctedTexCrop] (this applies even at zero zoom - it's the
+ * same crop that made the very first "preview doesn't match record" bug), and then rotated by
+ * `rotationDegrees` (see [GlBlit]) - so a freshly-drawn rect's `[0,1]` coordinates are relative to
  * that fully-cropped on-screen *viewport*, not to the full sensor.
- * [CameraControlKeys.cropRegionNorm] (and `aeRegionNorm`/`afRegionNorm`) are, however, defined
- * against the full sensor active array - [CameraControlApply.denorm] maps them straight onto it.
+ * `aeRegionNorm`/`afRegionNorm` are, however, defined against the full sensor active array -
+ * [CameraControlApply.denorm] maps them straight onto it.
  * [toSensorSpace] bridges the two: it undoes the current rotation and the current (zoom +
  * texCrop) viewport, so the region the user saw and drew is the region that actually gets
  * captured.
  */
 internal object ViewportRect {
 
-    /** The current viewport (full sensor active array in normalized 0..1 terms) implied by the
-     *  currently-stored control keys and the fixed GL texCrop: an explicit
-     *  [CameraControlKeys.cropRegionNorm] wins, else a centred crop for
-     *  [CameraControlKeys.zoomRatio], else the full frame - and in every case that base is then
-     *  further shrunk (centred) by [texCropX]/[texCropY], since GL applies that crop regardless of
-     *  zoom. Defaults to `1f, 1f` (no shrink) for callers that don't have a source/recording size
-     *  to derive a texCrop from. */
-    fun currentViewport(keys: CameraControlKeys, texCropX: Float = 1f, texCropY: Float = 1f): RectNorm {
-        val base = keys.cropRegionNorm
-            ?: keys.zoomRatio?.let { centeredViewportForRatio(it) }
-            ?: RectNorm(0f, 0f, 1f, 1f)
-        return CameraFraming.growBySameCentre(base, 1f / texCropX, 1f / texCropY)
-    }
-
-    /** A centred crop covering `1/ratio` of each axis - the normalized-terms equivalent of
-     *  [com.panopticon.phoneapp.calibration.ZoomMath.centeredCropForRatio] (ratio &lt;= 1 is
-     *  treated as no zoom). */
-    fun centeredViewportForRatio(ratio: Float): RectNorm {
-        val r = max(1f, ratio)
-        val half = (1f - 1f / r) / 2f
-        return RectNorm(half, half, 1f - half, 1f - half)
-    }
+    /** The region of the sensor active array that is currently *on screen*, in normalized 0..1
+     *  terms: [CameraControlKeys.zoomViewNorm] (frame space - a fraction of the un-zoomed view)
+     *  placed back onto the sensor through the fixed output-aspect trim [texCropX]/[texCropY],
+     *  which GL applies regardless of zoom. Un-zoomed, this is just that trim.
+     *
+     *  This is deliberately the *same* value [ZoomGeometry.shaderRect] renders, so a rect the user
+     *  drew over the preview is untransformed through exactly the crop they were looking at.
+     *  Defaults to `1f, 1f` (no trim) for callers that don't have a live pipeline to take a real
+     *  texCrop from. */
+    fun currentViewport(keys: CameraControlKeys, texCropX: Float = 1f, texCropY: Float = 1f): RectNorm =
+        ZoomGeometry.viewToSensor(keys.zoomViewNorm ?: ZoomGeometry.FULL, texCropX, texCropY)
 
     /** Maps a point from the rotated on-screen frame back to the pre-rotation frame -
      *  `rotationDegrees` is how much [GlBlit.quad] rotates the pre-rotation frame clockwise to

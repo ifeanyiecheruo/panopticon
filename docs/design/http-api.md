@@ -128,10 +128,44 @@ also governs recording. Verified on the Pixel 6 (API 36) and BLU G5 (API 28).
 **The concrete `keys` set** (`CameraControlKeys`; a null/absent field = leave that control on
 auto). `POST` replaces the `keys` object wholesale — send the full desired set.
 
+#### Coordinate spaces, and why some keys are request-only
+
+Every rect the controller sends is in **viewer space**: `0..1` over the frame the user is
+actually looking at in the live view — already rotated by `rotationDegrees`, already cropped by
+whatever zoom is in effect. The controller never converts to sensor coordinates and never needs
+to know the sensor's geometry; the phone owns every transform
+(`camera/ViewportRect.kt`, `camera/ZoomSolver.kt`).
+
+That makes a viewer-space rect a **relative** instruction ("zoom into *this* part of what I'm
+seeing now"), which cannot share a field with the absolute state it produces — drawing the same
+box twice must zoom twice, and a read-modify-write of the absolute state must not be mistaken
+for a fresh draw. So the rect keys are split:
+
+| | field | space | meaning |
+|---|---|---|---|
+| **request-only** (`POST`) | `zoomSelectNorm`, `afSelectNorm`, `aeSelectNorm` | viewer | a **fresh selection**, always. Present ⇒ the user just drew it. Never returned by `GET`. |
+| **response-only** (`GET`) | `zoomViewNorm` | frame (`0..1` over the *un-zoomed* view, pre-rotation) | the resulting **absolute** state. Echoing one back in a `POST` is ignored. |
+| **response-only** (`GET`) | `afRegionNorm`, `aeRegionNorm` | sensor active array | as above; these are metering rects the HAL consumes directly, so they stay in its coordinates. |
+
+`zoomSelectNorm` is composed onto the current view, so selections compound. The phone is free to
+widen a selection to the output aspect ratio (it fits the smallest output-aspect rect that
+*contains* the selection, so nothing the user boxed is ever cropped away) — the controller draws
+that same fitted rect as a second overlay, and it is exactly what the viewport shows afterwards.
+
+The phone decides how much of the zoom the **camera** can do and how much GL must finish, against
+its own calibration sweep. The camera is only ever asked for a **centred** magnification whose
+field of view still fully contains the requested view, so it can never crop past the selection;
+everything off-centre, and any remainder, is made up by cropping and upscaling the texture in GL.
+That upscale adds no detail — the capture resolution and the camera→`SurfaceTexture` buffer size
+are deliberately left alone, so a heavy GL residual reads as soft rather than costing bandwidth
+and thermals. `GET` reports both `hwZoomRatio` and `glResidual`, so the UI can say where the zoom
+came from. An uncalibrated phone simply gets `hwZoomRatio: 1` and does it all in GL.
+
 | key | Camera2 mapping | capability gate |
 |---|---|---|
-| `zoomRatio` (float) | `CONTROL_ZOOM_RATIO` (API 30+) else centred `SCALER_CROP_REGION` | `zoomRatioRange` |
-| `cropRegionNorm` `{l,t,r,b}` 0..1 | `SCALER_CROP_REGION` (off-centre) — **exclusive** with `zoomRatio` in one request (readback-corruption quirk); the rect wins | must be a sane sub-rect of 0..1 |
+| `zoomRatio` (float) | magnification relative to the un-zoomed view, **about the current view's centre** (the slider). Resolved by `ZoomSolver` into a hardware request + a GL residual, exactly as a rect is — it is not passed to the HAL directly. | `zoomRatioRange` |
+| `zoomSelectNorm` `{l,t,r,b}` 0..1 *(request-only)* | a freshly-drawn zoom rect in **viewer** space. Fitted to the output aspect ratio, composed onto the current view, then resolved by `ZoomSolver`. **Exclusive** with `zoomRatio` in one request; the rect wins. | must be a sane sub-rect of 0..1 |
+| `zoomViewNorm` `{l,t,r,b}` 0..1 *(response-only)* | the resulting absolute view, as a fraction of the **un-zoomed** view rather than of the sensor array — so it is answerable in `standby`, when no pipeline is running and the output-aspect trim isn't known yet. Alongside it `GET` reports `hwZoomRatio` (what the HAL was actually asked for) and `glResidual` (the leftover magnification GL makes up), so the UI can show where the zoom is coming from. | — |
 | `aeExposureCompensation` (int) | `CONTROL_AE_EXPOSURE_COMPENSATION` | `aeCompensationRange` |
 | `aeLock` (bool) | `CONTROL_AE_LOCK` (metering freeze, not a manual-exposure dial) | — |
 | `manualExposure` (bool) + `sensorExposureTimeNs` + `sensorSensitivityIso` | `CONTROL_AE_MODE=OFF` + `SENSOR_EXPOSURE_TIME` + `SENSOR_SENSITIVITY` | `hasManualSensor` (`REQUEST_AVAILABLE_CAPABILITIES` ∋ `MANUAL_SENSOR`) |

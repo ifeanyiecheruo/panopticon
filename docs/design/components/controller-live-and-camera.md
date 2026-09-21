@@ -11,8 +11,8 @@ knobs (`liveSyncDurationCount` etc.). [`../android-media-primer.md`](../android-
 ### 1.1 Purpose
 
 Describe the component that shows a phone's live camera in Phone detail as plain HLS and drives
-its camera selection + manual controls from the same surface, with the
-calibration-predicted honoured crop overlaid.
+its camera selection + manual controls from the same surface, including the zoom adjuster whose
+selections are sent in viewer coordinates for the phone to resolve.
 
 ### 1.2 Scope
 
@@ -35,7 +35,8 @@ never holds the bearer token.
 | stall watchdog | a 2s poll that kicks hls.js (`startLoad()` + seek to `liveSyncPosition`) on stalled progress / buffer-stall / fatal network error |
 | `reattach` | re-initialising the player on a camera switch or resolution change |
 | rect picker | one shared drag-box over the live `<video>` for Zoom/Focus/Exposure |
-| predicted-crop overlay | the dashed rect from `App.ComputeEffectiveRect` under the rect picker |
+| viewer space | `0..1` over the frame on screen — the only coordinate space the controller sends rects in |
+| fitted box | the dashed second box during a zoom drag: the smallest rect at the video's aspect ratio *containing* the drag, and exactly what the viewport shows on release |
 
 ### 1.5 Acronyms and abbreviations
 
@@ -62,7 +63,8 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
 tolerates the cold-camera arming `503`. `liveproxy` serves the feed same-origin.
 `LivePreview.tsx` plays it with live-tuned hls.js config + a stall watchdog.
 `CameraControls.tsx` is the ported phone Preview-screen UI, capability-gated to
-`GET /api/camera/capabilities`, with the predicted-crop overlay from the calibration store.
+`GET /api/camera/capabilities`. Rects it collects (zoom, focus, exposure) are sent exactly as
+drawn, in viewer coordinates; the phone resolves them.
 
 ## 3. Detailed design
 
@@ -74,7 +76,8 @@ tolerates the cold-camera arming `503`. `liveproxy` serves the feed same-origin.
 | `liveproxy` | asset-server handler | Token stays server-side; hls.js fetches same-origin. |
 | `useLivePreview` + `LivePreview.tsx` | hook + view | hls.js against the local proxy with live-tuned config (`liveSyncDurationCount` / `liveMaxLatencyDurationCount`, ~20s `maxBufferLength`, patient retries) + a 2s stall watchdog. `reattach()` on a camera switch or resolution change. Bounded manifest-404 retry that resets once the first fragment buffers. |
 | `CameraControls.tsx` + `phonecam/*` | UI | Camera switcher (logical + physical sub-cameras); a manual-controls master toggle; capability-gated sliders/toggles. Ported phone Preview interactions: frosted drag-rulers over the live `<video>`, a drag-scroller mode bar, categorical dropdowns, per-slider reset, "Full auto", a 2s idle-fade. One shared drag-box rect picker for Zoom/Focus/Exposure (applies on pointer-up, Esc cancels, manual-mode only). A right-aligned resolution `<select>` re-attaches the player when changed. |
-| predicted-crop overlay | UI | `App.ComputeEffectiveRect` drawn as a dashed rect under the zoom-rect picker. |
+| zoom adjuster | UI | A ruler bound to `zoomRatio` (magnifies about the *current* view's centre) plus the shared rect picker targeting `zoomSelectNorm`. During a zoom drag two boxes are drawn: the drag itself, and the **fitted box**. Because the overlay is `0..1` over the video with no `object-fit` crop, the fitted box is just the smallest *square* containing the drag — the aspect ratio falls out of percentage sizing, with no aspect arithmetic anywhere in the component or the CSS. |
+| zoom readback | UI | `glResidual` from the phone drives a "zoom is upscaling, not resolving" note above ~1.5×. |
 | `phoneapi/camera.go` | client | Sentinels `ErrUnknownCamera` (404 on switch), `*InvalidControlKeyError{Key,Reason}` (400 naming the rejected key). |
 
 ### 3.2 Dependencies
@@ -112,7 +115,19 @@ tolerates the cold-camera arming `503`. `liveproxy` serves the feed same-origin.
   [`0008`](../decisions/0008-camera-control-and-multi-camera.md),
   [`0012`](../decisions/0012-ux-shape.md): the ported phone Preview interactions
   (rulers, drag-scroller, one shared rect picker) are load-bearing UX, not stock widgets.
-- **Predicted-crop overlay** — uses the calibration store's `EffectiveRect` so the user sees the
-  crop the HAL will actually apply, not just what was requested.
+- **The controller sends viewer coordinates and nothing else** — every rect (zoom, focus,
+  exposure) travels as drawn over the preview; the phone owns rotation, zoom composition and the
+  hardware/GL split ([`../http-api.md`](../http-api.md), "Coordinate spaces";
+  [`phone-camera-control.md`](phone-camera-control.md)). The controller therefore needs no sensor
+  geometry and no calibration data to draw a correct zoom overlay: the fitted box *is* the
+  contract, because the phone compensates in GL for whatever the hardware won't do. That is why
+  the older `App.ComputeEffectiveRect` predicted-crop overlay is not what shipped — predicting the
+  HAL's crop only matters when the HAL's crop is what you see, and it no longer is.
+- **Selections are sent, never remembered** — `applyKeys` strips the `*SelectNorm` fields from
+  local state. Retaining one would replay it on the next unrelated patch, and since a zoom
+  selection composes onto the current view, replaying it would zoom again every time.
+- **A committed change adopts the phone's resulting state** — `SetCameraControls` returns it, so
+  the zoom ruler reflects the ratio a *rect* selection produced. Skipped mid-drag, where a late
+  response would fight the user's hand.
 - **Deferred:** LL-HLS, adaptive bitrate, the scoped `/live/*` token —
   [`../../status/ll-hls-upgrade.md`](../../status/ll-hls-upgrade.md).

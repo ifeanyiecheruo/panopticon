@@ -84,19 +84,32 @@ type CameraCapabilities struct {
 }
 
 // CameraControlKeys is the concrete manual-control key set. Every field is a
-// pointer: nil = "leave this control on auto". zoomRatio and cropRegionNorm
-// are mutually exclusive at apply time (cropRegionNorm wins).
+// pointer: nil = "leave this control on auto".
+//
+// The rect fields come in two flavours and the split matters (docs/design/http-api.md,
+// "Coordinate spaces, and why some keys are request-only"). The *SelectNorm fields are
+// request-only and always carry a rect the user just drew, in VIEWER coordinates - the
+// controller never converts to sensor coordinates, the phone owns every transform. They are
+// relative instructions, so sending the same zoom box twice zooms twice. ZoomViewNorm /
+// AERegionNorm / AFRegionNorm are the absolute state that results; the phone returns those and
+// accepts them back unchanged, which is how a rect is cleared (keys are replaced wholesale, so
+// an omitted field clears).
 type CameraControlKeys struct {
-	ZoomRatio                 *float64  `json:"zoomRatio"`
-	CropRegionNorm            *RectNorm `json:"cropRegionNorm"`
+	ZoomRatio *float64 `json:"zoomRatio"`
+	// ZoomSelectNorm is a freshly-drawn zoom rect in viewer coordinates (request-only).
+	ZoomSelectNorm *RectNorm `json:"zoomSelectNorm,omitempty"`
+	// ZoomViewNorm is the resulting absolute view, as a fraction of the un-zoomed view.
+	ZoomViewNorm              *RectNorm `json:"zoomViewNorm"`
 	AEExposureCompensation    *int      `json:"aeExposureCompensation"`
 	AELock                    *bool     `json:"aeLock"`
+	AESelectNorm              *RectNorm `json:"aeSelectNorm,omitempty"`
 	AERegionNorm              *RectNorm `json:"aeRegionNorm"`
 	ManualExposure            *bool     `json:"manualExposure"`
 	SensorExposureTimeNs      *int64    `json:"sensorExposureTimeNs"`
 	SensorSensitivityISO      *int      `json:"sensorSensitivityIso"`
 	ManualFocus               *bool     `json:"manualFocus"`
 	LensFocusDistanceDiopters *float64  `json:"lensFocusDistanceDiopters"`
+	AFSelectNorm              *RectNorm `json:"afSelectNorm,omitempty"`
 	AFRegionNorm              *RectNorm `json:"afRegionNorm"`
 	AWBMode                   *int      `json:"awbMode"`
 	ManualWhiteBalance        *bool     `json:"manualWhiteBalance"`
@@ -113,6 +126,11 @@ type CameraStateResponse struct {
 	VideoResolution      string            `json:"videoResolution"`
 	ManualControlEnabled bool              `json:"manualControlEnabled"`
 	Keys                 CameraControlKeys `json:"keys"`
+	// HWZoomRatio is what the camera hardware was actually asked for, once the phone limited it
+	// to a crop that doesn't cut into the requested view; GLResidual is the extra magnification
+	// GL adds on top by cropping and upscaling the texture, which buys no new detail.
+	HWZoomRatio float64 `json:"hwZoomRatio"`
+	GLResidual  float64 `json:"glResidual"`
 }
 
 // CameraStatePatch is POST /api/camera/state's body. Keys, when non-nil,

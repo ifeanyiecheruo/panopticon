@@ -1,5 +1,7 @@
 package com.panopticon.phoneapp.camera
 
+import com.panopticon.phoneapp.calibration.RectNorm
+
 /**
  * Validate a requested [CameraControlKeys] against one camera's declared
  * [CameraCapabilities], the "validate-then-apply" half of `POST /api/camera/state`
@@ -19,33 +21,50 @@ object CameraControlValidation {
 
     data class Error(val key: String, val reason: String)
 
-    fun validate(keys: CameraControlKeys, caps: CameraCapabilities): Error? {
-        // zoomRatio is never applied to the HAL right now (see CameraControlApply's doc
-        // comment - zoom is being rebuilt from scratch), so it's not range-checked here
-        // either: a value a phone persisted from before that rework would otherwise fail
-        // this check forever and block every *other* control patch, since validate() runs
-        // against the merged stored+patch keys, not just what the caller actually changed.
+    /**
+     * Check the **request-only, viewer-space** keys of an incoming patch, before
+     * `resolveSelections` consumes them. This runs first so a bad value is reported under the
+     * field name the caller actually sent (`zoomSelectNorm`), not the absolute field it would have
+     * turned into.
+     *
+     * Note what is deliberately *not* checked: how far a selection zooms. A selection is a region,
+     * and the resulting magnification is whatever that region implies - clamped by geometry, not
+     * rejected. Only the explicit [CameraControlKeys.zoomRatio] slider has a range to be outside of.
+     */
+    fun validateSelections(keys: CameraControlKeys, caps: CameraCapabilities): Error? {
+        sanity(keys.zoomSelectNorm, "zoomSelectNorm")?.let { return it }
+        sanity(keys.aeSelectNorm, "aeSelectNorm")?.let { return it }
+        sanity(keys.afSelectNorm, "afSelectNorm")?.let { return it }
 
-        keys.cropRegionNorm?.let { c ->
-            val sane = c.l in 0f..1f && c.t in 0f..1f && c.r in 0f..1f && c.b in 0f..1f &&
-                c.r > c.l && c.b > c.t
-            if (!sane) {
-                return Error("cropRegionNorm", "must be a sub-rect of 0..1 with r>l and b>t, got $c")
+        keys.zoomRatio?.let { z ->
+            // Deliberately no upper bound. A zoom *rect* can imply an arbitrarily large ratio, and
+            // the phone reports that derived value back in `keys`; the controller echoes the whole
+            // key set on every later patch, so any ceiling here would eventually reject a value
+            // this device itself produced - and reject the whole patch with it, leaving the user
+            // unable to change any control, including zooming back out. Magnitude is already
+            // bounded geometrically: ZoomGeometry.viewForRatio clamps the view it produces, so a
+            // silly ratio is harmless rather than dangerous. Only a value that isn't a
+            // magnification at all is worth refusing.
+            if (!z.isFinite() || z < 1f) {
+                return Error("zoomRatio", "must be a magnification of at least 1.0, got $z")
             }
         }
+        return null
+    }
+
+    fun validate(keys: CameraControlKeys, caps: CameraCapabilities): Error? {
+        // zoomViewNorm is the resolved, absolute view. It is produced by ZoomGeometry, which
+        // clamps, so this only guards a value sent outright by a caller.
+        sanity(keys.zoomViewNorm, "zoomViewNorm")?.let { return it }
 
         keys.aeRegionNorm?.let { c ->
             if (caps.maxAeRegions <= 0) return Error("aeRegionNorm", "this camera has no AE metering regions")
-            val sane = c.l in 0f..1f && c.t in 0f..1f && c.r in 0f..1f && c.b in 0f..1f &&
-                c.r > c.l && c.b > c.t
-            if (!sane) return Error("aeRegionNorm", "must be a sub-rect of 0..1 with r>l and b>t, got $c")
+            sanity(c, "aeRegionNorm")?.let { return it }
         }
 
         keys.afRegionNorm?.let { c ->
             if (caps.maxAfRegions <= 0) return Error("afRegionNorm", "this camera has no AF metering regions")
-            val sane = c.l in 0f..1f && c.t in 0f..1f && c.r in 0f..1f && c.b in 0f..1f &&
-                c.r > c.l && c.b > c.t
-            if (!sane) return Error("afRegionNorm", "must be a sub-rect of 0..1 with r>l and b>t, got $c")
+            sanity(c, "afRegionNorm")?.let { return it }
         }
 
         keys.aeExposureCompensation?.let { ec ->
@@ -130,5 +149,14 @@ object CameraControlValidation {
         }
 
         return null
+    }
+
+    /** Every rect on this API is a sub-rect of 0..1 with a positive extent, whichever space it is
+     *  expressed in. Null is always fine - it means "leave this control alone". */
+    private fun sanity(c: RectNorm?, key: String): Error? {
+        if (c == null) return null
+        val sane = c.l in 0f..1f && c.t in 0f..1f && c.r in 0f..1f && c.b in 0f..1f &&
+            c.r > c.l && c.b > c.t
+        return if (sane) null else Error(key, "must be a sub-rect of 0..1 with r>l and b>t, got $c")
     }
 }

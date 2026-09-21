@@ -52,6 +52,8 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import com.panopticon.phoneapp.calibration.CalibrationStore
+import com.panopticon.phoneapp.calibration.RectNorm
 
 private const val TAG = "CameraGlPipeline"
 private const val EGL_RECORDABLE_ANDROID = 0x3142
@@ -104,6 +106,14 @@ class CameraGlPipeline(
     // applyControls() without a session rebuild; caps are read once the camera id is resolved.
     @Volatile private var controls: CameraControlSpec = initialControls
     @Volatile private var caps: CameraCapabilities? = null
+
+    // Zoom is split between a centred hardware magnification and a GL crop (ZoomGeometry.split),
+    // against this phone's own calibration sweep. The split depends on the aspect trim, which only
+    // exists once frames flow, so it is recomputed on the first frame as well as on every control
+    // change. Reading a stale split for a frame or two after a change is harmless: the hardware
+    // takes a few frames to act on a new zoom anyway.
+    @Volatile private var zoomLut: ZoomCalibrationLut.Lut = ZoomCalibrationLut.Lut.NONE
+    @Volatile private var zoomSplit: ZoomGeometry.Split? = null
     @Volatile private var resolvedCameraId: String? = null
 
     /** Set when [cameraId] is a "<logical>:<physical>" target: the session's outputs are pinned
@@ -151,7 +161,7 @@ class CameraGlPipeline(
     private var aPosLoc = 0
     private var aTexLoc = 0
     private var uStMatrixLoc = 0
-    private var uTexCropLoc = 0
+    private var uTexRectLoc = 0
     private var oesTexId = 0
     private var fbo = 0
     private var fboTex = 0
@@ -333,7 +343,7 @@ class CameraGlPipeline(
         aPosLoc = GLES20.glGetAttribLocation(program, "aPos")
         aTexLoc = GLES20.glGetAttribLocation(program, "aTex")
         uStMatrixLoc = GLES20.glGetUniformLocation(program, "uSTMatrix")
-        uTexCropLoc = GLES20.glGetUniformLocation(program, "uTexCrop")
+        uTexRectLoc = GLES20.glGetUniformLocation(program, "uTexRect")
         val tex = IntArray(1); GLES20.glGenTextures(1, tex, 0); oesTexId = tex[0]
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexId)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
@@ -368,6 +378,9 @@ class CameraGlPipeline(
             texCropX = cropX; texCropY = cropY
             texCropFinalized = true
             Log.i(TAG, "texCrop for this camera's transform: $cropX,$cropY")
+            // The split could not be computed before this point, so re-issue the request if the
+            // camera now turns out to be able to do part of the zoom itself.
+            if (recomputeZoomSplit()) reissueRepeatingRequest()
         }
         val tsNanos = st.timestamp
 
@@ -375,7 +388,16 @@ class CameraGlPipeline(
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexId)
         GLES20.glUniformMatrix4fv(uStMatrixLoc, 1, false, stMatrix, 0)
-        GLES20.glUniform2f(uTexCropLoc, texCropX, texCropY)
+        // One rect does both jobs: the fixed output-aspect trim, and whatever zoom the camera
+        // hardware isn't doing off-centre. Un-zoomed it is exactly the centred trim this drew
+        // before zoom existed.
+        // manualControlEnabled is the master switch: full auto means no zoom either, same as it
+        // means no manual exposure (see CameraControlApply's early return).
+        // texRectUniform, not shaderRect: the uniform's Y axis runs bottom-up while every rect
+        // here is viewer-oriented (top-down), so it has to be flipped on the way in. deliveredCrop
+        // is what the camera is already zoomed to, so the view is placed inside it.
+        val u = ZoomGeometry.texRectUniform(zoomView(), texCropX, texCropY, deliveredCrop())
+        GLES20.glUniform4f(uTexRectLoc, u[0], u[1], u[2], u[3])
         quad.position(0); GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
         GLES20.glEnableVertexAttribArray(aPosLoc)
         quad.position(2); GLES20.glVertexAttribPointer(aTexLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
@@ -584,6 +606,16 @@ class CameraGlPipeline(
         val (logicalId, physId) = CameraCapabilitiesReader.splitTarget(id)
         physicalCameraId = physId?.takeIf { Build.VERSION.SDK_INT >= Build.VERSION_CODES.P }
         caps = runCatching { CameraCapabilitiesReader.read(context, id) }.getOrNull()
+        // The zoom map is per camera and per output size, so it is loaded here rather than once
+        // at construction. An uncalibrated phone yields an empty table, which simply means the
+        // camera is asked for nothing and GL does all the zooming.
+        zoomLut = ZoomCalibrationLut.build(
+            CalibrationStore(context).load(), id, recordingSize.width, recordingSize.height,
+        )
+        zoomSplit = null
+        if (!zoomLut.isEmpty) {
+            Log.i(TAG, "zoom map: camera ${zoomLut.sourceCameraId} @ ${zoomLut.sourceResolution}, ${zoomLut.entries.size} samples")
+        }
         cameraDevice = openCameraDevice(logicalId)
     }
 
@@ -607,6 +639,9 @@ class CameraGlPipeline(
      */
     fun applyControls(spec: CameraControlSpec) {
         controls = spec
+        // A zoom change moves work between the camera and GL, so the split is redone before the
+        // request is rebuilt below. The shader picks the new crop up on its next frame.
+        recomputeZoomSplit()
         val device = cameraDevice ?: return
         val session = captureSession ?: return
         val surface = cameraSurface ?: return
@@ -615,11 +650,47 @@ class CameraGlPipeline(
         }.onFailure { Log.w(TAG, "applyControls: setRepeatingRequest failed", it) }
     }
 
+    /** The region of the full field of view the buffer currently holds - the whole frame until a
+     *  hardware zoom is in effect. The shader places the requested view inside it. */
+    private fun deliveredCrop(): RectNorm = zoomSplit?.deliveredCrop ?: ZoomGeometry.FULL
+
+    /** The view the user asked for, or null when running full auto. */
+    private fun zoomView(): RectNorm? =
+        controls.keys.zoomViewNorm.takeIf { controls.manualControlEnabled }
+
+    /** Recompute how much of the zoom the camera should do. Returns true when the hardware half
+     *  changed, meaning the repeating request has to be re-issued to take effect. */
+    private fun recomputeZoomSplit(): Boolean {
+        val previous = zoomSplit?.hwRatio ?: 1f
+        val split = ZoomGeometry.split(
+            viewSensor = ZoomGeometry.viewToSensor(zoomView() ?: ZoomGeometry.FULL, texCropX, texCropY),
+            lut = zoomLut.entries,
+            texCropX = texCropX,
+            texCropY = texCropY,
+        )
+        zoomSplit = split
+        return kotlin.math.abs(split.hwRatio - previous) > 0.01f
+    }
+
     private fun buildRecordRequest(device: CameraDevice, surface: Surface): CaptureRequest =
         device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
             addTarget(surface)
-            caps?.let { CameraControlApply.applyTo(this, controls, it) }
+            caps?.let {
+                CameraControlApply.applyTo(this, controls, it)
+                CameraControlApply.applyZoom(this, zoomSplit?.hwRatio ?: 1f, it)
+            }
         }.build()
+
+    /** Re-issue the repeating request so a changed hardware zoom takes effect, without rebuilding
+     *  the session. Safe to call from the GL thread. */
+    private fun reissueRepeatingRequest() {
+        val device = cameraDevice ?: return
+        val session = captureSession ?: return
+        val surface = cameraSurface ?: return
+        runCatching {
+            session.setRepeatingRequest(buildRecordRequest(device, surface), null, callbackHandler)
+        }.onFailure { Log.w(TAG, "reissueRepeatingRequest failed", it) }
+    }
 
     private fun backCameraId(): String? = cameraManager.cameraIdList.firstOrNull { id ->
         cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK

@@ -60,24 +60,57 @@ class CameraControlValidationTest {
     }
 
     @Test
-    fun `crop rect must be a sane sub-rect of 0-1`() {
+    fun `a zoom selection is checked under the name the caller sent`() {
+        assertNull(
+            CameraControlValidation.validateSelections(
+                CameraControlKeys(zoomSelectNorm = RectNorm(0.1f, 0.1f, 0.6f, 0.7f)), fullCaps,
+            ),
+        )
+        assertEquals(
+            "zoomSelectNorm",
+            CameraControlValidation.validateSelections(
+                CameraControlKeys(zoomSelectNorm = RectNorm(0.6f, 0.1f, 0.5f, 0.7f)), fullCaps,
+            )?.key,
+        )
+    }
+
+    @Test
+    fun `any magnification is accepted, however deep - only a non-magnification is refused`() {
+        // GL can zoom past the hardware range, and a tight zoom RECT derives an arbitrarily large
+        // ratio which the phone then reports back. The controller echoes the whole key set on the
+        // next patch, so rejecting a large value here would reject a value this device itself
+        // produced - and with it every other control in the same patch.
+        assertNull(CameraControlValidation.validateSelections(CameraControlKeys(zoomRatio = 20f), fullCaps))
+        assertNull(CameraControlValidation.validateSelections(CameraControlKeys(zoomRatio = 500f), fullCaps))
+        assertEquals(
+            "zoomRatio",
+            CameraControlValidation.validateSelections(CameraControlKeys(zoomRatio = 0.5f), fullCaps)?.key,
+        )
+        assertEquals(
+            "zoomRatio",
+            CameraControlValidation.validateSelections(CameraControlKeys(zoomRatio = Float.NaN), fullCaps)?.key,
+        )
+    }
+
+    @Test
+    fun `zoom view must be a sane sub-rect of 0-1`() {
         assertNull(
             CameraControlValidation.validate(
-                CameraControlKeys(cropRegionNorm = RectNorm(0.1f, 0.1f, 0.6f, 0.7f)), fullCaps,
+                CameraControlKeys(zoomViewNorm = RectNorm(0.1f, 0.1f, 0.6f, 0.7f)), fullCaps,
             ),
         )
         // r <= l
         assertEquals(
-            "cropRegionNorm",
+            "zoomViewNorm",
             CameraControlValidation.validate(
-                CameraControlKeys(cropRegionNorm = RectNorm(0.6f, 0.1f, 0.5f, 0.7f)), fullCaps,
+                CameraControlKeys(zoomViewNorm = RectNorm(0.6f, 0.1f, 0.5f, 0.7f)), fullCaps,
             )?.key,
         )
         // out of 0..1
         assertEquals(
-            "cropRegionNorm",
+            "zoomViewNorm",
             CameraControlValidation.validate(
-                CameraControlKeys(cropRegionNorm = RectNorm(0.1f, 0.1f, 1.4f, 0.7f)), fullCaps,
+                CameraControlKeys(zoomViewNorm = RectNorm(0.1f, 0.1f, 1.4f, 0.7f)), fullCaps,
             )?.key,
         )
     }

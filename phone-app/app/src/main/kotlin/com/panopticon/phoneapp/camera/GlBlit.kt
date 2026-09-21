@@ -16,19 +16,25 @@ import java.nio.FloatBuffer
 internal object GlBlit {
     private const val VERTEX_SHADER = """
         uniform mat4 uSTMatrix;
-        uniform vec2 uTexCrop;
+        uniform vec4 uTexRect;
         attribute vec4 aPos;
         attribute vec4 aTex;
         varying vec2 vTex;
         void main() {
             gl_Position = aPos;
             // uSTMatrix maps *quad/display* coords to the buffer coords to sample, so aTex
-            // is already in display space: crop it here, BEFORE the matrix, and uTexCrop's
-            // x/y mean "fraction of the displayed width/height" whatever the matrix then
+            // is already in display space: crop it here, BEFORE the matrix, and uTexRect is
+            // in "fraction of the displayed width/height" terms whatever the matrix then
             // does (some cameras' matrices swap the axes outright rather than just flipping
-            // them - see CameraFraming.axesSwapped, which is what uTexCrop is computed
-            // against). uTexCrop is 1,1 when no crop is needed.
-            vec2 c = vec2(0.5) + (aTex.xy - vec2(0.5)) * uTexCrop;
+            // them - see CameraFraming.axesSwapped, which is what uTexRect is computed
+            // against).
+            //
+            // uTexRect is (left, top, width, height) - an arbitrary sub-rect, not just a
+            // centred crop, because it carries two jobs at once: the fixed output-aspect trim
+            // (which is the whole of it when there is no zoom - see ZoomGeometry.split) and
+            // whatever zoom the camera hardware would not do off-centre. 0,0,1,1 samples the
+            // whole frame.
+            vec2 c = uTexRect.xy + aTex.xy * uTexRect.zw;
             vTex = (uSTMatrix * vec4(c, aTex.zw)).xy;
         }
     """

@@ -478,6 +478,11 @@ type CameraActionResult struct {
 	Message string `json:"message,omitempty"`
 	// InvalidKey is set only with outcome "invalid_key".
 	InvalidKey string `json:"invalidKey,omitempty"`
+	// State is the phone's resulting camera state, on a successful SetCameraControls. The phone
+	// derives state the caller cannot predict - most of all the absolute zoom view a viewer-space
+	// selection composes to, and the hardware/GL split it resolves into - so returning it here
+	// saves the UI a follow-up read to find out what its own request actually did.
+	State *phoneapi.CameraStateResponse `json:"state,omitempty"`
 }
 
 // SetActiveCamera switches which physical camera the phone's pipelines use.
@@ -547,10 +552,10 @@ func (a *App) SetCameraControls(phoneID string, patch phoneapi.CameraStatePatch)
 		return CameraActionResult{Outcome: "other", Message: err.Error()}
 	}
 	client := phoneapi.New(phone.BaseURL, phone.Token)
-	_, err = client.SetCameraState(a.ctxOrBackground(), patch)
+	state, err := client.SetCameraState(a.ctxOrBackground(), patch)
 	switch {
 	case err == nil:
-		return CameraActionResult{OK: true, Outcome: "ok"}
+		return CameraActionResult{OK: true, Outcome: "ok", State: &state}
 	case errors.Is(err, phoneapi.ErrUnreachable):
 		return CameraActionResult{Outcome: "unreachable", Message: "Could not reach the phone."}
 	default:

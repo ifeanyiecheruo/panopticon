@@ -51,24 +51,38 @@ class ViewportRectTest {
     @Test
     fun `a rect drawn while already zoomed composes with the current crop`() {
         // Currently zoomed into the centre quarter of the sensor.
-        val currentCrop = RectNorm(0.25f, 0.25f, 0.75f, 0.75f)
+        val currentView = RectNorm(0.25f, 0.25f, 0.75f, 0.75f)
         // The user draws a box over the left half of what's on screen (which IS that quarter).
         val drawn = RectNorm(0f, 0f, 0.5f, 1f)
         val result = ViewportRect.toSensorSpace(
-            drawn, CameraControlKeys(cropRegionNorm = currentCrop), rotationDegrees = 0,
+            drawn, CameraControlKeys(zoomViewNorm = currentView), rotationDegrees = 0,
         )
         // That's the left half of the current crop, in full-sensor terms: 0.25..0.5 horizontally.
         assertRectEquals(RectNorm(0.25f, 0.25f, 0.5f, 0.75f), result)
     }
 
     @Test
-    fun `zoomRatio alone implies a centred viewport`() {
-        // zoomRatio 2 implies a centred crop covering the middle half of each axis.
-        val drawn = RectNorm(0f, 0f, 1f, 1f) // the whole (already-zoomed) screen
+    fun `zoomRatio does not define the viewport - zoomViewNorm does`() {
+        // The slider ratio is resolved into an absolute zoomViewNorm up in the route
+        // (ZoomGeometry.viewForRatio), precisely so the viewport has ONE definition. A stray
+        // ratio reaching here must not quietly imply a second one.
+        val drawn = RectNorm(0f, 0f, 1f, 1f)
         val result = ViewportRect.toSensorSpace(
             drawn, CameraControlKeys(zoomRatio = 2f), rotationDegrees = 0,
         )
-        assertRectEquals(RectNorm(0.25f, 0.25f, 0.75f, 0.75f), result)
+        assertRectEquals(RectNorm(0f, 0f, 1f, 1f), result)
+    }
+
+    @Test
+    fun `the viewport is exactly what the shader renders`() {
+        // ViewportRect (untransforming a drawn AE/AF rect) and ZoomGeometry (choosing the GL crop)
+        // must agree on what is on screen, or a rect drawn on the preview lands somewhere else.
+        val view = RectNorm(0.1f, 0.2f, 0.6f, 0.7f)
+        val keys = CameraControlKeys(zoomViewNorm = view)
+        assertRectEquals(
+            ZoomGeometry.shaderRect(view, texCropX = 1f, texCropY = 0.75f),
+            ViewportRect.currentViewport(keys, texCropX = 1f, texCropY = 0.75f),
+        )
     }
 
     @Test
@@ -86,10 +100,10 @@ class ViewportRectTest {
 
     @Test
     fun `texCrop composes with an existing zoom viewport`() {
-        val currentCrop = RectNorm(0.25f, 0.25f, 0.75f, 0.75f)
+        val currentView = RectNorm(0.25f, 0.25f, 0.75f, 0.75f)
         val drawn = RectNorm(0f, 0f, 1f, 1f) // the whole (already-zoomed) screen
         val result = ViewportRect.toSensorSpace(
-            drawn, CameraControlKeys(cropRegionNorm = currentCrop), rotationDegrees = 0,
+            drawn, CameraControlKeys(zoomViewNorm = currentView), rotationDegrees = 0,
             texCropX = 1f, texCropY = 0.5f,
         )
         // The stored crop (0.25..0.75, half-extent 0.5) is itself shrunk by texCropY=0.5 around
@@ -99,11 +113,11 @@ class ViewportRectTest {
 
     @Test
     fun `rotation and zoom compose together`() {
-        val currentCrop = RectNorm(0.25f, 0.25f, 0.75f, 0.75f)
+        val currentView = RectNorm(0.25f, 0.25f, 0.75f, 0.75f)
         // Same drawn rect as the 90-degree case above, now while already zoomed in.
         val drawn = RectNorm(0.75f, 0f, 1f, 0.25f)
         val result = ViewportRect.toSensorSpace(
-            drawn, CameraControlKeys(cropRegionNorm = currentCrop), rotationDegrees = 90,
+            drawn, CameraControlKeys(zoomViewNorm = currentView), rotationDegrees = 90,
         )
         // Un-rotate first -> (0, 0, 0.25, 0.25) within the crop, then map that top-left 25% of
         // the current (centre-quarter) crop into full-sensor terms.

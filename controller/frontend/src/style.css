@@ -242,6 +242,11 @@ body{
    ruler pills (z-index 4) so a drag on a pill doesn't start a box. */
 .zoom-picker{position:absolute; inset:0; cursor:crosshair; touch-action:none; z-index:2;}
 .zoom-picker-box{position:absolute; border:1.5px solid var(--accent); background:rgba(90,200,190,.12); pointer-events:none;}
+/* The aspect-fitted zoom box: the smallest rect at the video's aspect ratio containing the drag,
+   which is exactly what the viewport shows on release. Dashed and unfilled so the drag box stays
+   the one being manipulated and this reads as the consequence of it. Sized purely in percentages
+   of the video box, which is why no aspect-ratio arithmetic appears here - see fitToAspect(). */
+.zoom-picker-box.fitted{border-style:dashed; border-color:var(--warn, #e8b339); background:none;}
 
 /* Camera section (Phone detail): switcher + manual adjusters. */
 .cam-chips{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px;}

@@ -19,14 +19,26 @@ import { modeIcon, CycleIcon, ResetIcon, type ModeIconName, type RulerIconName }
  * object literal structurally incompatible. The bound calls accept plain JSON. */
 type RectNorm = { l: number; t: number; r: number; b: number };
 type ControlKeys = {
+  /** Zoom slider: magnification about the CURRENT view's centre, so it never discards the
+   *  framing a zoom rect set up. */
+  zoomRatio?: number;
+  /** Request-only: a zoom rect just drawn, in viewer coordinates. Relative - sending the same
+   *  box twice zooms twice. The phone composes it onto zoomViewNorm and owns every transform. */
+  zoomSelectNorm?: RectNorm;
+  /** The absolute current view, as a fraction of the un-zoomed view. Read back from the phone. */
+  zoomViewNorm?: RectNorm;
   aeExposureCompensation?: number;
   aeLock?: boolean;
+  /** Request-only: a spot-metering rect just drawn, in viewer coordinates. */
+  aeSelectNorm?: RectNorm;
   aeRegionNorm?: RectNorm;
   manualExposure?: boolean;
   sensorExposureTimeNs?: number;
   sensorSensitivityIso?: number;
   manualFocus?: boolean;
   lensFocusDistanceDiopters?: number;
+  /** Request-only: a focus rect just drawn, in viewer coordinates. */
+  afSelectNorm?: RectNorm;
   afRegionNorm?: RectNorm;
   awbMode?: number;
   manualWhiteBalance?: boolean;
@@ -55,6 +67,28 @@ const ROTATIONS = [0, 90, 180, 270];
 
 /** Build a ruler spec: ~520px of tick travel across the whole range, with
  * physical-ruler tick tiers derived from the span. */
+/**
+ * The smallest rect at the *video's* aspect ratio that contains `r` — the second box drawn during
+ * a zoom drag, and exactly what the viewport shows once the selection is applied.
+ *
+ * In viewer-normalised coordinates this is simply the smallest **square** containing the drag:
+ * normalising x by the frame's width and y by its height makes the whole frame a unit square, so
+ * any sub-rect sharing its aspect ratio is a unit-square sub-rect too. That is why there is no
+ * aspect arithmetic here and none in the CSS — percentage width/height of the video box does it.
+ *
+ * Mirrors `ZoomGeometry.fitToAspect` on the phone, which re-fits defensively; both must agree, or
+ * the promised box and the resulting viewport would differ.
+ */
+function fitToAspect(r: RectNorm): RectNorm {
+  const side = Math.min(1, Math.max(r.r - r.l, r.b - r.t));
+  const cx = (r.l + r.r) / 2;
+  const cy = (r.t + r.b) / 2;
+  // Shifted back inside the frame if it would overflow — never shrunk, so the drag stays covered.
+  const l = Math.min(Math.max(cx - side / 2, 0), 1 - side);
+  const t = Math.min(Math.max(cy - side / 2, 0), 1 - side);
+  return { l, t, r: l + side, b: t + side };
+}
+
 function spec(min: number, max: number, ends: [RulerIconName, RulerIconName]): RulerSpec {
   const span = Math.abs(max - min) || 1;
   return {
@@ -82,7 +116,11 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   const [msg, setMsg] = useState<string | null>(null);
   const [invalidKey, setInvalidKey] = useState<string | null>(null);
 
-  const [openMode, setOpenMode] = useState('exposure');
+  const [openMode, setOpenMode] = useState('zoom');
+  /** How much of the current zoom the phone is finishing in software. Tracked separately from
+   *  `view` because the generated Wails model is a class with methods, so it can't be spread to
+   *  patch one field. Above ~1.5x it means the image is being upscaled rather than resolved. */
+  const [glResidual, setGlResidual] = useState(1);
   const [switchBusy, setSwitchBusy] = useState(false);
   const [confirmCam, setConfirmCam] = useState<string | null>(null);
   const [idle, setIdle] = useState(false);
@@ -99,6 +137,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
       setManualOn(cv.state?.manualControlEnabled ?? false);
       setKeys({ ...(cv.state?.keys ?? {}) });
       setRotation(cv.state?.rotationDegrees ?? 0);
+      setGlResidual(cv.state?.glResidual ?? 1);
       setResolution(cv.state?.videoResolution ?? '');
     } else {
       setLoadErr(cv.error || cs.error || 'Could not read camera state from the phone.');
@@ -147,6 +186,15 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
         } else {
           setInvalidKey(null);
           setMsg(null);
+          // Adopt what the phone says the state now IS. It derives things the caller can't
+          // predict - above all the absolute view a viewer-space zoom selection composed to, and
+          // how much of the zoom the hardware took - so without this the zoom ruler would still
+          // read 1.0x after a rect selection. Only on a committed change: mid-drag the user is
+          // still moving the ruler, and a late response landing on top would fight them.
+          if (immediate && r.state) {
+            setKeys({ ...((r.state.keys ?? {}) as ControlKeys) });
+            setGlResidual(r.state.glResidual ?? 1);
+          }
         }
       };
       if (immediate) void send();
@@ -155,11 +203,19 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
     [phoneId],
   );
 
+  /** The request-only, viewer-space fields. These are one-shot *instructions* ("the user just
+   *  drew this box"), never state - so they are sent but deliberately not remembered. Keeping one
+   *  in `keys` would replay it on the next unrelated patch, and because a zoom selection composes
+   *  onto the current view, replaying it would zoom again every single time. */
+  const SELECTION_KEYS = ['zoomSelectNorm', 'aeSelectNorm', 'afSelectNorm'] as const;
+
   const applyKeys = (partial: Partial<ControlKeys>, commit = true) => {
-    const next = { ...keys, ...partial };
-    setKeys(next);
+    const sent = { ...keys, ...partial };
+    const retained = { ...sent };
+    for (const k of SELECTION_KEYS) delete retained[k];
+    setKeys(retained);
     if (!manualOn) setManualOn(true);
-    pushControls(true, next, commit);
+    pushControls(true, sent, commit);
   };
   const setKey = <K extends keyof ControlKeys>(k: K, v: ControlKeys[K], commit = false) =>
     applyKeys({ [k]: v } as Partial<ControlKeys>, commit);
@@ -264,12 +320,13 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   // ---- drag-a-box picker overlay, shared by Exposure / Focus ----
   // The active adjuster names a `rectTarget` (below). Draw a box -> applied on
   // pointer-up -> the box is NOT kept on screen. Esc aborts an in-progress drag.
-  // No zoom rect here - see CameraFraming/CameraControlApply on the phone: zoom is being rebuilt
-  // from scratch. The video element has no fixed aspect-ratio CSS and no object-fit crop (see
-  // style.css) - it just sizes itself to the stream's own aspect ratio, so the picker overlay
-  // (inset:0 on the same box) always lines up with the visible frame with no extra alignment step.
+  // The video element has no fixed aspect-ratio CSS and no object-fit crop (see style.css) - it
+  // just sizes itself to the stream's own aspect ratio, so the picker overlay (inset:0 on the same
+  // box) always lines up with the visible frame with no extra alignment step. That is also what
+  // makes viewer-normalised coordinates meaningful: 0..1 over the overlay IS 0..1 over the frame
+  // the phone is sending, which is the space every rect on this API travels in.
   type RectTarget = {
-    key: 'aeRegionNorm' | 'afRegionNorm';
+    key: 'zoomSelectNorm' | 'aeSelectNorm' | 'afSelectNorm';
     /** keys to clear (set undefined) when this rect is applied — the rect wins. */
     clears: (keyof ControlKeys)[];
     /** transient confirmation shown in the hint line after applying. */
@@ -297,9 +354,11 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
 
   const commitRect = useCallback(
     async (drawn: RectNorm, target: RectTarget) => {
-      // Sent as drawn - relative to whatever's currently on screen (already rotated). The phone
-      // (ViewportRect.toSensorSpace) undoes the current rotation so the region the user saw and
-      // drew is the region that actually gets used.
+      // Sent as drawn, in viewer coordinates - relative to whatever's currently on screen, which
+      // is already rotated and already cropped by any zoom in effect. The phone untransforms it
+      // (ViewportRect / ZoomGeometry), so the region the user saw and drew is the region that
+      // actually gets used. That is why these go in a *SelectNorm field: they are fresh-draw
+      // instructions, not the absolute state they produce.
       const clears: Partial<ControlKeys> = {};
       for (const c of target.clears) clears[c] = undefined;
       applyKeys({ [target.key]: drawn, ...clears } as Partial<ControlKeys>, true);
@@ -333,6 +392,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
 
   const modes: Mode[] = [];
   if (caps) {
+    modes.push({ id: 'zoom', label: 'Zoom', icon: 'zoom' });
     modes.push({ id: 'exposure', label: 'Exposure', icon: 'exposure' });
     if (canFocusDial || canFocusPoint) modes.push({ id: 'focus', label: 'Focus', icon: 'focus' });
     if ((caps.awbModes && caps.awbModes.length > 1) || caps.hasManualWhiteBalance)
@@ -368,6 +428,27 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   if (caps && playing) {
     const C = caps;
     switch (validOpen) {
+      case 'zoom': {
+        // Two ways in, one state. The ruler magnifies about the CURRENT view's centre, so it
+        // never throws away the framing a rect selection set up; the rect picks a region
+        // outright, and selections compound because the phone composes each one onto the view.
+        const zoomHi = C.zoomRatioRange && C.zoomRatioRange.hi > 1 ? C.zoomRatioRange.hi : 4;
+        rulers = [
+          {
+            key: 'zoom',
+            spec: spec(1, zoomHi, ['zoomOut', 'zoomIn']),
+            value: keys.zoomRatio ?? 1,
+            dflt: 1,
+            set: (v, c) => applyKeys({ zoomRatio: v, zoomSelectNorm: undefined }, c),
+          },
+        ];
+        rectTarget = {
+          key: 'zoomSelectNorm',
+          clears: [],
+          applied: 'Zoomed to the selection.',
+        };
+        break;
+      }
       case 'exposure': {
         // Folded: metering mode + (comp ruler | shutter+ISO rulers) + a
         // drag-a-box spot-metering rect. Only capabilities the camera has are
@@ -428,7 +509,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
           }
           if (canSpotMeter) {
             rectTarget = {
-              key: 'aeRegionNorm',
+              key: 'aeSelectNorm',
               clears: canManualExp ? ['sensorExposureTimeNs', 'sensorSensitivityIso'] : [],
               applied: 'Metering spot set.',
             };
@@ -476,7 +557,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
           // Focus-point rect: manual only, and it does NOT leave manual.
           if (canFocusPoint) {
             rectTarget = {
-              key: 'afRegionNorm',
+              key: 'afSelectNorm',
               clears: canFocusDial ? ['lensFocusDistanceDiopters'] : [],
               applied: 'Focus point set.',
             };
@@ -565,6 +646,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   const activeSelect = select;
 
   function renderRectPicker(target: RectTarget): ComponentChildren {
+    const isZoom = target.key === 'zoomSelectNorm';
     return (
       <div
         className={`zoom-picker rect-${target.key}`}
@@ -592,22 +674,50 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
           const dragged = dragRef.current && pickRect;
           dragRef.current = null;
           setPickRect(null); // the drawn box is never kept on screen
-          if (dragged && pickRect && pickRect.r - pickRect.l > 0.04 && pickRect.b - pickRect.t > 0.04) {
+          if (!dragged || !pickRect) return;
+          const w = pickRect.r - pickRect.l;
+          const h = pickRect.b - pickRect.t;
+          if (isZoom) {
+            // A zoom drag is aspect-fitted, so a deliberately wide-and-short box is a perfectly
+            // good selection - judge it on the fitted size, not on both axes independently.
+            if (Math.max(w, h) > 0.05) void commitRect(fitToAspect(pickRect), target);
+          } else if (w > 0.04 && h > 0.04) {
             void commitRect(pickRect, target);
           }
         }}
         onPointerCancel={cancelRect}
       >
         {pickRect && (
-          <div
-            className="zoom-picker-box"
-            style={{
-              left: `${pickRect.l * 100}%`,
-              top: `${pickRect.t * 100}%`,
-              width: `${(pickRect.r - pickRect.l) * 100}%`,
-              height: `${(pickRect.b - pickRect.t) * 100}%`,
-            }}
-          />
+          <>
+            {/* The box actually being dragged. */}
+            <div
+              className="zoom-picker-box"
+              style={{
+                left: `${pickRect.l * 100}%`,
+                top: `${pickRect.t * 100}%`,
+                width: `${(pickRect.r - pickRect.l) * 100}%`,
+                height: `${(pickRect.b - pickRect.t) * 100}%`,
+              }}
+            />
+            {/* For zoom, the second box: the smallest rect at the video's aspect ratio that
+                CONTAINS the drag - so nothing boxed is cropped away. This is the promise, and it
+                is what the viewport shows once the selection is applied. */}
+            {isZoom &&
+              (() => {
+                const f = fitToAspect(pickRect);
+                return (
+                  <div
+                    className="zoom-picker-box fitted"
+                    style={{
+                      left: `${f.l * 100}%`,
+                      top: `${f.t * 100}%`,
+                      width: `${(f.r - f.l) * 100}%`,
+                      height: `${(f.b - f.t) * 100}%`,
+                    }}
+                  />
+                );
+              })()}
+          </>
         )}
       </div>
     );
@@ -760,10 +870,18 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
         {playing && (
           <div className="calib-sub phonecam-hint">
             {rectTarget
-              ? validOpen === 'focus'
-                ? 'Drag the ruler for manual focus, or drag a box on the preview to focus on that area (applied on release, Esc cancels).'
-                : 'Drag the ruler for exposure, or drag a box on the preview to spot-meter that area (applied on release, Esc cancels).'
+              ? validOpen === 'zoom'
+                ? 'Drag the ruler to zoom, or drag a box on the preview to zoom into it — the dashed box is what you will see (applied on release, Esc cancels). The preview runs a few seconds behind.'
+                : validOpen === 'focus'
+                  ? 'Drag the ruler for manual focus, or drag a box on the preview to focus on that area (applied on release, Esc cancels).'
+                  : 'Drag the ruler for exposure, or drag a box on the preview to spot-meter that area (applied on release, Esc cancels).'
               : 'Drag the ruler over the live preview. Values apply to recording too.'}
+            {validOpen === 'zoom' && glResidual > 1.5 && (
+              <div style={{ marginTop: '4px' }}>
+                {`Zoom is being finished in software (${glResidual.toFixed(1)}× of it), ` +
+                  'so it is upscaling rather than resolving more detail.'}
+              </div>
+            )}
             {rectNote && <div style={{ marginTop: '4px' }}>{rectNote}</div>}
             {msg && <div style={{ color: 'var(--warn)', marginTop: '4px' }}>{msg}</div>}
             {invalidKey && !msg && <div style={{ color: 'var(--warn)', marginTop: '4px' }}>Rejected: {invalidKey}</div>}

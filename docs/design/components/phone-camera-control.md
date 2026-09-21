@@ -18,7 +18,8 @@ whichever pipeline is running.
 
 Covers `camera/CameraCatalog.kt`, `camera/CameraLabels.kt`, `camera/CameraCapabilitiesReader.kt`,
 `camera/CameraControlApply.kt`, `camera/CameraControlValidation.kt`, `camera/PhysicalCameraApi28.kt`,
-`camera/CameraModels.kt`, `http/routes/CameraRoutes.kt`.
+`camera/CameraModels.kt`, `camera/ViewportRect.kt`, `camera/ZoomGeometry.kt`,
+`http/routes/CameraRoutes.kt`.
 
 ### 1.3 Context
 
@@ -77,7 +78,10 @@ live preview also governs recording.
 | `CameraLabels` | pure heuristic | wide / ultra-wide / tele / front label from relative focal length; "(auto)" suffix for a bare logical id. Framework-free. |
 | `CameraCapabilitiesReader` | reader | Pure `CameraCharacteristics` read → declared per-key ranges; reads the *physical* sensor's characteristics for a `"0:X"` id. Dedupes `awbModes` / `videoStabilizationModes` / `opticalStabilizationModes`. API-gated keys funnelled through `ZoomApiCompat`. Emits `outputResolutions` (union of MediaRecorder + SurfaceTexture ~16:9 sizes). |
 | `CameraControlValidation` | pure validator | Validate-then-apply: `400 {error, key}` on the first offending key. Framework-free, unit-tested. Does **not** reject an off-centre crop on a `CENTER_ONLY` device — that's the calibration probe's job. |
-| `CameraControlApply` | applier | Merges `CameraControlKeys` into the repeating request and re-issues on change — **no session rebuild**. Invariants: never `SCALER_CROP_REGION` + `CONTROL_ZOOM_RATIO` in one request; always an identity `COLOR_CORRECTION_TRANSFORM` alongside manual WB gains. |
+| `CameraControlApply` | applier | Merges `CameraControlKeys` into the repeating request and re-issues on change — **no session rebuild**. Invariant: always an identity `COLOR_CORRECTION_TRANSFORM` alongside manual WB gains. Carries **no** zoom — see `ZoomGeometry`. |
+| `ZoomGeometry` | pure geometry | Fits a drawn rect to the output aspect, composes selections onto the current view (so they compound), maps the slider about the current centre, and splits the result into a centred hardware magnification + a GL crop, interpolating the measured curve. Frame space makes an output-aspect rect a *square*, so the aspect can't drift across repeated zooms. Framework-free, unit-tested. |
+| `ZoomCalibrationLut` | pure reader | Reduces the persisted calibration sweep to "what magnification did this ratio actually deliver". Prefers the reported ratio over the reported crop — on API 30+ the crop stays at the full array at every ratio, and believing it would drive the hardware to maximum zoom at any zoom level. Framework-free, unit-tested. |
+| `ViewportRect` | pure geometry | Untransforms a viewer-space AE/AF rect back to the sensor through the rotation and the current zoom view — the same view `ZoomGeometry` renders, so a rect lands where the user drew it. |
 | `PhysicalCameraApi28` | isolated API-28 path | `OutputConfiguration.setPhysicalCameraId` + `SessionConfiguration`; its own class so ART only verifies it behind the SDK check. |
 | `CameraModels` | data | `CameraControlKeys`, `RectNorm`, capability DTOs. Field names match [`../http-api.md`](../http-api.md). |
 
@@ -102,6 +106,11 @@ live preview also governs recording.
 ### 3.5 Processing and behaviour
 
 - A camera switch is a disruptive reconfigure; a switch mid-recording ends the current clip.
+- Zoom is split between a **centred** hardware magnification and a GL crop, decided against this
+  phone's own calibration sweep (`ZoomCalibrationLut` → `ZoomGeometry.split`). A centred zoom uses
+  the camera for all of it (measured: 1x–7x at `glResidual` 1.00 on the Pixel 6); a selection
+  hugging an edge gets none, because no centred field of view containing it is zoomed, and GL
+  does the work instead. The hardware is never asked to crop past the selection.
 - `rotationDegrees` (0/90/180/270) and `videoResolution` are accepted + persisted even in
   `standby`, applied when a pipeline next starts.
 - On the Pixel 6: physical sub-camera `0:3`, manual exposure (~900× luma swing), manual WB gains
@@ -115,9 +124,18 @@ live preview also governs recording.
   physical sensors, so the catalog synthesises `"<logical>:<physical>"` ids.
 - **Validate-then-apply, framework-free** — the validator is pure so it can be unit-tested
   exhaustively against capability sets without a device.
-- **Exclusivity rules in the contract** — `zoomRatio` vs `cropRegionNorm`, region vs dial for
+- **Exclusivity rules in the contract** — a zoom rect vs the zoom slider, region vs dial for
   AE/AF, and the identity `COLOR_CORRECTION_TRANSFORM` requirement are all reproduced-quirk
   driven ([`../../quirks/manual-camera-controls.md`](../../quirks/manual-camera-controls.md),
   [`../../quirks/calibration-zoom.md`](../../quirks/calibration-zoom.md)).
+- **Rects are viewer-space on the wire, absolute on the phone** — the controller sends what the
+  user drew over the preview and nothing else; `ViewportRect` + `ZoomGeometry` own every
+  transform. A viewer-space rect is a *relative* instruction, so it travels in a request-only
+  `*SelectNorm` field, separate from the absolute state it produces
+  ([`../http-api.md`](../http-api.md), "Coordinate spaces").
+- **Zoom is not a capture key** — it is split between a hardware crop and a GL crop by
+  `ZoomGeometry`, so it lives with the pipelines' shader rect rather than in
+  `CameraControlApply`. The split never lets the hardware crop past the selection; GL makes up the
+  rest by upscaling, which adds no detail (the capture resolution is deliberately not raised).
 - **State spans pipelines** — one persisted `CameraControlSpec` governs both `record` and
   `live`, so a value tuned live also applies to recording.

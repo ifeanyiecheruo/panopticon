@@ -101,28 +101,51 @@ data class CameraCapabilities(
 
 /**
  * The concrete manual-control key set. A null field means "leave this control
- * on auto / HAL default". `zoomRatio` and `cropRegionNorm` are mutually
- * exclusive at apply time (see [CameraControlApply]) - `cropRegionNorm` wins
- * when both are set.
+ * on auto / HAL default".
+ *
+ * Rect keys come in two flavours, and the split is load-bearing (see
+ * docs/design/http-api.md, "Coordinate spaces, and why some keys are request-only"):
+ * the `*SelectNorm` fields are **request-only** and always mean "the user just drew this, in
+ * viewer coordinates", while [zoomViewNorm] / [aeRegionNorm] / [afRegionNorm] are the **absolute**
+ * state that results. A selection is therefore relative - drawing the same box twice zooms twice -
+ * which is precisely what a single field shared between request and response could not express.
  */
 @Serializable
 data class CameraControlKeys(
+    /** Zoom slider: magnification relative to the un-zoomed view, applied about the *current*
+     *  view's centre so a slider nudge never discards a rect selection's framing. Request-only in
+     *  effect - on the way out it is recomputed from [zoomViewNorm]. */
     val zoomRatio: Float? = null,
-    /** Off-centre zoom rect as a fraction of the sensor active array. */
-    val cropRegionNorm: RectNorm? = null,
+    /** **Request-only.** A freshly-drawn zoom rect in viewer coordinates. Fitted to the output
+     *  aspect ratio, composed onto [zoomViewNorm], then discarded - it is never persisted or
+     *  returned. Wins over [zoomRatio] when both are sent. */
+    val zoomSelectNorm: RectNorm? = null,
+    /** The absolute current view, as a fraction of the **un-zoomed** view (frame space,
+     *  pre-rotation). The single source of truth for zoom; [ZoomGeometry] turns it into a hardware
+     *  request plus a GL crop, and [ViewportRect] uses it as the viewport that AE/AF rects drawn
+     *  over the live preview are relative to. Null = un-zoomed. */
+    val zoomViewNorm: RectNorm? = null,
     val aeExposureCompensation: Int? = null,
     /** AE metering freeze - not a manual-exposure dial (see docs/quirks/manual-camera-controls.md). */
     val aeLock: Boolean? = null,
-    /** Spot-metering rect (`CONTROL_AE_REGIONS`). Needs AE on, so it wins over
-     *  [manualExposure] at apply time. Gated on [CameraCapabilities.maxAeRegions]. */
+    /** **Request-only.** A freshly-drawn spot-metering rect in viewer coordinates; the phone
+     *  untransforms it (rotation + the current zoom view) into [aeRegionNorm]. */
+    val aeSelectNorm: RectNorm? = null,
+    /** Spot-metering rect (`CONTROL_AE_REGIONS`) in sensor active-array coordinates - the result
+     *  of untransforming [aeSelectNorm]. Needs AE on, so it wins over [manualExposure] at apply
+     *  time. Gated on [CameraCapabilities.maxAeRegions]. */
     val aeRegionNorm: RectNorm? = null,
     val manualExposure: Boolean? = null,
     val sensorExposureTimeNs: Long? = null,
     val sensorSensitivityIso: Int? = null,
     val manualFocus: Boolean? = null,
     val lensFocusDistanceDiopters: Float? = null,
-    /** Tap-to-focus rect (`CONTROL_AF_REGIONS` + continuous AF). Needs AF on, so
-     *  it wins over [manualFocus] at apply time. Gated on [CameraCapabilities.maxAfRegions]. */
+    /** **Request-only.** A freshly-drawn focus rect in viewer coordinates; the phone untransforms
+     *  it (rotation + the current zoom view) into [afRegionNorm]. */
+    val afSelectNorm: RectNorm? = null,
+    /** Tap-to-focus rect (`CONTROL_AF_REGIONS` + continuous AF) in sensor active-array
+     *  coordinates - the result of untransforming [afSelectNorm]. Needs AF on, so it wins over
+     *  [manualFocus] at apply time. Gated on [CameraCapabilities.maxAfRegions]. */
     val afRegionNorm: RectNorm? = null,
     /** `CONTROL_AWB_MODE` (auto / a preset like incandescent / daylight / …). See [CameraCapabilities.awbModes].
      *  Mutually exclusive with [manualWhiteBalance] at apply time - manual gains win. */
@@ -164,6 +187,12 @@ data class CameraStateResponse(
     val videoResolution: String,
     val manualControlEnabled: Boolean,
     val keys: CameraControlKeys,
+    /** What the HAL was actually asked to zoom to, once [ZoomGeometry.split] limited it to a crop
+     *  that doesn't cut into the requested view. `1.0` = no hardware zoom. */
+    val hwZoomRatio: Float = 1f,
+    /** The magnification GL makes up on top of [hwZoomRatio]. Above `1.0` this is a plain upscale
+     *  of already-captured pixels - no new detail - so the UI can warn when zoom is getting soft. */
+    val glResidual: Float = 1f,
 )
 
 @Serializable

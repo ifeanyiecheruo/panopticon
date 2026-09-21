@@ -499,9 +499,13 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 		}
 		// Reject obviously bad keys so the controller's 400-path is exercised.
 		if body.Keys != nil {
-			if z, ok := body.Keys["zoomRatio"].(float64); ok && (z < 1.0 || z > 8.0) {
+			// The reachable total is the declared hardware range with GL's upscale on top, so the
+			// bound is 8x hardware * 8x GL - same rule as the phone. A tight zoom RECT can derive
+			// a ratio well past the hardware max, and the controller echoes that ratio back on
+			// the next patch, so a bare 8.0 cap here would 400 a perfectly legal state.
+			if z, ok := body.Keys["zoomRatio"].(float64); ok && (z < 1.0 || z > 64.0) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{
-					"error": "must be in 1.0..8.0", "key": "zoomRatio",
+					"error": "must be in 1.0..64.0 (hardware range plus GL upscale)", "key": "zoomRatio",
 				})
 				return
 			}
@@ -534,6 +538,9 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 			resChanged = true
 		}
 		if body.Keys != nil {
+			// Turn the request-only viewer-space selection into absolute state, against the
+			// PREVIOUS view - the user drew on the frame that was on screen before this patch.
+			resolveZoomKeys(body.Keys, s.controlKeys, s.rotationDegrees)
 			s.controlKeys = body.Keys
 		}
 		live := s.mode == "live"
@@ -555,12 +562,15 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 	if keys == nil {
 		keys = map[string]any{}
 	}
+	hwZoom, glResidual := zoomSplit(keys, s.manualControlEnabled)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cameraId":             s.activeCameraID,
 		"rotationDegrees":      s.rotationDegrees,
 		"videoResolution":      s.videoResolution,
 		"manualControlEnabled": s.manualControlEnabled,
 		"keys":                 keys,
+		"hwZoomRatio":          hwZoom,
+		"glResidual":           glResidual,
 	})
 }
 
