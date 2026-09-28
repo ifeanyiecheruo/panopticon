@@ -16,7 +16,7 @@ Where a decision has since been implemented, superseded, or partly deferred, the
 | [0004](0004-recording-pipeline.md) | Recording pipeline architecture |
 | [0005](0005-motion-detection.md) | Motion detection scope |
 | [0006](0006-segments-clips-and-tombstones.md) | Segments, clips, and the tombstone model |
-| [0007](0007-live-preview-plain-hls.md) | Live preview — plain HLS |
+| [0007](0007-live-preview-plain-hls.md) | Live preview — plain HLS, then LL-HLS |
 | [0008](0008-camera-control-and-multi-camera.md) | Camera selection and manual controls |
 | [0009](0009-calibration-model.md) | Calibration model |
 | [0010](0010-mode-state-machine.md) | Phone mode state machine |

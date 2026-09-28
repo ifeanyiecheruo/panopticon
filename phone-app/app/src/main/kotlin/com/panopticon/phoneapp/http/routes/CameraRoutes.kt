@@ -1,6 +1,7 @@
 package com.panopticon.phoneapp.http.routes
 
 import android.content.Context
+import android.hardware.camera2.CameraManager
 import com.panopticon.phoneapp.CameraConfigChange
 import com.panopticon.phoneapp.calibration.RectNorm
 import com.panopticon.phoneapp.camera.CameraCapabilities
@@ -13,6 +14,7 @@ import com.panopticon.phoneapp.camera.CamerasResponse
 import com.panopticon.phoneapp.camera.ActiveCameraRequest
 import com.panopticon.phoneapp.camera.ActiveCameraResponse
 import com.panopticon.phoneapp.camera.CameraStatePatch
+import com.panopticon.phoneapp.camera.RecordingSizeSelection
 import com.panopticon.phoneapp.camera.CameraStateResponse
 import com.panopticon.phoneapp.camera.ViewportRect
 import com.panopticon.phoneapp.camera.ZoomCalibrationLut
@@ -20,6 +22,8 @@ import com.panopticon.phoneapp.camera.ZoomGeometry
 import com.panopticon.phoneapp.calibration.CalibrationStore
 import com.panopticon.phoneapp.http.ErrorBody
 import com.panopticon.phoneapp.state.AppConfig
+import com.panopticon.phoneapp.state.AppMode
+import com.panopticon.phoneapp.state.AppState
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.request.receive
@@ -28,6 +32,7 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import kotlinx.serialization.Serializable
+import kotlin.math.abs
 
 /** `POST /api/camera/state` rejection body - names the offending key so the controller can point at it. */
 @Serializable
@@ -52,6 +57,7 @@ fun Route.cameraRoutes(
     androidContext: Context,
     cameraCatalog: CameraCatalog,
     appConfig: AppConfig,
+    appState: AppState,
     onCameraConfigChanged: (CameraConfigChange) -> Unit,
     /** The crop the live pipeline is currently rendering with, for mapping drawn rects back to
      *  the sensor - see [resolveSelections]. Null when no preview is running. */
@@ -107,6 +113,19 @@ fun Route.cameraRoutes(
         post("/api/camera/state") {
             val patch = call.receive<CameraStatePatch>()
             val cfg = appConfig.get()
+
+            if (appState.mode.value == AppMode.RECORD) {
+                frozenWhileRecording(patch, cfg.videoResolution, cfg.cameraControls)?.let { key ->
+                    call.respond(
+                        HttpStatusCode.Conflict,
+                        ControlErrorBody(
+                            "frozen while recording: POST /api/mode {\"mode\":\"standby\"} first",
+                            key,
+                        ),
+                    )
+                    return@post
+                }
+            }
 
             val id = cameraCatalog.resolveActiveId(cfg.activeCameraId)
             if (id == null) {
@@ -286,12 +305,75 @@ private fun cameraStateResponse(
         cameraId = id,
         rotationDegrees = rotationDegrees,
         videoResolution = videoResolution,
+        recordingResolution = recordingResolutionFor(androidContext, id, videoResolution, spec),
         manualControlEnabled = spec.manualControlEnabled,
         keys = spec.keys,
         hwZoomRatio = split.hwRatio,
         glResidual = split.glResidual,
     )
 }
+
+/**
+ * What RECORD would capture at, for reporting only - the pipeline makes the same call itself at
+ * start-up via [RecordingSizeSelection.recordModeSizes]. Reported because the controller
+ * otherwise shows a resolution the recordings do not have: it sets the ceiling, the zoom decides
+ * what is spent against it. Falls back to [videoResolution] when the camera can't be queried,
+ * which is also what the pipeline falls back to.
+ */
+private fun recordingResolutionFor(
+    androidContext: Context,
+    id: String,
+    videoResolution: String,
+    spec: CameraControlSpec,
+): String {
+    val cm = androidContext.getSystemService(CameraManager::class.java) ?: return videoResolution
+    val sizes = RecordingSizeSelection.recordModeSizes(
+        cm,
+        id,
+        videoResolution,
+        RecordingSizeSelection.viewFractionOf(spec.keys.zoomViewNorm, spec.manualControlEnabled),
+    ) ?: return videoResolution
+    return "${sizes.recording.width}x${sizes.recording.height}"
+}
+
+/**
+ * Zoom and resolution are frozen while RECORD runs, and nothing else is.
+ *
+ * Both of them decide the recording size, which is fixed when the pipeline starts: honouring a
+ * change would mean rebuilding the camera session mid-recording - a real hole in the footage, and
+ * segments of two different sizes inside one clip. Deferring instead of rebuilding is the whole
+ * reason the size can be chosen from the zoom at all.
+ *
+ * Exposure, focus and white balance are deliberately *not* frozen. They do not affect how many
+ * real pixels the frame carries, they apply through the light `CONTROLS` path (a repeating-request
+ * re-issue, no rebuild), and locking them would mean a badly-exposed camera could not be corrected
+ * without first stopping the recording.
+ */
+private fun frozenWhileRecording(
+    patch: CameraStatePatch,
+    storedResolution: String,
+    stored: CameraControlSpec,
+): String? {
+    val storedView = stored.keys.zoomViewNorm ?: ZoomGeometry.FULL
+    fun sameRect(a: RectNorm, b: RectNorm) =
+        abs(a.l - b.l) <= RECT_EPS && abs(a.t - b.t) <= RECT_EPS &&
+            abs(a.r - b.r) <= RECT_EPS && abs(a.b - b.b) <= RECT_EPS
+    return when {
+        patch.videoResolution != null && patch.videoResolution != storedResolution -> "videoResolution"
+        // A selection is an instruction, not a value: it composes onto the current view, so
+        // re-sending the same box zooms again. There is no such thing as an unchanged one.
+        patch.keys?.zoomSelectNorm != null -> "zoomSelectNorm"
+        patch.keys?.zoomRatio?.let { abs(it - ZoomGeometry.ratioOf(storedView)) > RATIO_EPS } == true -> "zoomRatio"
+        patch.keys?.zoomViewNorm?.let { !sameRect(it, storedView) } == true -> "zoomViewNorm"
+        else -> null
+    }
+}
+
+/** How close an echoed zoom value has to be to the stored one to count as "unchanged". Both are
+ *  floats that have been through a serialise/parse round trip, so exact equality is the wrong
+ *  test. */
+private const val RATIO_EPS = 1e-3f
+private const val RECT_EPS = 1e-4f
 
 /** "<w>x<h>" -> the pair, falling back to 720p so a malformed value can't break a state read. */
 private fun parseSize(s: String): Pair<Int, Int> {

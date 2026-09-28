@@ -7,7 +7,10 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaExtractor
@@ -29,8 +32,12 @@ import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import android.view.Surface
-import com.panopticon.phoneapp.motion.MotionDetector
+import com.panopticon.phoneapp.motion.CameraDisturbance
+import com.panopticon.phoneapp.motion.MotionAnalyzer
+import com.panopticon.phoneapp.motion.MotionGate
 import com.panopticon.phoneapp.state.AppConfig
+import com.panopticon.phoneapp.state.ThermalReader
+import com.panopticon.phoneapp.state.ThermalStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -63,9 +70,32 @@ private const val DEQUEUE_TIMEOUT_US = 10_000L
 private const val FIRST_OUTPUT_TIMEOUT_MS = 5_000L
 private const val OUTPUT_STALL_TIMEOUT_MS = 4_000L
 private const val SUPERVISE_POLL_MS = 200L
-private const val DETECTOR_REFRESH_MS = 5_000L
 private const val READBACK_W = 160
 private const val READBACK_H = 120
+private const val ROLE = "record"
+
+/** Capture results a fresh pipeline must deliver before its start-up disturbance is over - about
+ *  two thirds of a second at 30fps, which is enough for auto-exposure and white balance to settle
+ *  on both test devices. */
+private const val PIPELINE_SETTLE_RESULTS = 20L
+
+/** How often to sample thermal state across a run. Slow on purpose: the effect being chased
+ *  builds over minutes, and PowerManager rate-limits the headroom read to once a second. */
+private const val THERMAL_SAMPLE_MS = 10_000L
+
+/**
+ * Analyse one frame in every N for motion.
+ *
+ * `1` is the original behaviour: every frame, and a synchronous `glReadPixels` flush on every
+ * frame with it. `0` disables motion detection altogether - **diagnostic only**, since nothing
+ * will ever record; it exists so the readback can be removed from the frame loop to prove
+ * whether it, rather than `eglSwapBuffers` backpressure from the encoder, is what starves the
+ * camera's buffer queue.
+ *
+ * At 30fps, 3 gives motion detection a 100ms cadence, which is far inside what a fixed camera
+ * needs, and cuts the number of pipeline flushes by two thirds.
+ */
+private const val ANALYSIS_FRAME_INTERVAL = 1
 
 /**
  * Camera2 + **GPU texture fan-out** recording pipeline. Motion-gated, gapless, with pre-roll.
@@ -95,6 +125,10 @@ class CameraGlPipeline(
     private val rotationIntervalMs: Long = 10_000L,
     private val trailerMs: Long = 5_000L,
     private val preRollMs: Long = 3_000L,
+    private val healthRegistry: CameraHealthRegistry = CameraHealthRegistry(),
+    /** See [ANALYSIS_FRAME_INTERVAL]. A parameter so an experiment can vary it without touching
+     *  the frame loop. */
+    private val analysisFrameInterval: Int = ANALYSIS_FRAME_INTERVAL,
     private val onSegmentFinished: (file: File, createdAtMs: Long, durationMs: Long, width: Int, height: Int) -> Unit,
     private val onHealthChanged: (Boolean) -> Unit,
     private val onPhaseChanged: (recording: Boolean) -> Unit = {},
@@ -110,10 +144,20 @@ class CameraGlPipeline(
     // Zoom is split between a centred hardware magnification and a GL crop (ZoomGeometry.split),
     // against this phone's own calibration sweep. The split depends on the aspect trim, which only
     // exists once frames flow, so it is recomputed on the first frame as well as on every control
-    // change. Reading a stale split for a frame or two after a change is harmless: the hardware
-    // takes a few frames to act on a new zoom anyway.
+    // change.
+    //
+    // Requested and delivered are deliberately separate. A CONTROL_ZOOM_RATIO change takes ~10
+    // frames to reach the buffer (on the Pixel 6 via a reconfigure that drops a frame or two),
+    // and the shader used to adopt the requested split immediately - normalising the view against
+    // a crop the buffer did not hold yet, which renders the wrong region, magnified further and
+    // soft, until the hardware lands and the picture snaps. That snap is a whole-frame change, so
+    // motion detection recorded it: it accounted for the majority of all clips (see
+    // docs/status/camera-stall-investigation.md). So the shader now renders against what
+    // CaptureResults say the camera is actually delivering ([zoomFeedback]), which makes every
+    // intermediate frame correct - the view holds still and merely sharpens.
     @Volatile private var zoomLut: ZoomCalibrationLut.Lut = ZoomCalibrationLut.Lut.NONE
-    @Volatile private var zoomSplit: ZoomGeometry.Split? = null
+    @Volatile private var requestedSplit: ZoomGeometry.Split? = null
+    private val zoomFeedback = ZoomFeedback()
     @Volatile private var resolvedCameraId: String? = null
 
     /** Set when [cameraId] is a "<logical>:<physical>" target: the session's outputs are pinned
@@ -174,9 +218,20 @@ class CameraGlPipeline(
     @Volatile private var texCropFinalized = false
     private val readback = ByteBuffer.allocateDirect(READBACK_W * READBACK_H * 4).order(ByteOrder.nativeOrder())
     private val lumaPlane = ByteArray(READBACK_W * READBACK_H)
-    @Volatile private var detector = MotionDetector(appConfig.get().motionSensitivity)
-    private var detectorRefreshedAt = 0L
+
+    // Motion detection, and the one channel the camera half of this class uses to talk to it.
+    // Everything below that reconfigures, re-requests or restarts the camera brackets itself in
+    // beginDisturbance/endDisturbance, so a change *we* made is never read as something moving in
+    // the scene. Declared as the interface, not the implementation, so that stays true by
+    // construction: the camera side cannot reach past it into the detector.
+    private val analyzer = MotionAnalyzer(sensitivity = { appConfig.get().motionSensitivity })
+    private val motionGate: MotionGate = analyzer
     @Volatile private var lastMotionReported = false
+
+    /** Re-pointed at the real camera's record once [openCameraIfNeeded] resolves an id; until
+     *  then a placeholder, so nothing on a failure path has to null-check a counter. */
+    @Volatile private var health: CameraHealth =
+        healthRegistry.forCamera(cameraId?.takeIf { it.isNotBlank() } ?: "(unresolved)", ROLE)
 
     // encoder
     private var encoder: MediaCodec? = null
@@ -207,6 +262,40 @@ class CameraGlPipeline(
     private val fatal = AtomicReference<String?>(null)
     private val lastOutputMs = AtomicLong(0)
 
+    // Three independent liveness witnesses, one per stage, so a stall can be attributed rather
+    // than merely detected: the camera handing us a buffer (GL thread), the camera telling us it
+    // captured something (callback thread), and the encoder emitting bytes (drain thread). Only
+    // the last of these drives the supervisor's timeout; the other two exist to say which half
+    // died first. See recordStallForensics().
+    private val lastFrameMs = AtomicLong(0)
+    private val lastCaptureResultMs = AtomicLong(0)
+    private val framesThisRun = AtomicLong(0)
+    private val captureResultsThisRun = AtomicLong(0)
+    private val encodedThisRun = AtomicLong(0)
+    private val runFirstFrameMs = AtomicLong(0)
+    /** Buffers the camera could not deliver during this run - the counter that tracks the
+     *  starvation directly rather than only its end state. */
+    private val bufferLostThisRun = AtomicLong(0)
+    /** Frames seen by the GL thread, for [analysisFrameInterval]. GL thread only. */
+    private var analysisFrameCounter = 0L
+    /** Frames handed to the encoder's input surface, and the ones eglSwapBuffers refused.
+     *  `lastFrameMs` only says the GL thread is still turning - it is stamped before the draw.
+     *  A swap that fails leaves it fresh while the encoder receives nothing, which is
+     *  indistinguishable from an encoder that has wedged unless the return value is read. It
+     *  never was: both calls discarded it. GL thread only. */
+    private val swapsThisRun = AtomicLong(0)
+    private val swapFailuresThisRun = AtomicLong(0)
+    private var lastSwapError = 0
+
+    // Thermal, sampled by the supervisor - see sampleThermal(). Only ever touched from there and
+    // from the failure path, both on the supervisor coroutine.
+    private var peakThermalSeverity = -1
+    private var lastThermalSeverity = Int.MIN_VALUE
+
+    /** Last AE target FPS range the HAL reported, so the gauge is written on change rather than
+     *  on every capture result. Touched only from the camera callback thread. */
+    @Volatile private var lastAeFpsRange: android.util.Range<Int>? = null
+
     private class Frame(val bytes: ByteArray, val ptsUs: Long, val flags: Int, val key: Boolean)
 
     fun start() {
@@ -235,12 +324,25 @@ class CameraGlPipeline(
             try {
                 fatal.set(null)
                 lastOutputMs.set(0)
+                zoomFeedback.clear()
+                // Everything from here to the first settled frame is ours: the camera opens, the
+                // session configures, exposure and white balance converge from nothing, the
+                // aspect trim is measured on the first frame and the zoom is requested off the
+                // back of it. None of it is the scene moving.
+                motionGate.beginDisturbance(CameraDisturbance.PIPELINE_START)
                 openCameraIfNeeded()
+                health.runStarted()
+                peakThermalSeverity = -1
                 recordingSize = pickRecordingSize()
                 sourceSize = pickSourceSize(recordingSize)
                 texCropFinalized = false
                 rotationDegrees = CameraFraming.normalizedRotation(appConfig.get().rotationDegrees)
                 outputSize = CameraFraming.rotatedOutputSize(recordingSize, rotationDegrees)
+                health.gauge("recordingSize", "${recordingSize.width}x${recordingSize.height}")
+                health.gauge("sourceSize", "${sourceSize.width}x${sourceSize.height}")
+                health.gauge("outputSize", "${outputSize.width}x${outputSize.height}")
+                health.gauge("rotationDegrees", rotationDegrees)
+                health.gauge("analysisFrameInterval", analysisFrameInterval)
                 setupGlAndEncoder()
                 startDrain()
                 openSessionAndRequest()
@@ -248,22 +350,177 @@ class CameraGlPipeline(
                 attempt = 0
                 superviseUntilError()
             } catch (e: Exception) {
-                Log.e(TAG, "pipeline error (attempt ${attempt + 1})", e)
+                val reason = classifyFailure(e)
+                Log.e(TAG, "pipeline error (attempt ${attempt + 1}, reason=$reason)", e)
+                val forensics = recordStallForensics(reason)
+                health.runEnded(reason, "${e.message} | $forensics")
                 onHealthChanged(false)
                 runCatching { teardown() }
-                detector.reset()
+                analyzer.reset()
                 attempt++
+                health.gauge("restartAttempt", attempt)
                 delay(minOf(500L * attempt, 5000L))
             }
         }
     }
 
+    /**
+     * A stable short name for what ended a run, so `GET /api/camera/health` can report a mean
+     * uptime *per cause* rather than one number that averages a stall together with a mode
+     * switch. The message text still goes along as the event's detail.
+     */
+    private fun classifyFailure(e: Exception): String {
+        // A cancelled supervisor job is us calling stop() (a mode switch), not a fault - it must
+        // not land in the same bucket as a stall or the mean uptime per cause stops meaning
+        // anything. See docs/quirks/manual-camera-controls.md.
+        if (e is kotlinx.coroutines.CancellationException) return "stopped"
+        val m = e.message ?: return "unknown"
+        return when {
+            m.startsWith("encoder output stalled") -> "stall"
+            m.startsWith("encoder produced no output") -> "noFirstOutput"
+            m.startsWith("camera disconnected") -> "cameraDisconnected"
+            m.startsWith("camera error") -> "cameraError"
+            m.startsWith("camera open error") -> "cameraOpenError"
+            m.startsWith("session") -> "sessionFailed"
+            m.startsWith("updateTexImage") -> "updateTexImage"
+            m.startsWith("dequeueOutputBuffer") -> "dequeueOutputBuffer"
+            else -> "unknown"
+        }
+    }
+
+    /**
+     * The state of both halves of the pipeline at the moment it was declared dead.
+     *
+     * This is the measurement the stall investigation turns on. The supervisor only knows that
+     * *encoded output* stopped, which two very different faults produce: the camera stopped
+     * handing us frames (a HAL or buffer problem, nothing we can fix in the encoder), or frames
+     * kept arriving and the encoder or GL thread stopped consuming them (ours). Capture results
+     * are the third, independent witness - if they keep coming while frames do not, the camera
+     * thinks it is still capturing and the buffers are going somewhere else.
+     *
+     * Recorded as ages rather than absolute times because that is what is comparable across the
+     * dozens of restarts an hour this is meant to characterise.
+     */
+    /**
+     * Returns a one-line summary of the same forensics, for the *event* record.
+     *
+     * The gauges below are a last-known-value store, so a burst of failures leaves only the last
+     * one's numbers - and a burst is exactly when they matter. That cost us the first clean stall
+     * of the evening: it was overwritten by an `updateTexImage` failure 18 seconds later, before
+     * the sampler next looked. The returned string goes into the `runEnded` event, which lives in
+     * a ring, so every failure keeps its own numbers regardless of how closely they land.
+     */
+    private fun recordStallForensics(reason: String): String {
+        val now = SystemClock.elapsedRealtime()
+        fun age(t: Long) = if (t == 0L) -1L else now - t
+        health.gauge("lastFailure.reason", reason)
+        health.gauge("lastFailure.encodedOutputAgeMs", age(lastOutputMs.get()))
+        health.gauge("lastFailure.cameraFrameAgeMs", age(lastFrameMs.get()))
+        health.gauge("lastFailure.captureResultAgeMs", age(lastCaptureResultMs.get()))
+        health.gauge("lastFailure.framesThisRun", framesThisRun.get())
+        health.gauge("lastFailure.captureResultsThisRun", captureResultsThisRun.get())
+        health.gauge("lastFailure.encodedFramesThisRun", encodedThisRun.get())
+        health.gauge("lastFailure.swapsThisRun", swapsThisRun.get())
+        health.gauge("lastFailure.swapFailuresThisRun", swapFailuresThisRun.get())
+        health.gauge("lastFailure.measuredFps", "%.2f".format(measuredFps()))
+        health.gauge("lastFailure.activeDisturbances", analyzer.activeDisturbances().toString())
+        val t = sampleThermal()
+        health.gauge("lastFailure.thermalLevel", t.level)
+        health.gauge("lastFailure.thermalSeverity", t.severity)
+        health.gauge("lastFailure.thermalHeadroom", t.headroom?.let { "%.3f".format(it) } ?: "n/a")
+        health.gauge("lastFailure.thermalPeakThisRun", peakThermalSeverity)
+        publishMotionGauges()
+        // Ages, not absolute times: which of the three stages went quiet first is the whole
+        // diagnostic, and only the differences between them carry that.
+        return "frameAge=${age(lastFrameMs.get())} resultAge=${age(lastCaptureResultMs.get())}" +
+            " encAge=${age(lastOutputMs.get())} frames=${framesThisRun.get()}" +
+            " results=${captureResultsThisRun.get()} enc=${encodedThisRun.get()}" +
+            " fps=${"%.2f".format(measuredFps())} thermal=${t.level}/${t.headroom ?: "n/a"}" +
+            " bufLost=${bufferLostThisRun.get()} swaps=${swapsThisRun.get()}" +
+            " swapFail=${swapFailuresThisRun.get()}"
+    }
+
+    /**
+     * Motion-gate and zoom-readback totals, sampled at the few moments worth paying for rather
+     * than per frame.
+     *
+     * `motion.disturbancesExpired` above zero is the one to watch: it means a disturbance was
+     * dropped by its timeout instead of being ended by whoever began it, which is a pairing bug
+     * in this file, not a camera fault. `zoom.unreadable` dominating `zoom.readable` means this
+     * device tells us nothing about where its zoom actually is, and the crop is back to trusting
+     * the request.
+     */
+    /**
+     * Read the device's thermal state into the health record, noting a change as an event.
+     *
+     * The *peak* is kept per run alongside the current value because the two answer different
+     * questions: whether the device was hot when it died, and whether it had been hot at all
+     * during the run leading up to it. A device that throttles, sheds load and cools back down
+     * before the stall would show a benign current reading and a damning peak.
+     */
+    private fun sampleThermal(): ThermalStatus {
+        val t = ThermalReader.read(context)
+        if (!t.supported) {
+            health.gauge("thermal.supported", "false")
+            return t
+        }
+        health.gauge("thermal.severity", t.severity)
+        health.gauge("thermal.level", t.level)
+        // Stamped because these are only written while a pipeline is running. In STANDBY they
+        // freeze at their last value, and a frozen "critical" reads exactly like a live one -
+        // which is how a cooled phone got reported as still hot. /api/status reads thermal live;
+        // this is the record of when *these* numbers were true.
+        health.gauge("thermal.sampledAtMs", System.currentTimeMillis())
+        t.headroom?.let { health.gauge("thermal.headroom", "%.3f".format(it)) }
+        if (t.severity > peakThermalSeverity) {
+            peakThermalSeverity = t.severity
+            health.gauge("thermal.peakSeverityThisRun", t.severity)
+        }
+        if (t.severity != lastThermalSeverity) {
+            // Into the recent ring, so the *timing* of a climb relative to the stall is visible
+            // and not just the final value.
+            health.event("thermalChanged", "${t.level} (${t.severity}) headroom=${t.headroom ?: "n/a"}")
+            lastThermalSeverity = t.severity
+        }
+        return t
+    }
+
+    private fun publishMotionGauges() {
+        health.gauge("motion.framesAnalysed", analyzer.framesAnalysed)
+        health.gauge("motion.framesSuppressed", analyzer.framesSuppressed)
+        health.gauge("motion.disturbances", analyzer.disturbances)
+        health.gauge("motion.disturbancesExpired", analyzer.disturbancesExpired)
+        health.gauge("zoom.readable", zoomFeedback.readable)
+        health.gauge("zoom.unreadable", zoomFeedback.unreadable)
+        health.gauge("zoom.requestedRatio", requestedSplit?.hwRatio ?: 1f)
+    }
+
     private suspend fun superviseUntilError() {
         val upAt = SystemClock.elapsedRealtime()
+        var nextThermalSampleMs = 0L
         while (running) {
             fatal.get()?.let { throw IllegalStateException(it) }
             val out = lastOutputMs.get()
             val now = SystemClock.elapsedRealtime()
+            // A slow thermal time series across the whole run, recording or not. This is what
+            // turns "the pipeline dies more often at 4K" into either "because it is cooking" or
+            // "and the device is stone cold, so look elsewhere" - and it has to cover the quiet
+            // stretches too, since most of a run writes nothing to disk.
+            if (now >= nextThermalSampleMs) {
+                nextThermalSampleMs = now + THERMAL_SAMPLE_MS
+                sampleThermal()
+                // The motion-gate and zoom-feedback totals ride along on the same tick. They used
+                // to be published only on a stall or a finished segment, which meant the counters
+                // that say whether the false-clip guards are working at all were invisible for as
+                // long as they were working - readable only once something had gone wrong. A
+                // guard you cannot watch while it holds is a guard you cannot evaluate.
+                publishMotionGauges()
+                health.gauge("run.framesThisRun", framesThisRun.get())
+                health.gauge("run.captureResultsThisRun", captureResultsThisRun.get())
+                health.gauge("run.measuredFps", "%.2f".format(measuredFps()))
+                health.gauge("run.swaps", swapsThisRun.get())
+                health.gauge("run.swapFailures", swapFailuresThisRun.get())
+            }
             if (out == 0L && now - upAt > FIRST_OUTPUT_TIMEOUT_MS) {
                 throw IllegalStateException("encoder produced no output ${FIRST_OUTPUT_TIMEOUT_MS}ms after start")
             }
@@ -378,11 +635,16 @@ class CameraGlPipeline(
             texCropX = cropX; texCropY = cropY
             texCropFinalized = true
             Log.i(TAG, "texCrop for this camera's transform: $cropX,$cropY")
+            health.gauge("texCrop", "$cropX,$cropY")
             // The split could not be computed before this point, so re-issue the request if the
             // camera now turns out to be able to do part of the zoom itself.
             if (recomputeZoomSplit()) reissueRepeatingRequest()
         }
         val tsNanos = st.timestamp
+        val now = SystemClock.elapsedRealtime()
+        lastFrameMs.set(now)
+        framesThisRun.incrementAndGet()
+        runFirstFrameMs.compareAndSet(0L, now)
 
         GLES20.glUseProgram(program)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -395,21 +657,36 @@ class CameraGlPipeline(
         // means no manual exposure (see CameraControlApply's early return).
         // texRectUniform, not shaderRect: the uniform's Y axis runs bottom-up while every rect
         // here is viewer-oriented (top-down), so it has to be flipped on the way in. deliveredCrop
-        // is what the camera is already zoomed to, so the view is placed inside it.
-        val u = ZoomGeometry.texRectUniform(zoomView(), texCropX, texCropY, deliveredCrop())
+        // is what the camera is already zoomed to *for this frame* - looked up by the frame's own
+        // sensor timestamp, not assumed from the last request - so the view is placed inside what
+        // the buffer actually holds.
+        val u = ZoomGeometry.texRectUniform(zoomView(), texCropX, texCropY, deliveredCrop(tsNanos))
         GLES20.glUniform4f(uTexRectLoc, u[0], u[1], u[2], u[3])
         quad.position(0); GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
         GLES20.glEnableVertexAttribArray(aPosLoc)
         quad.position(2); GLES20.glVertexAttribPointer(aTexLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
         GLES20.glEnableVertexAttribArray(aTexLoc)
 
-        // analysis: downscale -> FBO -> readback -> MotionDetector
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
-        GLES20.glViewport(0, 0, READBACK_W, READBACK_H)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        readback.position(0)
-        GLES20.glReadPixels(0, 0, READBACK_W, READBACK_H, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, readback)
-        detectMotion()
+        // analysis: downscale -> FBO -> readback -> MotionDetector.
+        //
+        // Skipped entirely on frames we are not analysing, because the readback is the expensive
+        // half and the FBO draw exists only to feed it. `glReadPixels` is synchronous: it does not
+        // return until the GPU has drained everything queued, which at 4K includes the previous
+        // frame's full-size draw. The 76KB it moves is nothing; the flush is the cost. While the
+        // GL thread sits in it, nothing calls updateTexImage, and the camera's buffer queue is
+        // what runs dry - see docs/status/camera-stall-investigation.md.
+        //
+        // Analysing every Nth frame cuts how often that happens, in proportion. It does not
+        // remove the stall (an async PBO readback would); it trades detection latency, which a
+        // fixed security camera has to spare, against a starvation window it does not.
+        if (analysisFrameInterval > 0 && analysisFrameCounter++ % analysisFrameInterval == 0L) {
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
+            GLES20.glViewport(0, 0, READBACK_W, READBACK_H)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            readback.position(0)
+            GLES20.glReadPixels(0, 0, READBACK_W, READBACK_H, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, readback)
+            detectMotion(now)
+        }
 
         // record: full frame, rotated per rotationDegrees -> encoder input surface
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -421,18 +698,30 @@ class CameraGlPipeline(
         GLES20.glViewport(0, 0, outputSize.width, outputSize.height)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         EGLExt.eglPresentationTimeANDROID(eglDisplay, encoderWindowSurface, tsNanos)
-        EGL14.eglSwapBuffers(eglDisplay, encoderWindowSurface)
+        if (EGL14.eglSwapBuffers(eglDisplay, encoderWindowSurface)) {
+            swapsThisRun.incrementAndGet()
+        } else {
+            val err = EGL14.eglGetError()
+            // Log the first of a run and then every 30th: a surface that has gone bad stays bad,
+            // and at 30fps an unthrottled log would be the loudest thing in the buffer.
+            val n = swapFailuresThisRun.incrementAndGet()
+            if (n == 1L || n % 30L == 0L) {
+                Log.w(TAG, "eglSwapBuffers failed (0x${Integer.toHexString(err)}) x$n")
+            }
+            if (err != lastSwapError) {
+                lastSwapError = err
+                health.event("swapFailed", "0x${Integer.toHexString(err)}")
+            }
+        }
     }
 
-    private fun detectMotion() {
-        val now = SystemClock.elapsedRealtime()
-        if (now - detectorRefreshedAt > DETECTOR_REFRESH_MS) {
-            detector = MotionDetector(appConfig.get().motionSensitivity)
-            detectorRefreshedAt = now
-        }
+    private fun detectMotion(now: Long) {
         var i = 1 // green channel as a luma proxy for frame-differencing
         for (p in lumaPlane.indices) { lumaPlane[p] = readback.get(i); i += 4 }
-        val motion = detector.accept(lumaPlane, READBACK_W, READBACK_H, READBACK_W).motion
+        // The analyzer, not the detector: it drops the frames our own reconfigures produced, and
+        // re-bases the reference frame across them, before any of this asks "did something move?"
+        val verdict = analyzer.accept(lumaPlane, READBACK_W, READBACK_H, READBACK_W, now)
+        val motion = verdict.motion
         if (motion) {
             lastMotionMs.set(now)
             motionEver.set(true)
@@ -441,6 +730,16 @@ class CameraGlPipeline(
             lastMotionReported = motion
             onMotionChanged(motion)
         }
+    }
+
+    /** Frames per second measured over this run, not the rate we asked the encoder for - a
+     *  drooping capture rate is one of the things that could precede a stall. */
+    private fun measuredFps(): Double {
+        val first = runFirstFrameMs.get()
+        val last = lastFrameMs.get()
+        val n = framesThisRun.get()
+        if (first == 0L || last <= first || n < 2) return 0.0
+        return (n - 1) * 1000.0 / (last - first)
     }
 
     // ---- encoder drain / muxer / pre-roll ring (drain thread) ----
@@ -466,6 +765,7 @@ class CameraGlPipeline(
                 idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> trackFormat = enc.outputFormat
                 idx >= 0 -> {
                     lastOutputMs.set(SystemClock.elapsedRealtime())
+                    encodedThisRun.incrementAndGet()
                     handleEncoded(enc, idx, info)
                     runCatching { enc.releaseOutputBuffer(idx, false) }
                 }
@@ -590,6 +890,9 @@ class CameraGlPipeline(
     private fun publishSegment(file: File, startedAtMs: Long, durationMs: Long) {
         if (!file.exists() || file.length() == 0L) { runCatching { file.delete() }; return }
         Log.i(TAG, "segment ${file.name}: start=$startedAtMs dur=${durationMs}ms size=${file.length()}B")
+        health.event("segmentPublished", "dur=${durationMs}ms bytes=${file.length()}")
+        health.gauge("measuredFps", "%.2f".format(measuredFps()))
+        publishMotionGauges()
         logKeyframeCadence(file)
         onSegmentFinished(file, startedAtMs, durationMs.coerceAtLeast(0L), outputSize.width, outputSize.height)
     }
@@ -609,10 +912,13 @@ class CameraGlPipeline(
         // The zoom map is per camera and per output size, so it is loaded here rather than once
         // at construction. An uncalibrated phone yields an empty table, which simply means the
         // camera is asked for nothing and GL does all the zooming.
+        health = healthRegistry.forCamera(id, ROLE)
         zoomLut = ZoomCalibrationLut.build(
             CalibrationStore(context).load(), id, recordingSize.width, recordingSize.height,
         )
-        zoomSplit = null
+        requestedSplit = null
+        health.gauge("zoomLutSamples", zoomLut.entries.size)
+        health.gauge("zoomViaRatioApi", (caps?.zoomViaRatioApi ?: false).toString())
         if (!zoomLut.isEmpty) {
             Log.i(TAG, "zoom map: camera ${zoomLut.sourceCameraId} @ ${zoomLut.sourceResolution}, ${zoomLut.entries.size} samples")
         }
@@ -626,9 +932,10 @@ class CameraGlPipeline(
         val session = createCaptureSession(device, listOf(surface), failed)
         delay(500)
         if (failed.get() || !running) { session.close(); throw IllegalStateException("session failed asynchronously") }
-        session.setRepeatingRequest(buildRecordRequest(device, surface), null, callbackHandler)
+        session.setRepeatingRequest(buildRecordRequest(device, surface), captureMonitor, callbackHandler)
         captureSession = session
         Log.i(TAG, "capture session up")
+        health.event("sessionUp")
     }
 
     /**
@@ -639,20 +946,47 @@ class CameraGlPipeline(
      */
     fun applyControls(spec: CameraControlSpec) {
         controls = spec
+        // Exposure, focus and white balance all visibly change the picture, and a metering-region
+        // change makes the HAL re-converge - all of it indistinguishable from motion. Ended when
+        // the first result built from the new request comes back.
+        motionGate.beginDisturbance(CameraDisturbance.CONTROLS)
+        health.event("applyControls")
         // A zoom change moves work between the camera and GL, so the split is redone before the
-        // request is rebuilt below. The shader picks the new crop up on its next frame.
-        recomputeZoomSplit()
+        // request is rebuilt below. The shader does *not* pick the new crop up on its next frame:
+        // it follows the capture results, so it only moves as the hardware actually does.
+        if (recomputeZoomSplit()) beginZoomTransition()
         val device = cameraDevice ?: return
         val session = captureSession ?: return
         val surface = cameraSurface ?: return
         runCatching {
-            session.setRepeatingRequest(buildRecordRequest(device, surface), null, callbackHandler)
-        }.onFailure { Log.w(TAG, "applyControls: setRepeatingRequest failed", it) }
+            session.setRepeatingRequest(buildRecordRequest(device, surface), captureMonitor, callbackHandler)
+        }.onFailure {
+            Log.w(TAG, "applyControls: setRepeatingRequest failed", it)
+            health.event("setRepeatingRequestFailed", it.message)
+            motionGate.endDisturbance(CameraDisturbance.CONTROLS)
+        }
     }
 
-    /** The region of the full field of view the buffer currently holds - the whole frame until a
-     *  hardware zoom is in effect. The shader places the requested view inside it. */
-    private fun deliveredCrop(): RectNorm = zoomSplit?.deliveredCrop ?: ZoomGeometry.FULL
+    /**
+     * The region of the full field of view the buffer holds **for the frame timestamped
+     * [frameTimestampNs]** - not the region the pending request will eventually produce.
+     *
+     * `SurfaceTexture.getTimestamp()` and `CaptureResult`'s `SENSOR_TIMESTAMP` are the same value
+     * from the same clock, so this is an exact per-frame answer rather than a guess about how far
+     * behind the hardware currently is. The shader places the requested view inside whatever comes
+     * back, which stays correct at every point of a zoom transition instead of only at the ends.
+     */
+    private fun deliveredCrop(frameTimestampNs: Long): RectNorm {
+        val requested = requestedSplit?.hwRatio ?: 1f
+        val applied = zoomFeedback.appliedRatio(frameTimestampNs, requested)
+        return ZoomGeometry.splitFor(
+            viewSensor = ZoomGeometry.viewToSensor(zoomView() ?: ZoomGeometry.FULL, texCropX, texCropY),
+            lut = zoomLut.entries,
+            hwRatio = applied,
+            texCropX = texCropX,
+            texCropY = texCropY,
+        ).deliveredCrop
+    }
 
     /** The view the user asked for, or null when running full auto. */
     private fun zoomView(): RectNorm? =
@@ -661,15 +995,21 @@ class CameraGlPipeline(
     /** Recompute how much of the zoom the camera should do. Returns true when the hardware half
      *  changed, meaning the repeating request has to be re-issued to take effect. */
     private fun recomputeZoomSplit(): Boolean {
-        val previous = zoomSplit?.hwRatio ?: 1f
+        val previous = requestedSplit?.hwRatio ?: 1f
         val split = ZoomGeometry.split(
             viewSensor = ZoomGeometry.viewToSensor(zoomView() ?: ZoomGeometry.FULL, texCropX, texCropY),
             lut = zoomLut.entries,
             texCropX = texCropX,
             texCropY = texCropY,
         )
-        zoomSplit = split
+        requestedSplit = split
         return kotlin.math.abs(split.hwRatio - previous) > 0.01f
+    }
+
+    /** A hardware zoom is now in flight; hold motion off until a result says it has landed. */
+    private fun beginZoomTransition() {
+        motionGate.beginDisturbance(CameraDisturbance.ZOOM)
+        health.event("zoomRequested", "ratio=${requestedSplit?.hwRatio}")
     }
 
     private fun buildRecordRequest(device: CameraDevice, surface: Surface): CaptureRequest =
@@ -677,9 +1017,83 @@ class CameraGlPipeline(
             addTarget(surface)
             caps?.let {
                 CameraControlApply.applyTo(this, controls, it)
-                CameraControlApply.applyZoom(this, zoomSplit?.hwRatio ?: 1f, it)
+                CameraControlApply.applyZoom(this, requestedSplit?.hwRatio ?: 1f, it)
             }
         }.build()
+
+    /**
+     * The repeating request's result listener - previously `null`, which cost us both halves of
+     * this file's problem.
+     *
+     * It is what makes the zoom observable instead of assumed ([deliveredCrop]), and it is the
+     * only place the camera can tell us a capture went wrong at all: with no callback attached, a
+     * run of `onCaptureFailed`s or a dropped buffer is completely silent, and the first thing
+     * anyone learns is that encoded output stopped four seconds ago. Every branch here is cheap -
+     * it runs on the camera callback thread at frame rate.
+     */
+    private val captureMonitor = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult,
+        ) {
+            lastCaptureResultMs.set(SystemClock.elapsedRealtime())
+            val n = captureResultsThisRun.incrementAndGet()
+            // Controls are applied by the request this result came from, so by definition they
+            // have taken effect by now.
+            motionGate.endDisturbance(CameraDisturbance.CONTROLS)
+            // Start-up is over once frames have been flowing long enough for auto-exposure and
+            // white balance to have converged - counted in frames rather than wall time because
+            // that is what convergence actually depends on.
+            if (n >= PIPELINE_SETTLE_RESULTS) motionGate.endDisturbance(CameraDisturbance.PIPELINE_START)
+
+            // The capture rate the HAL has settled on, recorded only when it changes. This is the
+            // evidence the CONTROL_AE_TARGET_FPS_RANGE question turns on: the record path leaves
+            // it unpinned (LivePipeline pins it), and pinning it is both a plausible fix for the
+            // stalls and a plausible regression, because it stops the HAL lengthening exposure at
+            // night. Rather than guess, watch whether the rate actually droops before a stall.
+            result.get(CaptureResult.CONTROL_AE_TARGET_FPS_RANGE)?.let { range ->
+                if (range != lastAeFpsRange) {
+                    lastAeFpsRange = range
+                    health.gauge("aeTargetFpsRange", range.toString())
+                    health.event("aeTargetFpsChanged", range.toString())
+                }
+            }
+
+            val ts = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+            val applied = AppliedZoomReader.read(result, caps)
+            zoomFeedback.record(ts, applied)
+            val want = requestedSplit?.hwRatio ?: 1f
+            // Landed once the report is within a percent of the request - or immediately if this
+            // device reports nothing we can use, where waiting would mean never re-opening the
+            // gate and the settling window is all the cover there is.
+            val landed = applied?.let { kotlin.math.abs(it - want) <= maxOf(0.02f, want * 0.01f) }
+                ?: (zoomFeedback.unreadable >= ZoomFeedback.UNREADABLE_BEFORE_TRUSTING_REQUEST)
+            if (landed) motionGate.endDisturbance(CameraDisturbance.ZOOM)
+        }
+
+        override fun onCaptureFailed(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            failure: CaptureFailure,
+        ) {
+            health.event("captureFailed", "reason=${failure.reason} frame=${failure.frameNumber}")
+        }
+
+        override fun onCaptureBufferLost(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            target: Surface,
+            frameNumber: Long,
+        ) {
+            bufferLostThisRun.incrementAndGet()
+            health.event("captureBufferLost", "frame=$frameNumber")
+        }
+
+        override fun onCaptureSequenceAborted(session: CameraCaptureSession, sequenceId: Int) {
+            health.event("captureSequenceAborted", "sequence=$sequenceId")
+        }
+    }
 
     /** Re-issue the repeating request so a changed hardware zoom takes effect, without rebuilding
      *  the session. Safe to call from the GL thread. */
@@ -688,8 +1102,12 @@ class CameraGlPipeline(
         val session = captureSession ?: return
         val surface = cameraSurface ?: return
         runCatching {
-            session.setRepeatingRequest(buildRecordRequest(device, surface), null, callbackHandler)
-        }.onFailure { Log.w(TAG, "reissueRepeatingRequest failed", it) }
+            session.setRepeatingRequest(buildRecordRequest(device, surface), captureMonitor, callbackHandler)
+        }.onFailure {
+            Log.w(TAG, "reissueRepeatingRequest failed", it)
+            health.event("setRepeatingRequestFailed", it.message)
+            motionGate.endDisturbance(CameraDisturbance.ZOOM)
+        }
     }
 
     private fun backCameraId(): String? = cameraManager.cameraIdList.firstOrNull { id ->
@@ -703,11 +1121,13 @@ class CameraGlPipeline(
                 override fun onOpened(device: CameraDevice) { if (cont.isActive) cont.resume(device) }
                 override fun onDisconnected(device: CameraDevice) {
                     device.close(); if (cameraDevice === device) cameraDevice = null
+                    health.event("cameraDisconnected")
                     fatal.compareAndSet(null, "camera disconnected")
                     if (cont.isActive) cont.resumeWithException(IllegalStateException("camera disconnected"))
                 }
                 override fun onError(device: CameraDevice, error: Int) {
                     device.close(); if (cameraDevice === device) cameraDevice = null
+                    health.event("cameraDeviceError", "error=$error")
                     fatal.compareAndSet(null, "camera error $error")
                     if (cont.isActive) cont.resumeWithException(RuntimeException("camera open error $error"))
                 }
@@ -787,6 +1207,21 @@ class CameraGlPipeline(
         recStartPtsUs = -1L; recStartElapsedMs = 0L; recStartEpochMs = 0L
         pendingRoll = false
         lastMotionReported = false
+        // Re-arm rather than resume. These two are what the drain thread gates writing on, and
+        // they used to survive a teardown - so a pipeline that stalled within [trailerMs] of the
+        // last motion came back up, found `motionEver` still true and `lastMotionMs` still
+        // recent, and opened a segment on its very first keyframe without analysing a single
+        // frame. That path never consults the motion gate at all, which is why the guards could
+        // hold perfectly and a restart still produced a clip (confirmed on a 0.7s clip whose only
+        // event was the zoom snap itself). Motion seen by the *previous* camera session says
+        // nothing about this one: different session, seconds later, exposure and zoom re-settling.
+        motionEver.set(false)
+        lastMotionMs.set(0)
+        // Per-run witnesses, so the next run's forensics describe the next run.
+        lastFrameMs.set(0); lastCaptureResultMs.set(0); runFirstFrameMs.set(0)
+        framesThisRun.set(0); captureResultsThisRun.set(0); encodedThisRun.set(0)
+        bufferLostThisRun.set(0)
+        swapsThisRun.set(0); swapFailuresThisRun.set(0); lastSwapError = 0
 
         glHandler = null
         glThread?.quitSafely()
@@ -815,10 +1250,29 @@ class CameraGlPipeline(
         return physId ?: logicalId
     }
 
+    /**
+     * Not the size the user picked - the size the zoom justifies capturing, which is at most that.
+     *
+     * The viewing resolution is a ceiling set while framing the shot; what is worth *recording* is
+     * whatever still holds the detail the current zoom leaves. At 4.2x on this device that is
+     * 1024x576 rather than 3840x2160: fourteen times less pixel work through the ISP and the
+     * encoder, for a frame carrying the same real detail, since GL was only upscaling to fill the
+     * difference. The choice is made here, once, at pipeline start - zoom is frozen for the
+     * lifetime of a RECORD session (see `cameraRoutes`), so it cannot go stale underneath a
+     * running pipeline, and no clip ever contains segments of two different sizes.
+     */
     private fun pickRecordingSize(): Size {
         val id = sizingCameraId() ?: return Size(1280, 720)
-        return RecordingSizeSelection.recordModeSize(cameraManager, id, appConfig.get().videoResolution)
-            ?: Size(1280, 720)
+        val cfg = appConfig.get()
+        val spec = cfg.cameraControls
+        val sizes = RecordingSizeSelection.recordModeSizes(
+            cameraManager,
+            id,
+            cfg.videoResolution,
+            RecordingSizeSelection.viewFractionOf(spec.keys.zoomViewNorm, spec.manualControlEnabled),
+        ) ?: return Size(1280, 720)
+        health.gauge("viewingSize", "${sizes.viewing.width}x${sizes.viewing.height}")
+        return sizes.recording
     }
 
     /** The camera → SurfaceTexture buffer size for [target]'s aspect ratio - see

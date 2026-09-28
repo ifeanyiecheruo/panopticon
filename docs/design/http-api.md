@@ -89,7 +89,7 @@ because the remote party is the one who needs it.
 |---|---|---|---|---|---|
 | GET | `/api/device` | — | — | `{ "manufacturer": "Google", "model": "Pixel 9a", "device": "tegu" }` | Hardware identity used to key the controller's device-capability/calibration store. |
 | GET | `/api/build-info` | — | — | `{ "appVersionName": "1.4.2", "appVersionCode": 47, "buildType": "release", "gitSha": "a3f9c21" }` | Phone app's own build identity, for compatibility gating. |
-| GET | `/api/status` | — | — | `{ "mode": "live", "status": "idle", "cameraHealthy": true, "liveViewers": 0, "storageUsedBytes": 40200000000, "storageCapBytes": 64000000000, "batteryPercent": 78, "charging": true, "serverTimeMs": 1755270015231 }` | One-shot snapshot: mode, recording/broadcast state, storage, battery, phone clock. |
+| GET | `/api/status` | — | — | `{ "mode": "live", "status": "idle", "cameraHealthy": true, "liveViewers": 0, "storageUsedBytes": 40200000000, "storageCapBytes": 64000000000, "batteryPercent": 78, "charging": true, "thermal": { "supported": true, "severity": 1, "level": "light", "headroom": 0.62 }, "serverTimeMs": 1755270015231 }` | One-shot snapshot: mode, recording/broadcast state, storage, battery, thermal, phone clock. `thermal` is **not a temperature** — degrees are privileged on Android and are not the useful signal. `severity` is `PowerManager`s own 0..6 scale (`none`/`light`/`moderate`/`severe`/`critical`/`emergency`/`shutdown`), mirrored as `level`; `headroom` is a 0..1+ forecast to the throttling threshold (Android 11+, `null` otherwise). `supported` is `false` on Android < 29, which cannot report thermal state at all — the controller draws no thermal icon for those, since "cannot say" is not "cool". |
 | GET | `/api/config` | — | — | `{ "deviceName": "Garage cam", "motionSensitivity": "medium", "storageCapBytes": 64000000000, "ringBufferMaxAgeMs": 604800000 }` | Reads persisted device configuration. (`rotationDegrees` moved to `/api/camera/*` — it's a camera-pipeline setting.) |
 | POST | `/api/config` | — | `{ "deviceName": "Garage cam", "motionSensitivity": "high" }` | *(full resulting config document)* | Batch-updates any subset of device config. |
 
@@ -97,7 +97,7 @@ because the remote party is the one who needs it.
 
 Modes: `record` (motion-gated recording pipeline owns the camera), `standby` (camera released —
 the only state calibration / live preview can take it from), `live` (live-preview pipeline —
-implemented as **plain HLS**; see Live view below). **`record` is sticky**: it takes precedence
+implemented as **LL-HLS**; see Live view below). **`record` is sticky**: it takes precedence
 over every other camera-using feature, and you must move to `standby` *explicitly* before any of
 them can run.
 
@@ -180,8 +180,44 @@ came from. An uncalibrated phone simply gets `hwZoomRatio: 1` and does it all in
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
 | GET | `/api/camera/capabilities` | `cameraId=1` *(optional, defaults to active)* | — | `{ "cameraId": "0", "zoomRatioRange": {"lo":0.67,"hi":7.0}, "zoomViaRatioApi": true, "aeCompensationRange": {"lo":-24,"hi":24}, "aeCompensationStepMilliEv": 166, "exposureTimeRangeNs": {"lo":26503,"hi":8310343667}, "sensitivityRange": {"lo":44,"hi":11377}, "minFocusDistanceDiopters": 9.52, "hasManualSensor": true, "hasManualFocus": true, "hasManualWhiteBalance": true, "wbGainRange": {"lo":1.0,"hi":8.0}, "awbModes": [0,1,2,3,4,5,6,7,8], "videoStabilizationModes": [0,1,2], "opticalStabilizationModes": [0,1], "maxAeRegions": 3, "maxAfRegions": 1, "outputResolutions": ["1920x1080","1280x720","854x480"], "physicalCameraIds": ["2","3"], "croppingType": "CENTER_ONLY", "activeArrayWidth": 4080, "activeArrayHeight": 3072 }` | Declared per-key ranges for a camera; pure `CameraCharacteristics` read, works in any mode. Optional `cameraId` previews another camera without switching. `404` unknown `cameraId`. |
-| GET | `/api/camera/state` | — | — | `{ "cameraId": "0", "rotationDegrees": 0, "videoResolution": "1280x720", "manualControlEnabled": false, "keys": { "zoomRatio": null, "...": null } }` | Current manual-control state (from `DeviceConfig`), including `rotationDegrees` (0/90/180/270) and `videoResolution` (the record/broadcast size, one of `capabilities.outputResolutions`). |
-| POST | `/api/camera/state` | — | `{ "manualControlEnabled": true, "rotationDegrees": 90, "videoResolution": "1920x1080", "keys": { "zoomRatio": 2.0, "aeExposureCompensation": -2 } }` | *(resulting state, same shape as GET)* | Validate-then-apply against the **active** camera's capabilities: `400 {"error": "...", "key": "zoomRatio"}` on the first offending key, applies nothing. Any subset of `manualControlEnabled` / `rotationDegrees` / `videoResolution` / `keys` may be sent; omitted fields are left unchanged. `rotationDegrees` must be one of 0/90/180/270; `videoResolution` must be one of the camera's `outputResolutions`. A `videoResolution` change rebuilds the running pipeline. Accepted + persisted even in `standby` (applied when a pipeline next starts). |
+| GET | `/api/camera/state` | — | — | `{ "cameraId": "0", "rotationDegrees": 0, "videoResolution": "3840x2160", "recordingResolution": "1024x576", "manualControlEnabled": false, "keys": { "zoomRatio": null, "...": null } }` | Current manual-control state (from `DeviceConfig`), including `rotationDegrees` (0/90/180/270), `videoResolution` (the viewing/broadcast size, one of `capabilities.outputResolutions`) and `recordingResolution` (**derived, read-only** — see below). |
+| POST | `/api/camera/state` | — | `{ "manualControlEnabled": true, "rotationDegrees": 90, "videoResolution": "1920x1080", "keys": { "zoomRatio": 2.0, "aeExposureCompensation": -2 } }` | *(resulting state, same shape as GET)* | Validate-then-apply against the **active** camera's capabilities: `400 {"error": "...", "key": "zoomRatio"}` on the first offending key, applies nothing. Any subset of `manualControlEnabled` / `rotationDegrees` / `videoResolution` / `keys` may be sent; omitted fields are left unchanged. `rotationDegrees` must be one of 0/90/180/270; `videoResolution` must be one of the camera's `outputResolutions`. `recordingResolution` is derived and **cannot be set**. A `videoResolution` change rebuilds the running pipeline. **`409 {"error": "frozen while recording", "key": "..."}`** for `videoResolution` or any zoom key while the mode is `record` — see below. Accepted + persisted even in `standby` (applied when a pipeline next starts). |
+
+
+### Viewing vs recording resolution
+
+`videoResolution` is a **ceiling the controller sets**; `recordingResolution` is what RECORD
+actually captures and encodes at, derived on the phone and read-only.
+
+Digital zoom is a crop-and-upscale. At a view covering a fraction of the frame, only
+`videoResolution x fraction` real pixels exist across it, and rendering those into a full-size
+frame manufactures the rest. So the phone picks the smallest offered size that still holds that
+detail — at 4.2x zoom on a Pixel 6 that is `1024x576` rather than `3840x2160`, fourteen times less
+pixel work through the ISP and the encoder for a frame carrying the same real detail. Un-zoomed,
+the two are equal.
+
+**No dimension of `recordingResolution` ever exceeds the corresponding dimension of
+`videoResolution`.** This is enforced as its own rule rather than being left to fall out of the
+arithmetic, so an estimator bug cannot silently raise what is captured above what was asked for.
+
+`LIVE` always broadcasts at `videoResolution`: a viewer needs the detail back the moment they zoom
+out, and a preview that had been reduced could not supply it without a reconfigure.
+
+### What is frozen while recording
+
+`videoResolution` and the zoom keys (`zoomRatio`, `zoomSelectNorm`, `zoomViewNorm`) are rejected
+with `409` while the mode is `record`. Both decide the recording size, which is fixed when the
+pipeline starts; honouring a change would mean rebuilding the camera session mid-recording — a
+real hole in the footage, and segments of two different sizes inside one clip. Deferring them is
+what makes it safe to derive the size from the zoom at all.
+
+Everything else stays live. Exposure, focus and white balance do not change how many real pixels
+the frame carries and apply through the light repeating-request path, so a badly-exposed camera
+can still be corrected without stopping the recording.
+
+To re-frame: `POST /api/mode {"mode":"standby"}`, adjust, then back to `record`. That is already
+the only way to see what you are aiming at — `record` → `live` is refused with `409` for the same
+reason.
 
 ### Calibration (device-wide)
 
@@ -203,13 +239,33 @@ runs from `standby`.
 | DELETE | `/api/calibration/:runId` | — | — | `{ "cancelled": true }` | Cooperative stop; completed cameras keep partial results. |
 | GET | `/api/calibration/result` | `runId=` *(optional)* | — | *(see the note above — `runId`, `runAtMs`, `deviceIdentity`, `cameras.{id}.{opticalRange,digitalRange,crossoverRatio,positionHonored,qualityCollapseRatio,perResolution,steps}`)* | With `runId`, that specific run (`409` if not completed). **Without it, the phone's last persisted result** — written to disk, so an already-calibrated phone serves it on every request without re-running, including after an app restart. `404` if this phone has never completed a calibration. |
 
+### Camera health (diagnostics)
+
+**Not a stable contract, and nothing renders it yet.** A loosely-typed dump of per-camera
+pipeline counters, added to characterise the recording pipeline's restart cycle from a phone that
+has been running for hours rather than from a `logcat` session that happens to be attached at the
+right moment — see [`../status/camera-stall-investigation.md`](../status/camera-stall-investigation.md).
+
+Only the envelope (`generatedAtMs`, `processUptimeMs`, `cameras`) is fixed. Inside `cameras`, each
+key is `"<role>:<cameraId>"` (`role` being `record` or `live`, since the same physical camera
+behaves differently under the two pipelines) and the value's fields are free-form: a new probe is
+a one-line change on the phone with no wire type and no controller model to keep in step. Counters
+are process-lifetime and reset when the app restarts — what they measure is *pipeline* restarts,
+which happen many times per hour inside one process.
+
+| Method | URL | Query params | Example request body | Example response body | Description |
+|---|---|---|---|---|---|
+| GET | `/api/camera/health` | — | — | `{ "generatedAtMs": 1758300000000, "processUptimeMs": 3600000, "cameras": { "record:0": { "cameraId": "0", "role": "record", "runs": 23, "runsEnded": 22, "currentUpMs": 41000, "lastUpMs": 155000, "meanUpMs": 158000, "upMsMin": 152000, "upMsMax": 235000, "meanUpMsByEndReason": { "stall": {"count": 21, "meanUpMs": 161000, "totalUpMs": 3381000}, "stopped": {"count": 1, "meanUpMs": 9000, "totalUpMs": 9000} }, "counters": { "captureFailed": 0, "captureBufferLost": 0, "segmentPublished": 23 }, "gauges": { "recordingSize": "3840x2160", "measuredFps": "29.98", "lastFailure.reason": "stall", "lastFailure.cameraFrameAgeMs": 4102, "lastFailure.captureResultAgeMs": 4098, "lastFailure.encodedOutputAgeMs": 4001, "motion.disturbancesExpired": 0 }, "recent": [ { "atMs": 1758299840000, "event": "runEnded:stall", "detail": "encoder output stalled for 4000ms" } ] } } }` | Per-camera pipeline health. Read-only; same bearer auth as every other route. |
+
 ### Live view
 
-**Plain HLS** (whole ~1s `.ts` segments, 16-segment sliding window, `#EXT-X-VERSION:3`,
-`#EXT-X-START:TIME-OFFSET=-4`), not LL-HLS. Glass-to-glass latency ≈ 4–6s. The phone runs a
-dedicated single-stream `camera → MediaCodec → TsMuxer` pipeline; `MediaMuxer` can't emit
-MPEG-TS so the muxer is hand-rolled. Entering `live` mode arms the pipeline (camera warm,
-nothing encoding); `POST /api/live/start` begins broadcasting; a 15s no-request inactivity
+**LL-HLS** (~1s `.ts` segments, 16-segment sliding window, ~333ms `EXT-X-PART` byte-range parts,
+`#EXT-X-VERSION:9`, `EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK≈1s`). Glass-to-glass
+latency close to `PART-HOLD-BACK` (down from plain HLS's ~4–6s — see
+[`../design/decisions/0007-live-preview-plain-hls.md`](decisions/0007-live-preview-plain-hls.md)).
+The phone runs a dedicated single-stream `camera → MediaCodec → TsMuxer` pipeline; `MediaMuxer`
+can't emit MPEG-TS so the muxer is hand-rolled. Entering `live` mode arms the pipeline (camera
+warm, nothing encoding); `POST /api/live/start` begins broadcasting; a 15s no-request inactivity
 watchdog returns it to armed-idle. `/live/*` is behind the normal bearer token — the controller
 proxies these server-side, so hls.js fetches same-origin (the prototype's separate GET-only
 scoped token is deferred). See [`../quirks/live-hls.md`](../quirks/live-hls.md).
@@ -218,8 +274,8 @@ scoped token is deferred). See [`../quirks/live-hls.md`](../quirks/live-hls.md).
 |---|---|---|---|---|---|
 | POST | `/api/live/start` | — | `{}` | `{ "started": true, "viewerCount": 1 }` | Idempotently begins broadcasting; `409` unless the phone is in `live` mode. `503 { "error": "camera still starting", "retryAfterMs": 2000 }` (plus a `Retry-After` header) while the camera is still arming — a cold front-facing camera can take several seconds; the caller should retry until it succeeds. `503 { "error": "live camera unavailable" }` (no `retryAfterMs`) is a hard failure — do not retry. |
 | DELETE | `/api/live/stop` | — | — | `{ "stopped": true, "viewerCount": 0 }` | Explicit stop (usually unnecessary — 15s inactivity watchdog handles it). |
-| GET | `/live/live.m3u8` | — | — | *(text `application/vnd.apple.mpegurl`)* | Rolling HLS playlist. `404` before broadcasting starts, `409` when not in `live` mode. |
-| GET | `/live/live-<n>.ts` | — | — | *(binary `video/mp2t`)* | One HLS segment; `404` once it's rolled out of the window. |
+| GET | `/live/live.m3u8` | `_HLS_msn=`, `_HLS_part=` *(both optional; LL-HLS blocking reload)* | — | *(text `application/vnd.apple.mpegurl`)* | Rolling LL-HLS playlist. With `_HLS_msn` (optionally `_HLS_part`), blocks up to ~4× the part target duration until that part/segment exists instead of returning immediately. `404` before broadcasting starts, `409` when not in `live` mode. |
+| GET | `/live/live-<n>.ts` | — (a `Range: bytes=<start>-<end>` request header, not a query param, selects an in-progress part) | — | *(binary `video/mp2t`)* | A finalized segment: full body, `200`. Not yet finalized: with a `Range` header matching a byte range this segment's playlist entry advertised (`EXT-X-PART`/`EXT-X-PRELOAD-HINT`), `206` + `Content-Range` for whatever's been muxed so far, or `416` if that range isn't there yet. `404` once fully rolled out of the window. |
 
 ### Segments (sync)
 

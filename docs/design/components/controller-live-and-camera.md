@@ -10,7 +10,7 @@ knobs (`liveSyncDurationCount` etc.). [`../android-media-primer.md`](../android-
 
 ### 1.1 Purpose
 
-Describe the component that shows a phone's live camera in Phone detail as plain HLS and drives
+Describe the component that shows a phone's live camera in Phone detail as LL-HLS and drives
 its camera selection + manual controls from the same surface, including the zoom adjuster whose
 selections are sent in viewer coordinates for the phone to resolve.
 
@@ -32,7 +32,7 @@ never holds the bearer token.
 | Term | Meaning |
 |---|---|
 | server-side proxy | `liveproxy` fetches the playlist/segments with the stored token and serves them same-origin |
-| stall watchdog | a 2s poll that kicks hls.js (`startLoad()` + seek to `liveSyncPosition`) on stalled progress / buffer-stall / fatal network error |
+| stall watchdog | a 2s poll that kicks hls.js (`startLoad()` + seek to `liveSyncPosition`) on stalled progress / buffer-stall / fatal network error, and resets hls.js's ratcheted-up `targetLatency` back to the playlist's `partHoldBack` after a stall-free window |
 | `reattach` | re-initialising the player on a camera switch or resolution change |
 | rect picker | one shared drag-box over the live `<video>` for Zoom/Focus/Exposure |
 | viewer space | `0..1` over the frame on screen — the only coordinate space the controller sends rects in |
@@ -60,8 +60,10 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
 ## 2. Design overview
 
 `App` moves a phone into/out of `live` (leaving a recording phone alone) with a retry that
-tolerates the cold-camera arming `503`. `liveproxy` serves the feed same-origin.
-`LivePreview.tsx` plays it with live-tuned hls.js config + a stall watchdog.
+tolerates the cold-camera arming `503`. `liveproxy` serves the feed same-origin, forwarding
+LL-HLS's blocking-reload query params and byte-range part fetches and relaying whatever
+status/`Content-Range` the phone returns. `LivePreview.tsx` plays it with LL-HLS-tuned hls.js
+config + a stall watchdog + a latency-ratchet reset.
 `CameraControls.tsx` is the ported phone Preview-screen UI, capability-gated to
 `GET /api/camera/capabilities`. Rects it collects (zoom, focus, exposure) are sent exactly as
 drawn, in viewer coordinates; the phone resolves them.
@@ -73,8 +75,8 @@ drawn, in viewer coordinates; the phone resolves them.
 | Entity | Type | Responsibility |
 |---|---|---|
 | `StartLivePreview` / `StopLivePreview` | `App` methods | Move a phone into/out of `live` and start/stop its broadcast; remember the prior mode; a recording phone is left alone (`outcome:"recording"`). Uses `phoneapi.LiveStartAwaitReady` — retries the hinted `503` arming response for ~20s. |
-| `liveproxy` | asset-server handler | Token stays server-side; hls.js fetches same-origin. |
-| `useLivePreview` + `LivePreview.tsx` | hook + view | hls.js against the local proxy with live-tuned config (`liveSyncDurationCount` / `liveMaxLatencyDurationCount`, ~20s `maxBufferLength`, patient retries) + a 2s stall watchdog. `reattach()` on a camera switch or resolution change. Bounded manifest-404 retry that resets once the first fragment buffers. |
+| `liveproxy` | asset-server handler | Token stays server-side; hls.js fetches same-origin. Forwards `_HLS_msn`/`_HLS_part` on a playlist fetch and any `Range` header on a segment fetch; relays the phone's real status (`200`/`206`/`404`/`416`) and `Content-Range` instead of always assuming `200`. |
+| `useLivePreview` + `LivePreview.tsx` | hook + view | hls.js against the local proxy with LL-HLS-tuned config (`lowLatencyMode: true`, `liveSyncDuration(Count)` deliberately left unset, ~20s `maxBufferLength`, patient retries) + a 2s stall watchdog + a periodic `targetLatency` reset back to the playlist's `partHoldBack` after a stall-free window. `reattach()` on a camera switch or resolution change. Bounded manifest-404 retry that resets once the first fragment buffers. |
 | `CameraControls.tsx` + `phonecam/*` | UI | Camera switcher (logical + physical sub-cameras); a manual-controls master toggle; capability-gated sliders/toggles. Ported phone Preview interactions: frosted drag-rulers over the live `<video>`, a drag-scroller mode bar, categorical dropdowns, per-slider reset, "Full auto", a 2s idle-fade. One shared drag-box rect picker for Zoom/Focus/Exposure (applies on pointer-up, Esc cancels, manual-mode only). A right-aligned resolution `<select>` re-attaches the player when changed. |
 | zoom adjuster | UI | A ruler bound to `zoomRatio` (magnifies about the *current* view's centre) plus the shared rect picker targeting `zoomSelectNorm`. During a zoom drag two boxes are drawn: the drag itself, and the **fitted box**. Because the overlay is `0..1` over the video with no `object-fit` crop, the fitted box is just the smallest *square* containing the drag — the aspect ratio falls out of percentage sizing, with no aspect arithmetic anywhere in the component or the CSS. |
 | zoom readback | UI | `glResidual` from the phone drives a "zoom is upscaling, not resolving" note above ~1.5×. |
@@ -102,14 +104,18 @@ drawn, in viewer coordinates; the phone resolves them.
 
 - Live preview is gated behind an explicit action — never auto-started on page open (live and
   record are mutually exclusive).
-- The stall watchdog is the minimal subset of the prototype's hls.js workarounds that plain HLS
-  needs to not spiral into permanent rebuffering.
-- **Verified end to end** against the Pixel 6 (front + back live connect through the arming
-  retry; camera state set from the controller round-trips).
+- The stall watchdog + latency-ratchet reset are the concrete subset of the prototype's hls.js
+  workarounds LL-HLS needs to not spiral into permanent rebuffering or a permanently inflated
+  target latency.
+- **Verified end to end (plain HLS)** against the Pixel 6 (front + back live connect through the
+  arming retry; camera state set from the controller round-trips). **LL-HLS**: `liveproxy.go`'s
+  new query/Range passthrough and status/Content-Range relaying is covered by
+  `liveproxy_test.go`; `LivePreview.tsx`'s new config type-checks; the on-device soak against a
+  real phone is still outstanding.
 
 ## 4. Design rationale and decisions
 
-- **Plain HLS + server-side proxy + vendored hls.js** —
+- **Plain HLS first, then LL-HLS, both behind a server-side proxy + vendored hls.js** —
   [`0007`](../decisions/0007-live-preview-plain-hls.md).
 - **Camera control on the live surface** —
   [`0008`](../decisions/0008-camera-control-and-multi-camera.md),
@@ -129,5 +135,5 @@ drawn, in viewer coordinates; the phone resolves them.
 - **A committed change adopts the phone's resulting state** — `SetCameraControls` returns it, so
   the zoom ruler reflects the ratio a *rect* selection produced. Skipped mid-drag, where a late
   response would fight the user's hand.
-- **Deferred:** LL-HLS, adaptive bitrate, the scoped `/live/*` token —
+- **Deferred:** adaptive bitrate, the scoped `/live/*` token —
   [`../../status/ll-hls-upgrade.md`](../../status/ll-hls-upgrade.md).

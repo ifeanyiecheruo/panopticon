@@ -1,7 +1,8 @@
 # 0007 — Live preview: plain HLS
 
-**Status:** Accepted · implemented (both sides). LL-HLS + scoped token + adaptive bitrate
-deferred ([`../../status/ll-hls-upgrade.md`](../../status/ll-hls-upgrade.md)).
+**Status:** Accepted · implemented (both sides), then superseded by LL-HLS (see "LL-HLS" below;
+[`../../status/ll-hls-upgrade.md`](../../status/ll-hls-upgrade.md) is now executed). Scoped token
+and adaptive bitrate remain deferred.
 Component specs: [`phone-live-pipeline.md`](../components/phone-live-pipeline.md),
 [`controller-live-and-camera.md`](../components/controller-live-and-camera.md).
 
@@ -13,7 +14,7 @@ hls.js latency workarounds. This project wanted the smallest thing that holds up
 
 ## Decision
 
-### Plain HLS, not LL-HLS
+### Plain HLS, not LL-HLS — superseded, see "LL-HLS" below
 
 Whole ~1s `.ts` segments, a **16-deep** sliding window (~16s DVR), `#EXT-X-VERSION:3`,
 `#EXT-X-START:TIME-OFFSET=-4`. Glass-to-glass ≈ 4–6s. A deep window is load-bearing: a shallow
@@ -21,6 +22,23 @@ one let any hiccup walk hls.js into fetching an evicted segment → 404 → stal
 ~1s segments + the 16-deep window + real hls.js live config + a client stall watchdog
 (`hls.startLoad()` + seek-to-`liveSyncPosition` on stalled progress / buffer-stall / fatal
 network error) — the minimal subset of the prototype's workarounds that plain HLS needs.
+
+### LL-HLS
+
+Adopted per [`../../status/ll-hls-upgrade.md`](../../status/ll-hls-upgrade.md), once plain HLS's
+~4–6s glass-to-glass latency was judged worth cutting. Keeps this project's own ~1s segment /
+16-deep window tuning (not the prototype's 2s/6-deep one — that combination was specifically
+hardened against the 404 → stall → latency-ratchet spiral above) and layers ~333ms `EXT-X-PART`
+byte-range parts on top, with blocking playlist reloads (`_HLS_msn`/`_HLS_part`,
+`PART-HOLD-BACK` ≈ 1s) replacing the fixed `#EXT-X-START` offset. Brings glass-to-glass latency
+down from ~4–6s to close to `PART-HOLD-BACK`. Ports the prototype's three hls.js workarounds
+(catalogued in [`../../quirks/live-hls.md`](../../quirks/live-hls.md)) onto `LivePreview.tsx`:
+the zero-progress stall watchdog and bounded manifest-404 retry were already present for plain
+HLS; new is a periodic `hls.targetLatency` reset back to the playlist's `partHoldBack` after a
+stall-free window, countering hls.js's latency-ratchet-never-recovers bug
+(video-dev/hls.js#6350). `TsMuxer` needed no changes — parts are just byte ranges into the same
+continuous, already-188-byte-aligned TS buffer. Scoped GET-only `/live/*` token and adaptive
+bitrate remain deferred.
 
 ### Hand-rolled MPEG-TS muxer
 
@@ -60,8 +78,9 @@ hls.js 1.7.2 (Apache-2.0) lives under `controller/frontend/src/vendor/hlsjs/` as
 
 ## Consequences
 
-- Verified end to end: Pixel 6 played 2.5+ min continuously (~50 segments, zero 404s, no
-  stalls); BLU produced dead-regular ~0.96s segments at real time.
-- Deferred: LL-HLS and the rest of its hls.js workarounds (catalogued in
-  [`../../quirks/live-hls.md`](../../quirks/live-hls.md)), adaptive bitrate, the scoped
-  `/live/*` token, and a sustained on-device soak.
+- Plain HLS verified end to end: Pixel 6 played 2.5+ min continuously (~50 segments, zero 404s,
+  no stalls); BLU produced dead-regular ~0.96s segments at real time.
+- LL-HLS: implemented on both sides (phone relay parts + blocking reload, controller range/query
+  passthrough, hls.js low-latency config + workarounds); a sustained multi-minute on-device soak
+  confirming the latency win and no stall spiral is still outstanding.
+- Deferred: adaptive bitrate and the scoped `/live/*` token.

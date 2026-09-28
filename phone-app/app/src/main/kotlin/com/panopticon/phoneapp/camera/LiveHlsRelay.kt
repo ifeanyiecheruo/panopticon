@@ -11,20 +11,46 @@ import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CompletableDeferred
+
+/** A [ByteArrayOutputStream] that can hand back an already-written byte range without first
+ * copying its *entire* backing array the way [ByteArrayOutputStream.toByteArray] does -
+ * [readInProgressRange] serves an LL-HLS part/preload-hint fetch out of the segment still being
+ * built, up to ~3x/sec per viewer, and would otherwise copy the whole in-progress segment just to
+ * slice a small range out of it. */
+private class SegmentBuffer : ByteArrayOutputStream() {
+    fun copyRange(startOffset: Int, endOffsetExclusive: Int): ByteArray {
+        val length = endOffsetExclusive - startOffset
+        val out = ByteArray(length)
+        System.arraycopy(buf, startOffset, out, 0, length)
+        return out
+    }
+}
 
 /**
- * Produces a rolling **plain HLS** playlist (in-memory - see [currentPlaylist]) and finalized
+ * Produces a rolling **LL-HLS** playlist (in-memory - see [currentPlaylist]) and finalized
  * `live-N.ts` segment files in a cache directory (not the ring buffer, not counted against the
  * storage cap, cleaned up as segments roll out of the sliding window) from encoded H.264 samples
  * fed to it via [feed].
  *
- * Adapted from the abandoned prototype's `LiveHlsRelay`, **with LL-HLS removed**: no
- * `EXT-X-PART` / `PRELOAD-HINT` byte-range parts, no blocking playlist reloads, no in-progress
- * range reads. Just whole ~[segmentDurationUs] segments in a [playlistWindowSize]-deep sliding
- * window. Glass-to-glass latency is roughly `segmentDurationUs * 3` (hls.js starts 3 segments
- * back by default). The prototype's LL-HLS machinery and the hls.js latency workarounds it needed
- * are documented in `docs/quirks/live-hls.md` as carried-forward work to adopt if that latency proves too
- * high in practice.
+ * Ported from the abandoned prototype's `LiveHlsRelay`, keeping this project's own hardened
+ * segment tuning: ~1s full segments in a [playlistWindowSize]-deep sliding window (see that
+ * param's doc - a shallower window previously caused a 404 -> stall -> latency-ratchet spiral),
+ * with ~[partTargetDurationUs] LL-HLS parts layered on top instead of the prototype's 2s/333ms/
+ * 6-deep tuning. Within each full segment, access units are additionally grouped into parts -
+ * byte ranges within the same growing [currentSegmentBuffer] the eventual finalized segment file
+ * is written from (no separate part files, no fMP4/CMAF needed: hls.js transmuxes whatever
+ * container it fetches into fMP4 for MSE client-side regardless of source, so plain TS byte
+ * ranges work exactly the same as they would for a CMAF encoder). Every part flush republishes
+ * the playlist with an `#EXT-X-PART` entry (`BYTERANGE` into the *in-progress* segment's future
+ * filename - it becomes a real, byte-identical file once the segment finalizes) plus an
+ * `#EXT-X-PRELOAD-HINT` for whatever comes next, and resolves any HTTP request blocked in
+ * [awaitAtLeast] waiting on exactly that part. This is what lets a viewer start playing a
+ * segment's first couple hundred ms before the whole ~1s segment has finished encoding, instead
+ * of only ever seeing data in whole-segment increments - cutting glass-to-glass latency from
+ * roughly `segmentDurationUs * 3` down to close to `partTargetDurationUs * 3`
+ * (`PART-HOLD-BACK`). The hls.js latency workarounds this needs client-side are documented in
+ * `docs/quirks/live-hls.md`.
  *
  * This does NOT own a camera surface or an encoder - it's fed by [LivePipeline]'s drain thread.
  * [feed] is non-blocking: the muxing + file I/O happens on this class's own worker thread via a
@@ -33,6 +59,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class LiveHlsRelay(
     private val liveDir: File,
     private val segmentDurationUs: Long = DEFAULT_SEGMENT_DURATION_US,
+    private val partTargetDurationUs: Long = DEFAULT_PART_TARGET_DURATION_US,
     // A deep window is deliberate: with ~1s segments this is ~[playlistWindowSize]s of DVR, so a
     // player that briefly falls behind the live edge (a slow fetch, a GC pause, hls.js's
     // post-stall latency ratchet) still finds every segment it asks for instead of a 404 that
@@ -50,11 +77,29 @@ class LiveHlsRelay(
     private var segmentSeq = 0
     private var segmentStartPtsUs = -1L
     private var lastAccessUnitPtsUs = -1L
-    private var currentSegmentBuffer = ByteArrayOutputStream()
+    private var currentSegmentBuffer = SegmentBuffer()
 
     private data class PlaylistEntry(val seq: Int, val durationSec: Double)
     private val playlistSegments = ArrayDeque<PlaylistEntry>()
     private var mediaSequence = 0
+
+    // In-progress segment's parts (byte ranges within currentSegmentBuffer) - cleared by
+    // startNewSegmentLocked. Only the *current* segment ever advertises parts; once it finalizes
+    // it gets a normal #EXTINF entry instead and its parts stop being advertised (see
+    // writePlaylist). The next part always starts where the last one ended (or 0, for the
+    // segment's first part), so that boundary is read off currentSegmentParts rather than tracked
+    // as its own field.
+    private data class PartEntry(val startOffset: Int, val endOffset: Int, val durationSec: Double, val independent: Boolean)
+    private val currentSegmentParts = mutableListOf<PartEntry>()
+    private var partStartPtsUs = -1L
+
+    // A pending LL-HLS blocking-reload wait for `(msn, part)` - see [awaitAtLeast]. Every entry
+    // gets scanned on each resolve pass regardless (isAvailableLocked depends on live relay state,
+    // not a key lookup), and this list is never more than a handful of concurrent viewers long, so
+    // a flat list checked in full costs nothing extra over a keyed map while needing far less
+    // machinery.
+    private data class PendingWait(val msn: Int, val part: Int?, val deferred: CompletableDeferred<Unit>)
+    private val waiters = mutableListOf<PendingWait>()
 
     // The playlist is purely an ephemeral live view - never archived, never needed for crash
     // recovery - so it lives as a plain in-memory String (a single reference swap on each
@@ -70,6 +115,44 @@ class LiveHlsRelay(
     fun readSegment(seq: Int): ByteArray? {
         val f = File(liveDir, "live-$seq.ts")
         return if (f.exists()) runCatching { f.readBytes() }.getOrNull() else null
+    }
+
+    /** Byte range [startOffset, endOffsetExclusive) of the segment currently being built, before
+     * it's finalized to disk - what serves an LL-HLS part/preload-hint fetch for the in-progress
+     * segment (see LiveRoutes' segment route). Null if `seq` isn't the segment currently in
+     * progress, or the requested range extends past what's been muxed so far (a stale/racing
+     * request - the caller should treat this the same as "not found"). */
+    fun readInProgressRange(seq: Int, startOffset: Int, endOffsetExclusive: Int): ByteArray? = synchronized(stateLock) {
+        if (seq != segmentSeq || segmentStartPtsUs < 0) return@synchronized null
+        val size = currentSegmentBuffer.size()
+        if (startOffset < 0 || endOffsetExclusive > size || startOffset >= endOffsetExclusive) return@synchronized null
+        currentSegmentBuffer.copyRange(startOffset, endOffsetExclusive)
+    }
+
+    /** Returns a [CompletableDeferred] that completes once `(msn, part)` becomes available, or
+     * `null` if it already is (caller should proceed immediately rather than await). `part == null`
+     * means "the whole segment `msn`", matching LL-HLS's blocking-reload semantics for a playlist
+     * request with `_HLS_msn` but no `_HLS_part` - see LiveRoutes' playlist route. */
+    fun awaitAtLeast(msn: Int, part: Int?): CompletableDeferred<Unit>? = synchronized(stateLock) {
+        if (isAvailableLocked(msn, part)) return@synchronized null
+        val deferred = CompletableDeferred<Unit>()
+        waiters.add(PendingWait(msn, part, deferred))
+        deferred
+    }
+
+    private fun isAvailableLocked(msn: Int, part: Int?): Boolean {
+        if (msn < segmentSeq) return true // fully finalized (or already evicted/ancient - caller's problem)
+        if (msn > segmentSeq) return false // not started yet
+        // msn == segmentSeq: the in-progress segment - not "available" as a whole segment until it
+        // finalizes (msn < segmentSeq becomes true then); individual parts can be ready sooner.
+        return if (part == null) false else part < currentSegmentParts.size
+    }
+
+    private fun resolvePendingWaitersLocked() {
+        if (waiters.isEmpty()) return
+        val satisfied = waiters.filter { isAvailableLocked(it.msn, it.part) }
+        waiters.removeAll(satisfied)
+        for (wait in satisfied) wait.deferred.complete(Unit)
     }
 
     // Derived once from the encoder's MediaFormat (csd-0/csd-1). Re-prepended to every new segment
@@ -161,17 +244,40 @@ class LiveHlsRelay(
             finalizeCurrentSegmentLocked()
             startNewSegmentLocked(ptsUs)
         }
+        if (partStartPtsUs < 0) partStartPtsUs = ptsUs
         muxer.writeAccessUnit(currentSegmentBuffer, data, ptsUs, isKeyFrame)
         lastAccessUnitPtsUs = ptsUs
+        if (ptsUs - partStartPtsUs >= partTargetDurationUs) finalizePartLocked()
     }
 
     private fun startNewSegmentLocked(ptsUs: Long) {
         segmentStartPtsUs = ptsUs
-        currentSegmentBuffer = ByteArrayOutputStream()
+        currentSegmentBuffer = SegmentBuffer()
+        currentSegmentParts.clear()
+        partStartPtsUs = -1L
         muxer.writeHeader(currentSegmentBuffer)
         // The real first access unit written right after carries its own PCR, so no separate PCR
         // packet here - SPS/PPS adds little and stays well within spec tolerance.
         codecConfigBytes?.let { muxer.writeAccessUnit(currentSegmentBuffer, it, ptsUs, isKeyFrame = false) }
+    }
+
+    /** Flushes the still-open part covering [the last part's end offset, current buffer size) -
+     * called both on a normal ~[partTargetDurationUs] timer (from [handleAccessUnit]) and is
+     * deliberately NOT called when a segment rotates (see [finalizeCurrentSegmentLocked]'s doc) -
+     * assumes the caller already holds [stateLock]. */
+    private fun finalizePartLocked() {
+        val startOffset = currentSegmentParts.lastOrNull()?.endOffset ?: 0
+        val endOffset = currentSegmentBuffer.size()
+        if (endOffset <= startOffset || partStartPtsUs < 0) {
+            partStartPtsUs = -1L
+            return
+        }
+        val durationSec = ((lastAccessUnitPtsUs - partStartPtsUs) / 1_000_000.0).coerceAtLeast(0.001)
+        val independent = currentSegmentParts.isEmpty() // only the segment's first part starts on a keyframe+config
+        currentSegmentParts.add(PartEntry(startOffset, endOffset, durationSec, independent))
+        partStartPtsUs = -1L
+        writePlaylist()
+        resolvePendingWaitersLocked()
     }
 
     private fun finalizeCurrentSegmentLocked() {
@@ -200,26 +306,55 @@ class LiveHlsRelay(
                 .onFailure { Log.w(TAG, "Failed to write live segment $seq", it) }
             for (evictedSeq in evictedSeqs) File(liveDir, "live-$evictedSeq.ts").delete()
         }
+        // Not force-flushing a trailing part here on purpose: whatever's accumulated since the
+        // last part flush is still fully present in the finalized file written above (a plain,
+        // non-LL fetch of the whole segment gets every byte regardless), it just never got
+        // advertised as its own #EXT-X-PART - a harmless, sub-part-duration sliver of extra
+        // latency for LL-HLS viewers on the rare access unit that lands exactly on a segment
+        // rotation, not worth the extra bookkeeping to avoid.
         writePlaylist()
+        resolvePendingWaitersLocked()
         segmentStartPtsUs = -1L
     }
 
     private fun writePlaylist() {
-        // Max over the segments currently in the window, not an all-time high-water mark.
+        // Max over the segments *currently* in the window, not an all-time high-water mark - an
+        // old bug here let one long-ago outlier (irregular keyframe timing, a bitrate
+        // reconfigure, a GC pause, etc.) permanently inflate this for the rest of the broadcast
+        // session, long after the segment it came from had already rolled out of the playlist.
+        // That matters: hls.js's LatencyController caps how much a rebuffer is allowed to grow
+        // the low-latency sync target at exactly this value, so a stale inflated TARGETDURATION
+        // would quietly widen how far behind live a *future* stall is allowed to push playback.
         val targetDurationSec = kotlin.math.ceil(
             playlistSegments.maxOfOrNull { it.durationSec } ?: (segmentDurationUs / 1_000_000.0)
         ).toLong().coerceAtLeast(1L)
+        val partTargetSec = partTargetDurationUs / 1_000_000.0
+        val partHoldBackSec = 3.0 * partTargetSec
         val sb = StringBuilder()
         sb.append("#EXTM3U\n")
-        sb.append("#EXT-X-VERSION:3\n")
+        // LL-HLS (EXT-X-PART/EXT-X-PRELOAD-HINT/BYTERANGE within EXT-X-PART) requires
+        // EXT-X-VERSION:9.
+        sb.append("#EXT-X-VERSION:9\n")
         sb.append("#EXT-X-TARGETDURATION:$targetDurationSec\n")
+        sb.append("#EXT-X-PART-INF:PART-TARGET=${"%.3f".format(partTargetSec)}\n")
+        sb.append("#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=${"%.3f".format(partHoldBackSec)}\n")
         sb.append("#EXT-X-MEDIA-SEQUENCE:$mediaSequence\n")
-        // Join a few seconds behind the live edge, not at it - leaves headroom for a slow fetch
-        // before the player would have to stall. hls.js and Safari both honour this.
-        sb.append("#EXT-X-START:TIME-OFFSET=-${"%.3f".format(START_OFFSET_SEC)},PRECISE=YES\n")
         for (entry in playlistSegments) {
             sb.append("#EXTINF:${"%.3f".format(entry.durationSec)},\n")
             sb.append("live-${entry.seq}.ts\n")
+        }
+        // In-progress segment: only #EXT-X-PART/preload-hint entries, no #EXTINF yet - it gets one
+        // above (via playlistSegments) once finalizeCurrentSegmentLocked() promotes it.
+        if (segmentStartPtsUs >= 0) {
+            val uri = "live-$segmentSeq.ts"
+            for (part in currentSegmentParts) {
+                sb.append("#EXT-X-PART:DURATION=${"%.3f".format(part.durationSec)},URI=\"$uri\"")
+                sb.append(",BYTERANGE=\"${part.endOffset - part.startOffset}@${part.startOffset}\"")
+                if (part.independent) sb.append(",INDEPENDENT=YES")
+                sb.append("\n")
+            }
+            val preloadStart = currentSegmentParts.lastOrNull()?.endOffset ?: 0
+            sb.append("#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"$uri\",BYTERANGE-START=$preloadStart\n")
         }
         playlistText = sb.toString()
     }
@@ -233,7 +368,6 @@ class LiveHlsRelay(
         private const val TAG = "LiveHlsRelay"
         private const val QUEUE_CAPACITY = 300
         private const val POLL_TIMEOUT_MS = 500L
-        private const val START_OFFSET_SEC = 4.0
 
         /** Target segment length. Short segments = finer granularity: a single slow fetch costs
          * ~1s of buffer, not 2-3s, and the DVR window holds proportionally more segments.
@@ -241,5 +375,9 @@ class LiveHlsRelay(
          * rotate on a keyframe at roughly this interval regardless of what the encoder's
          * `KEY_I_FRAME_INTERVAL` hint actually does on a given device. */
         const val DEFAULT_SEGMENT_DURATION_US = 1_000_000L
+
+        /** ~3 parts per 1s segment. Also the source of truth for LiveRoutes' blocking-reload
+         * timeout, so the two stay in sync. */
+        const val DEFAULT_PART_TARGET_DURATION_US = 333_000L
     }
 }

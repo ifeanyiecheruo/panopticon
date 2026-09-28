@@ -87,4 +87,27 @@ class MotionDetectorTest {
         // Back in warmup: a big change right after reset is not reported.
         assertFalse(d.acceptFrame(frame(240)).motion)
     }
+
+    @Test
+    fun `changing sensitivity keeps the reference frame`() {
+        // Callers used to pick up a changed setting by rebuilding the detector on a timer, which
+        // silently dropped the reference and re-ran the warm-up every time - blind for a few
+        // frames every refresh, whether or not the setting had actually changed.
+        val d = MotionDetector("low")
+        repeat(5) { d.acceptFrame(frame(80)) }
+        d.sensitivity = "high"
+
+        val k8 = frameWithChangedCells(frame(80), 8, 255) // 0.0104: trips "high", not "low"
+        val r = d.acceptFrame(k8)
+        assertTrue("the new threshold is in force immediately", r.motion)
+        assertEquals("and against the frame before it, not a fresh warm-up", 8.0 / 768.0, r.changedFraction, 1e-9)
+    }
+
+    @Test
+    fun `re-setting the same sensitivity is a no-op`() {
+        val d = MotionDetector("medium")
+        repeat(5) { d.acceptFrame(frame(80)) }
+        repeat(10) { d.sensitivity = "medium" }
+        assertTrue(d.acceptFrame(frame(240)).motion)
+    }
 }

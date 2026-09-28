@@ -1,6 +1,11 @@
 # Plan: LL-HLS upgrade for live view
 
-**Side:** both · **Size:** large
+**Side:** both · **Size:** large · **Status:** implemented, build/unit-verified. Scoped-token and
+adaptive-bitrate adjacent items below stay deferred. **Outstanding:** a real multi-minute
+on-device soak (see Acceptance) — the plain-HLS bar this needs to clear is documented in
+[`../design/decisions/0007-live-preview-plain-hls.md`](../design/decisions/0007-live-preview-plain-hls.md)
+and [`../quirks/live-hls.md`](../quirks/live-hls.md), which have both been updated to describe
+the shipped LL-HLS design; this file is kept for the acceptance criteria until that soak runs.
 
 ## Goal
 

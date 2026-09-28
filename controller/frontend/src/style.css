@@ -112,6 +112,8 @@ body{
 .pcard .name{font-size:14px; font-weight:600; flex:1; min-width:0;}
 .batt{font-family:"Consolas",monospace; font-size:10.5px; color:var(--text-dim);}
 .batt.low{color:var(--warn);}
+/* .sub is a plain flex row with no align-items, so the glyph would otherwise stretch. */
+.battery{align-self:center; flex:0 0 auto;}
 .status-pill{
   display:inline-flex; align-items:center; gap:6px;
   font-family:"Consolas",monospace; font-size:10.5px; letter-spacing:.05em;

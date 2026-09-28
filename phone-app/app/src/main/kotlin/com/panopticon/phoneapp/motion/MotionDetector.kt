@@ -21,14 +21,24 @@ class MotionDetector(
     private val gridCols: Int = 32,
     private val gridRows: Int = 24,
     private val pixelDeltaThreshold: Int = 18,
-    private val warmupFrames: Int = 3,
+    internal val warmupFrames: Int = 3,
 ) {
+    /**
+     * Settable, because the alternative is what this class used to get: callers rebuilt the whole
+     * detector on a timer to pick up a changed setting, and every rebuild silently threw away
+     * [previous] and restarted [warmupFrames]. A threshold is just a number - changing it has no
+     * business invalidating the reference frame, and doing so blinded detection for a few frames
+     * on every refresh whether or not the setting had actually changed.
+     */
+    var sensitivity: String = sensitivity
+        set(value) {
+            if (field == value) return
+            field = value
+            changedFractionThreshold = thresholdFor(value)
+        }
+
     /** Fraction of grid cells that must change for a frame to count as motion. */
-    private val changedFractionThreshold: Double = when (sensitivity.lowercase()) {
-        "high" -> 0.010
-        "low" -> 0.060
-        else -> 0.028 // medium / anything unrecognised
-    }
+    private var changedFractionThreshold: Double = thresholdFor(sensitivity)
 
     private val cellCount = gridCols * gridRows
     private var previous: IntArray? = null
@@ -69,9 +79,16 @@ class MotionDetector(
         return Result(motion = fraction >= changedFractionThreshold, changedFraction = fraction)
     }
 
-    /** Drop the reference frame - call after a gap where frames stopped arriving. */
+    /** Drop the reference frame - call after a gap where frames stopped arriving, or after
+     *  anything that changed the picture without the scene moving (see [CameraDisturbance]). */
     fun reset() {
         previous = null
         framesSeen = 0
+    }
+
+    private fun thresholdFor(sensitivity: String): Double = when (sensitivity.lowercase()) {
+        "high" -> 0.010
+        "low" -> 0.060
+        else -> 0.028 // medium / anything unrecognised
     }
 }

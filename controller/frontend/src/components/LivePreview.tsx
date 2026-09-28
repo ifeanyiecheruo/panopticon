@@ -21,18 +21,28 @@ const MANIFEST_RETRY_MS = 700;
 // stops requesting fragments after a stall with no error event, and another
 // where its live-latency target ratchets up after every stall and never
 // recovers (docs/quirks/live-hls.md). Poll playback progress; if it's wedged, kick the
-// loader and jump back to the live edge.
+// loader and jump back to the live edge. The same tick also resets the
+// latency ratchet once playback has been stall-free for a while.
 const STALL_POLL_MS = 2000;
 const STALL_AFTER_MS = 6000;
 
-/** Config aimed at a plain-HLS live feed off a phone on the LAN: a generous DVR
- * window and buffer so a slow fetch or a GC pause doesn't immediately starve
- * the player, and patient retries. Not low-latency mode. */
+// hls.js's targetLatency ratchets up ~1s after every stall and never comes
+// back down on its own (video-dev/hls.js#6350) - once playback has run
+// stall-free for this long, pull it back down toward the live edge so a
+// long-ago stall doesn't leave the player permanently trailing further than
+// it needs to.
+const LATENCY_RESET_AFTER_STABLE_MS = 20000;
+
+/** Config aimed at an LL-HLS live feed off a phone on the LAN: low-latency
+ * mode targets the playlist's PART-HOLD-BACK instead of a fixed segment
+ * count behind live. `liveSyncDuration`/`liveSyncDurationCount` are
+ * deliberately left unset - setting either defeats LL-HLS and falls back to
+ * whole-segment sync (docs/quirks/live-hls.md). Buffer/retry settings stay
+ * generous so a slow fetch or a GC pause doesn't immediately starve the
+ * player. */
 const HLS_CONFIG = {
   enableWorker: true,
-  lowLatencyMode: false,
-  liveSyncDurationCount: 3,
-  liveMaxLatencyDurationCount: 20,
+  lowLatencyMode: true,
   maxBufferLength: 20,
   maxMaxBufferLength: 40,
   backBufferLength: 12,
@@ -72,6 +82,7 @@ export function useLivePreview(phoneId: string): LiveController {
   const startedRef = useRef(false);
   const stallTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastProgressRef = useRef({ t: 0, at: 0 });
+  const lastStallKickAtRef = useRef(0);
 
   const teardown = useCallback(
     (opts: { stopPhone: boolean }) => {
@@ -108,6 +119,21 @@ export function useLivePreview(phoneId: string): LiveController {
     video.play().catch(() => {});
   }, []);
 
+  // hls.js's targetLatency ratchets up after a stall and never comes back
+  // down on its own - once playback has been stall-free for a while, pull it
+  // back toward the playlist's advertised PART-HOLD-BACK.
+  const maybeResetLatencyRatchet = useCallback((hls: Hls, lastStallKickAt: number, now: number) => {
+    const partHoldBack = hls.latestLevelDetails?.partHoldBack;
+    if (
+      partHoldBack &&
+      now - lastStallKickAt > LATENCY_RESET_AFTER_STABLE_MS &&
+      typeof hls.targetLatency === 'number' &&
+      hls.targetLatency > partHoldBack + 0.1
+    ) {
+      hls.targetLatency = partHoldBack;
+    }
+  }, []);
+
   const attachHls = useCallback(
     (playlistPath: string) => {
       const video = videoRef.current;
@@ -129,6 +155,7 @@ export function useLivePreview(phoneId: string): LiveController {
           data.details === Hls.ErrorDetails.LEVEL_EMPTY_ERROR;
 
         if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
+          lastStallKickAtRef.current = Date.now();
           hls.startLoad();
           jumpToLiveEdge(hls);
           return;
@@ -143,6 +170,7 @@ export function useLivePreview(phoneId: string): LiveController {
           return;
         }
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          lastStallKickAtRef.current = Date.now();
           hls.startLoad();
           jumpToLiveEdge(hls);
         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
@@ -166,6 +194,7 @@ export function useLivePreview(phoneId: string): LiveController {
       video.play().catch(() => {});
 
       lastProgressRef.current = { t: 0, at: Date.now() };
+      lastStallKickAtRef.current = Date.now();
       stallTimerRef.current = setInterval(() => {
         const v = videoRef.current;
         const h = hlsRef.current;
@@ -173,16 +202,17 @@ export function useLivePreview(phoneId: string): LiveController {
         const now = Date.now();
         if (v.currentTime > lastProgressRef.current.t + 0.05) {
           lastProgressRef.current = { t: v.currentTime, at: now };
-          return;
-        }
-        if (now - lastProgressRef.current.at > STALL_AFTER_MS) {
+        } else if (now - lastProgressRef.current.at > STALL_AFTER_MS) {
+          lastStallKickAtRef.current = now;
           h.startLoad();
           jumpToLiveEdge(h);
           lastProgressRef.current = { t: v.currentTime, at: now };
         }
+
+        maybeResetLatencyRatchet(h, lastStallKickAtRef.current, now);
       }, STALL_POLL_MS);
     },
-    [teardown, jumpToLiveEdge],
+    [teardown, jumpToLiveEdge, maybeResetLatencyRatchet],
   );
 
   const watch = useCallback(async () => {

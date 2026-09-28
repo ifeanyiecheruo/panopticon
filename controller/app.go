@@ -57,9 +57,15 @@ type PhoneView struct {
 	BatteryPercent int    `json:"batteryPercent"`
 	HasBattery     bool   `json:"hasBattery"`
 	Charging       bool   `json:"charging"`
-	LastSeenMs     int64  `json:"lastSeenMs"`
-	SyncCursorMs   int64  `json:"syncCursorMs"`
-	DiskUsageBytes int64  `json:"diskUsageBytes"`
+	// HasThermal is false both when the phone is unreachable and when it runs an Android old
+	// enough to have no thermal API (the BLU G5, API 28). Either way the UI draws no icon —
+	// a phone that cannot report its thermal state is not the same as one reporting "cool".
+	HasThermal      bool   `json:"hasThermal"`
+	ThermalLevel    string `json:"thermalLevel"`
+	ThermalSeverity int    `json:"thermalSeverity"`
+	LastSeenMs      int64  `json:"lastSeenMs"`
+	SyncCursorMs    int64  `json:"syncCursorMs"`
+	DiskUsageBytes  int64  `json:"diskUsageBytes"`
 }
 
 // ListPhones returns every paired phone from the local DB only — no network
@@ -197,6 +203,9 @@ func (a *App) GetPhoneDetail(phoneID string) (PhoneDetailView, error) {
 		detail.Phone.HasBattery = true
 		detail.Phone.BatteryPercent = status.BatteryPercent
 		detail.Phone.Charging = status.Charging
+		detail.Phone.HasThermal = status.Thermal.Supported
+		detail.Phone.ThermalLevel = status.Thermal.Level
+		detail.Phone.ThermalSeverity = status.Thermal.Severity
 		if status.Status == "recording" {
 			detail.Phone.Status = "recording"
 		} else {

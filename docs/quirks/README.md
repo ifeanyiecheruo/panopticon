@@ -26,7 +26,7 @@ introduces them for a generalist.
 | [`camera2-recording-pipeline.md`](camera2-recording-pipeline.md) | Camera2 capture sessions, the `MediaCodec` / `MediaMuxer` recording pipeline, gapless segment rotation, the GL `SurfaceTexture` fan-out, encoder-size and keyframe behaviour. |
 | [`calibration-zoom.md`](calibration-zoom.md) | The empirical zoom probe (`calibration/CalibrationRunner`): `CONTROL_ZOOM_RATIO` vs legacy `SCALER_CROP_REGION`, off-centre crop honouring, digital-zoom quality collapse, per-device findings, and the ART class/field-verification trap. |
 | [`manual-camera-controls.md`](manual-camera-controls.md) | The `/api/camera/*` slice: manual exposure / focus / white-balance, `MANUAL_SENSOR` gating, logical vs physical multi-camera, camera switching. |
-| [`live-hls.md`](live-hls.md) | `live` mode: the plain-HLS design, sliding-window sizing, hls.js live config + stall watchdog, and the carried-forward LL-HLS / hls.js latency workarounds. |
+| [`live-hls.md`](live-hls.md) | `live` mode: the LL-HLS design (plain HLS first, then LL-HLS), sliding-window sizing, hls.js live config + stall watchdog + latency-ratchet reset. |
 | [`mpeg-ts.md`](mpeg-ts.md) | The hand-rolled MPEG-TS muxer (`camera/ts/TsMuxer.kt`) - why `MediaMuxer` can't be used and the 188-byte-packet invariant. |
 | [`android-service.md`](android-service.md) | The foreground service and the embedded HTTP server: `startForeground` overload gating, bind-retry, and the end-to-end hardware confirmation. |
 | [`dev-tooling-windows.md`](dev-tooling-windows.md) | Windows / MSYS2 `make` / Gradle / Go toolchain quirks hit while building on this dev machine (an OneDrive-rooted repo). |

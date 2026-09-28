@@ -7,7 +7,10 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
@@ -52,6 +55,7 @@ import com.panopticon.phoneapp.calibration.RectNorm
 
 private const val TAG = "LivePipeline"
 private const val DEQUEUE_TIMEOUT_US = 10_000L
+private const val ROLE = "live"
 private const val EGL_RECORDABLE_ANDROID = 0x3142
 
 /**
@@ -92,6 +96,7 @@ class LivePipeline(
     private val frameRate: Int = 24,
     private val segmentDurationUs: Long = LiveHlsRelay.DEFAULT_SEGMENT_DURATION_US,
     private val inactivityTimeoutMs: Long = 15_000L,
+    private val healthRegistry: CameraHealthRegistry = CameraHealthRegistry(),
     private val onHealthChanged: (Boolean) -> Unit = {},
     private val onBroadcastingChanged: (Boolean) -> Unit = {},
 ) {
@@ -106,10 +111,23 @@ class LivePipeline(
     // Zoom is split between a centred hardware magnification and a GL crop (ZoomGeometry.split),
     // against this phone's own calibration sweep. The split depends on the aspect trim, which only
     // exists once frames flow, so it is recomputed on the first frame as well as on every control
-    // change. Reading a stale split for a frame or two after a change is harmless: the hardware
-    // takes a few frames to act on a new zoom anyway.
+    // change.
+    //
+    // Requested and delivered are kept apart for the same reason as in CameraGlPipeline: the HAL
+    // takes ~10 frames to reach a new CONTROL_ZOOM_RATIO, and a shader that adopts the requested
+    // crop immediately renders the wrong region, magnified and soft, until the hardware lands and
+    // the preview jumps. LIVE runs no motion detection, so there is no MotionGate here and no
+    // false clip to cause - but the jump is just as visible to whoever is watching.
     @Volatile private var zoomLut: ZoomCalibrationLut.Lut = ZoomCalibrationLut.Lut.NONE
-    @Volatile private var zoomSplit: ZoomGeometry.Split? = null
+    @Volatile private var requestedSplit: ZoomGeometry.Split? = null
+    private val zoomFeedback = ZoomFeedback()
+    private val lastCaptureResultMs = AtomicLong(0)
+    private val captureResultsThisRun = AtomicLong(0)
+
+    /** Re-pointed at the real camera's record once [arm] resolves an id; until then a
+     *  placeholder, so nothing on a failure path has to null-check a counter. */
+    @Volatile private var health: CameraHealth =
+        healthRegistry.forCamera(cameraId?.takeIf { it.isNotBlank() } ?: "(unresolved)", ROLE)
     @Volatile private var openCameraId: String? = null
     /** Set when [cameraId] is "<logical>:<physical>": session outputs pinned via [PhysicalCameraApi28]. */
     @Volatile private var physicalCameraId: String? = null
@@ -182,6 +200,13 @@ class LivePipeline(
 
     fun readSegment(seq: Int): ByteArray? = relay?.readSegment(seq)
 
+    /** LL-HLS blocking-reload wait for `(msn, part)` - see [LiveHlsRelay.awaitAtLeast]. */
+    fun relayAwaitAtLeast(msn: Int, part: Int?): CompletableDeferred<Unit>? = relay?.awaitAtLeast(msn, part)
+
+    /** LL-HLS in-progress part/preload-hint byte range - see [LiveHlsRelay.readInProgressRange]. */
+    fun relayReadInProgressRange(seq: Int, startOffset: Int, endOffsetExclusive: Int): ByteArray? =
+        relay?.readInProgressRange(seq, startOffset, endOffsetExclusive)
+
     // ---- lifecycle ----
 
     /** Enter armed-idle: open the camera and configure the session, no frames flowing yet. */
@@ -239,7 +264,7 @@ class LivePipeline(
 
         relay = LiveHlsRelay(liveDir, segmentDurationUs)
         startDrain()
-        session.setRepeatingRequest(buildLiveRequest(device, surface), null, callbackHandler)
+        session.setRepeatingRequest(buildLiveRequest(device, surface), captureMonitor, callbackHandler)
         broadcasting.set(true)
         startWatchdog()
         startSyncFrameLoop()
@@ -262,20 +287,77 @@ class LivePipeline(
     fun applyControls(spec: CameraControlSpec) {
         controls = spec
         // A zoom change moves work between the camera and GL, so the split is redone before the
-        // request is rebuilt below. The shader picks the new crop up on its next frame.
+        // request is rebuilt below. The shader does *not* pick the new crop up on its next frame:
+        // it follows the capture results, so it only moves as the hardware actually does.
         recomputeZoomSplit()
         val device = cameraDevice ?: return
         val session = captureSession ?: return
         val surface = cameraSurface ?: return
         if (!broadcasting.get()) return
         runCatching {
-            session.setRepeatingRequest(buildLiveRequest(device, surface), null, callbackHandler)
-        }.onFailure { Log.w(TAG, "applyControls: setRepeatingRequest failed", it) }
+            session.setRepeatingRequest(buildLiveRequest(device, surface), captureMonitor, callbackHandler)
+        }.onFailure {
+            Log.w(TAG, "applyControls: setRepeatingRequest failed", it)
+            health.event("setRepeatingRequestFailed", it.message)
+        }
     }
 
-    /** The region of the full field of view the buffer currently holds - the whole frame until a
-     *  hardware zoom is in effect. The shader places the requested view inside it. */
-    private fun deliveredCrop(): RectNorm = zoomSplit?.deliveredCrop ?: ZoomGeometry.FULL
+    /**
+     * The region of the full field of view the buffer holds **for the frame timestamped
+     * [frameTimestampNs]** - the mirror of `CameraGlPipeline.deliveredCrop`. Looked up by the
+     * frame's own sensor timestamp, so the preview holds still through a zoom and merely
+     * sharpens, instead of showing the wrong region and then jumping to the right one.
+     */
+    private fun deliveredCrop(frameTimestampNs: Long): RectNorm {
+        val requested = requestedSplit?.hwRatio ?: 1f
+        val applied = zoomFeedback.appliedRatio(frameTimestampNs, requested)
+        return ZoomGeometry.splitFor(
+            viewSensor = ZoomGeometry.viewToSensor(zoomView() ?: ZoomGeometry.FULL, texCropX, texCropY),
+            lut = zoomLut.entries,
+            hwRatio = applied,
+            texCropX = texCropX,
+            texCropY = texCropY,
+        ).deliveredCrop
+    }
+
+    /**
+     * The repeating request's result listener - previously `null`. It is the only channel through
+     * which this pipeline can learn where the hardware zoom actually is, or that a capture failed
+     * at all: without it a run of `onCaptureFailed`s or a lost buffer is entirely silent.
+     */
+    private val captureMonitor = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult,
+        ) {
+            lastCaptureResultMs.set(SystemClock.elapsedRealtime())
+            captureResultsThisRun.incrementAndGet()
+            val ts = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+            zoomFeedback.record(ts, AppliedZoomReader.read(result, caps))
+        }
+
+        override fun onCaptureFailed(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            failure: CaptureFailure,
+        ) {
+            health.event("captureFailed", "reason=${failure.reason} frame=${failure.frameNumber}")
+        }
+
+        override fun onCaptureBufferLost(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            target: Surface,
+            frameNumber: Long,
+        ) {
+            health.event("captureBufferLost", "frame=$frameNumber")
+        }
+
+        override fun onCaptureSequenceAborted(session: CameraCaptureSession, sequenceId: Int) {
+            health.event("captureSequenceAborted", "sequence=$sequenceId")
+        }
+    }
 
     /** The view the user asked for, or null when running full auto. */
     private fun zoomView(): RectNorm? =
@@ -284,14 +366,14 @@ class LivePipeline(
     /** Recompute how much of the zoom the camera should do. Returns true when the hardware half
      *  changed, meaning the repeating request has to be re-issued to take effect. */
     private fun recomputeZoomSplit(): Boolean {
-        val previous = zoomSplit?.hwRatio ?: 1f
+        val previous = requestedSplit?.hwRatio ?: 1f
         val split = ZoomGeometry.split(
             viewSensor = ZoomGeometry.viewToSensor(zoomView() ?: ZoomGeometry.FULL, texCropX, texCropY),
             lut = zoomLut.entries,
             texCropX = texCropX,
             texCropY = texCropY,
         )
-        zoomSplit = split
+        requestedSplit = split
         return kotlin.math.abs(split.hwRatio - previous) > 0.01f
     }
 
@@ -303,7 +385,7 @@ class LivePipeline(
             stableFpsRange()?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
             caps?.let {
                 CameraControlApply.applyTo(this, controls, it)
-                CameraControlApply.applyZoom(this, zoomSplit?.hwRatio ?: 1f, it)
+                CameraControlApply.applyZoom(this, requestedSplit?.hwRatio ?: 1f, it)
             }
         }.build()
 
@@ -315,8 +397,11 @@ class LivePipeline(
         val surface = cameraSurface ?: return
         if (!broadcasting.get()) return
         runCatching {
-            session.setRepeatingRequest(buildLiveRequest(device, surface), null, callbackHandler)
-        }.onFailure { Log.w(TAG, "reissueRepeatingRequest failed", it) }
+            session.setRepeatingRequest(buildLiveRequest(device, surface), captureMonitor, callbackHandler)
+        }.onFailure {
+            Log.w(TAG, "reissueRepeatingRequest failed", it)
+            health.event("setRepeatingRequestFailed", it.message)
+        }
     }
 
     private fun stopBroadcastingLocked() {
@@ -353,7 +438,12 @@ class LivePipeline(
         zoomLut = ZoomCalibrationLut.build(
             CalibrationStore(context).load(), id, recordingSize.width, recordingSize.height,
         )
-        zoomSplit = null
+        requestedSplit = null
+        zoomFeedback.clear()
+        health = healthRegistry.forCamera(id, ROLE)
+        health.runStarted()
+        health.gauge("zoomLutSamples", zoomLut.entries.size)
+        health.gauge("zoomViaRatioApi", (caps?.zoomViaRatioApi ?: false).toString())
         if (!zoomLut.isEmpty) {
             Log.i(TAG, "zoom map: camera ${zoomLut.sourceCameraId} @ ${zoomLut.sourceResolution}, ${zoomLut.entries.size} samples")
         }
@@ -486,8 +576,9 @@ class LivePipeline(
         // means no manual exposure (see CameraControlApply's early return).
         // texRectUniform, not shaderRect: the uniform's Y axis runs bottom-up while every rect
         // here is viewer-oriented (top-down), so it has to be flipped on the way in. deliveredCrop
-        // is what the camera is already zoomed to, so the view is placed inside it.
-        val u = ZoomGeometry.texRectUniform(zoomView(), texCropX, texCropY, deliveredCrop())
+        // is what the camera is already zoomed to *for this frame*, looked up by the frame's own
+        // sensor timestamp, so the view is placed inside what the buffer actually holds.
+        val u = ZoomGeometry.texRectUniform(zoomView(), texCropX, texCropY, deliveredCrop(tsNanos))
         GLES20.glUniform4f(uTexRectLoc, u[0], u[1], u[2], u[3])
         quad.position(0); GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
         GLES20.glEnableVertexAttribArray(aPosLoc)
@@ -587,6 +678,16 @@ class LivePipeline(
     }
 
     private fun teardown() {
+        // Close the health run that arm() opened. Without this the live record reported a run
+        // that had been "in flight" for as long as the process had been alive, so its uptime and
+        // mean-uptime figures were not merely imprecise but meaningless - and LIVE is the other
+        // consumer of the same camera, so its numbers matter for reading RECORD's.
+        health.runEnded("released")
+        health.gauge("recordingSize", "${recordingSize.width}x${recordingSize.height}")
+        health.gauge("outputSize", "${outputSize.width}x${outputSize.height}")
+        health.gauge("zoom.readable", zoomFeedback.readable)
+        health.gauge("zoom.unreadable", zoomFeedback.unreadable)
+        zoomFeedback.clear()
         drainRunning = false
         runOnGl {
             runCatching { captureSession?.stopRepeating() }

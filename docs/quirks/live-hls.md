@@ -1,18 +1,25 @@
-# Live view (plain HLS)
+# Live view (LL-HLS)
 
 Device context and the "Reconfirmed" / "Carried forward" convention: see [`README.md`](README.md).
 The hand-rolled MPEG-TS muxer this feed depends on has its own page:
 [`mpeg-ts.md`](mpeg-ts.md).
 
-## Live view is plain HLS, single-stream, hand-rolled MPEG-TS
+## Live view is LL-HLS, single-stream, hand-rolled MPEG-TS
 **Context:** `live` mode (`POST /api/mode {"mode":"live"}`) needed a real HLS feed, not the flag
-flip it used to be. Decisions taken this slice:
+flip it used to be. Decisions taken across two slices (plain HLS first, LL-HLS once that
+latency was judged worth cutting — see [`../design/decisions/0007-live-preview-plain-hls.md`](../design/decisions/0007-live-preview-plain-hls.md)):
 
-- **Plain HLS, not LL-HLS.** Whole `.ts` segments (~1s target — see keyframe cadence below), a
-  **16-deep** sliding window (~16s of DVR), `#EXT-X-VERSION:3`, and `#EXT-X-START:TIME-OFFSET=-4`
-  so a joining player sits ~4s behind the live edge. Glass-to-glass ≈ 4–6s. The prototype built
-  full LL-HLS (`EXT-X-PART`/`PRELOAD-HINT` byte-range parts, blocking playlist reloads) and paid
-  for a long list of hls.js latency workarounds — all deferred here (see "Carried forward").
+- **Plain HLS first, then LL-HLS.** Whole `.ts` segments (~1s target — see keyframe cadence
+  below) in a **16-deep** sliding window (~16s of DVR) held up at ~4–6s glass-to-glass with
+  `#EXT-X-VERSION:3` + `#EXT-X-START:TIME-OFFSET=-4`. LL-HLS keeps the same ~1s/16-deep segment
+  tuning (not the prototype's 2s/6-deep one — see below) and layers ~333ms `EXT-X-PART`
+  byte-range parts + blocking playlist reloads (`_HLS_msn`/`_HLS_part`, `PART-HOLD-BACK` ≈ 1s)
+  on top, dropping the fixed `#EXT-X-START` offset in favor of joining via `PART-HOLD-BACK`.
+  Glass-to-glass now close to `PART-HOLD-BACK` instead of ~4–6s. The prototype's LL-HLS
+  machinery (`EXT-X-PART`/`PRELOAD-HINT` byte-range parts, blocking playlist reloads) and the
+  hls.js workarounds it needed are what got ported — see below (moved out of "Carried forward"
+  now that they're implemented here; still pending the on-device soak that would earn them a
+  "Reconfirmed" tag).
 - **A deep window is load-bearing, not luxury.** The first cut used a 6-segment / ~2s window
   (~12s of DVR). hls.js sitting its default ~3 target-durations behind the live edge then had
   only a few seconds of margin, so any hiccup (a slow fetch, a GC pause, hls.js's *own*
@@ -47,49 +54,48 @@ flip it used to be. Decisions taken this slice:
   token so a browser could fetch segments without the credential that can also delete footage.
   Deferred: the controller proxies `/live/*` server-side (`controller/liveproxy.go`), so the
   webview never talks to the phone directly and no scoped token is needed yet.
-- **hls.js needs real live config + a stall watchdog** (in `LivePreview.tsx`), not defaults:
-  `liveSyncDurationCount` / `liveMaxLatencyDurationCount`, a ~20s `maxBufferLength`, patient
-  fragment/manifest retries, plus a 2s-interval watchdog that — on ~6s of no playback progress,
-  or a `BUFFER_STALLED_ERROR`, or a fatal network error — calls `hls.startLoad()` and seeks to
-  `hls.liveSyncPosition` (or the buffer's leading edge). This is the concrete, minimal subset of
-  the prototype's "stuck load queue after a stall" + "latency ratchet never recovers" workarounds
-  that plain HLS actually needs. The startup manifest-404 retry budget resets once the first
-  fragment buffers, so a mid-stream blip gets a fresh allowance.
+- **hls.js needs real LL-HLS live config + a stall watchdog + a latency-ratchet reset** (in
+  `LivePreview.tsx`), not defaults: `lowLatencyMode: true` with `liveSyncDuration` /
+  `liveSyncDurationCount` deliberately left **unset** (setting either silently defeats LL-HLS,
+  forcing whole-segment sync), a ~20s `maxBufferLength`, patient fragment/manifest retries, plus
+  a 2s-interval watchdog that — on ~6s of no playback progress, or a `BUFFER_STALLED_ERROR`, or a
+  fatal network error — calls `hls.startLoad()` and seeks to `hls.liveSyncPosition` (or the
+  buffer's leading edge). The same tick also resets `hls.targetLatency` back down to the
+  playlist's advertised `partHoldBack` once playback has run stall-free for ~20s, countering
+  hls.js's target-latency-ratchets-up-and-never-recovers bug (video-dev/hls.js#6350) — its load
+  queue getting permanently stuck after a stall with no error event (#5716, #6350) is what the
+  zero-progress watchdog above guards against. The startup manifest-404 retry budget resets once
+  the first fragment buffers, so a mid-stream blip gets a fresh allowance.
 
 **Where:** `phone-app` `camera/LivePipeline.kt`, `camera/LiveHlsRelay.kt`, `camera/ts/TsMuxer.kt`,
 `http/routes/LiveRoutes.kt`; `controller/liveproxy.go`, `frontend/src/components/LivePreview.tsx`.
-**Verified end to end:** `src/debug/DebugLiveReceiver.kt` (a broadcast probe) confirmed both the
-Pixel 6 and BLU G5 produce a rolling playlist of valid `mpegts`/`h264` 1280×720 that `ffmpeg`
-decodes + concatenates cleanly; then, through a real `wails dev` controller (hls.js in the
-webview against `liveproxy.go`), the Pixel 6 played **2.5+ minutes continuously, ~50 segments,
-zero segment 404s, no stalls**, and the BLU produced dead-regular ~0.96s segments at real time.
+**Verified end to end (plain HLS):** `src/debug/DebugLiveReceiver.kt` (a broadcast probe)
+confirmed both the Pixel 6 and BLU G5 produce a rolling playlist of valid `mpegts`/`h264`
+1280×720 that `ffmpeg` decodes + concatenates cleanly; then, through a real `wails dev`
+controller (hls.js in the webview against `liveproxy.go`), the Pixel 6 played **2.5+ minutes
+continuously, ~50 segments, zero segment 404s, no stalls**, and the BLU produced dead-regular
+~0.96s segments at real time.
+**LL-HLS status:** implemented on both sides and confirmed via the phone-app JVM unit suite
+(`TsMuxerTest` unaffected - parts are plain byte ranges into the same already-188-byte-aligned TS
+buffer) and the controller's Go test suite (`liveproxy_test.go` covers the query/Range
+passthrough and 206/416 relaying) plus a `tsc` typecheck of `LivePreview.tsx`. **Not yet run**:
+the same kind of multi-minute on-device soak plain HLS got above, against a real phone actually
+emitting `EXT-X-PART`/blocking-reload responses - that's what would earn this a "Reconfirmed" tag.
 
 ## Carried forward, not yet re-verified in this project
 
 Adopted from `panopticon-prototype/QUIRKS.md`, not independently re-tested here - see
-[`README.md`](README.md#the-carried-forward-tag). The live slice ships **plain HLS**, so the
-LL-HLS-specific items below are not implemented yet; adopt them if/when the plain-HLS latency
-drives an LL-HLS upgrade (see "Live view is plain HLS" above).
+[`README.md`](README.md#the-carried-forward-tag). The LL-HLS machinery and its hls.js latency
+workarounds have since been implemented (see "Live view is LL-HLS" above) and are no longer
+listed here; what remains below is genuinely still unimplemented or not applicable.
 
 - CORS needs explicit header exposure for hls.js (adopted defensively in `PanopticonHttpServer.kt`
   for ranged clip downloads generally - `exposeHeader(Content-Range/Content-Length)`). The live
   slice sidesteps CORS entirely - `controller/liveproxy.go` serves the playlist/segments
   same-origin to the webview - so this still isn't exercised against a real hls.js client.
-- **hls.js LL-HLS + latency workarounds** - the whole `Browser / hls.js` section of
-  `panopticon-prototype/QUIRKS.md`:
-  - hls.js's load queue can get **permanently stuck after a stall** with no error event
-    (video-dev/hls.js#5716, #6350) - needs a zero-progress watchdog that forces `startLoad()`/reload.
-  - hls.js's **target latency ratchets up ~1s after every stall and never comes back down**
-    (#6350) - needs a manual `hls.targetLatency` reset back to `partHoldBack` after a stall-free window.
-  - Setting `liveSyncDurationCount` silently **defeats LL-HLS** (forces whole-segment sync) -
-    leave `liveSyncDuration`/`liveSyncDurationCount` unset.
-  - The **first playlist load routinely 404s** (encoder hasn't produced segment 0) and hls.js
-    treats a playlist 404 as fatal-non-retryable - needs a custom `manifestLoadPolicy` fast-retry.
-    *(A minimal bounded-retry version of just this one is in `LivePreview.tsx` already, since it
-    bites even plain HLS.)*
-  - **Safari** has native HLS, loads no hls.js, and can't attach an `Authorization` header - it
-    would always need the server-proxied path. Not relevant while the controller is a WebView2
-    (Chromium) app, but relevant if a real browser client is ever added.
+- **Safari** has native HLS, loads no hls.js, and can't attach an `Authorization` header - it
+  would always need the server-proxied path. Not relevant while the controller is a WebView2
+  (Chromium) app, but relevant if a real browser client is ever added.
 - `Server / Node` section: not applicable - the controller is Go/Wails, not the prototype's Node
-  server. The live proxy is `controller/liveproxy.go`, ~80 lines, no streaming-error-crash or
-  single-instance concerns of the Node original.
+  server. The live proxy is `controller/liveproxy.go`, still well under 150 lines, no
+  streaming-error-crash or single-instance concerns of the Node original.

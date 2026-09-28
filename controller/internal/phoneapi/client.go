@@ -130,7 +130,9 @@ func ParseInviteURL(raw string) (address, code string, ok bool) {
 	return u.Host, invite, true
 }
 
-func (c *Client) request(ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
+// extraHeaders is variadic (rather than a plain http.Header) purely so the
+// many callers that don't need one can omit it instead of passing nil.
+func (c *Client) request(ctx context.Context, method, path string, query url.Values, body any, extraHeaders ...http.Header) (*http.Response, error) {
 	full := c.BaseURL + path
 	if len(query) > 0 {
 		full += "?" + query.Encode()
@@ -151,6 +153,13 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for _, headers := range extraHeaders {
+		for k, vs := range headers {
+			for _, v := range vs {
+				req.Header.Add(k, v)
+			}
+		}
 	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
@@ -268,15 +277,29 @@ func (c *Client) BuildInfoCall(ctx context.Context) (BuildInfo, error) {
 }
 
 type Status struct {
-	Mode             string `json:"mode"`
-	Status           string `json:"status"`
-	CameraHealthy    bool   `json:"cameraHealthy"`
-	LiveViewers      int    `json:"liveViewers"`
-	StorageUsedBytes int64  `json:"storageUsedBytes"`
-	StorageCapBytes  int64  `json:"storageCapBytes"`
-	BatteryPercent   int    `json:"batteryPercent"`
-	Charging         bool   `json:"charging"`
-	ServerTimeMs     int64  `json:"serverTimeMs"`
+	Mode             string        `json:"mode"`
+	Status           string        `json:"status"`
+	CameraHealthy    bool          `json:"cameraHealthy"`
+	LiveViewers      int           `json:"liveViewers"`
+	StorageUsedBytes int64         `json:"storageUsedBytes"`
+	StorageCapBytes  int64         `json:"storageCapBytes"`
+	BatteryPercent   int           `json:"batteryPercent"`
+	Charging         bool          `json:"charging"`
+	Thermal          ThermalStatus `json:"thermal"`
+	ServerTimeMs     int64         `json:"serverTimeMs"`
+}
+
+// ThermalStatus is how close the phone is to thermal throttling. Deliberately not a
+// temperature: degrees are privileged on Android and are not the useful signal anyway.
+// Supported is false on phones that cannot report it at all (API < 29) — the UI draws no
+// thermal icon for those rather than a guessed one, since "cannot say" is not "cold".
+type ThermalStatus struct {
+	Supported bool   `json:"supported"`
+	Severity  int    `json:"severity"` // PowerManager 0..6, -1 when unsupported
+	Level     string `json:"level"`    // none|light|moderate|severe|critical|emergency|shutdown|unknown
+	// Headroom is a 0..1+ forecast to the throttling threshold (Android 11+), nil where the
+	// phone cannot report it. A pointer because 0.0 is a real reading (stone cold), not absence.
+	Headroom *float32 `json:"headroom"`
 }
 
 func (c *Client) Status(ctx context.Context) (Status, error) {
@@ -346,7 +369,7 @@ func (c *Client) LiveStart(ctx context.Context) (LiveStartResponse, error) {
 // liveRetryBody is the phone's 503 payload while the camera is still coming up:
 // {"error":"camera still starting","retryAfterMs":2000}.
 type liveRetryBody struct {
-	Error       string `json:"error"`
+	Error        string `json:"error"`
 	RetryAfterMs int    `json:"retryAfterMs"`
 }
 
@@ -398,13 +421,22 @@ func (c *Client) LiveStop(ctx context.Context) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/live/stop", nil, nil, nil)
 }
 
-// LivePlaylist fetches the current GET /live/live.m3u8 body. A 404 (live not
-// started yet) surfaces as an *HTTPError with StatusCode 404 so the proxy can
-// pass it straight through.
-func (c *Client) LivePlaylist(ctx context.Context) ([]byte, error) {
+// LivePlaylist fetches the current GET /live/live.m3u8 body. msn/part mirror
+// the phone's LL-HLS blocking-reload query params (`_HLS_msn`/`_HLS_part`,
+// RFC 8216bis) — pass msn == nil for a plain, non-blocking reload. A 404
+// (live not started yet) surfaces as an *HTTPError with StatusCode 404 so the
+// proxy can pass it straight through.
+func (c *Client) LivePlaylist(ctx context.Context, msn, part *int) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, liveTimeout)
 	defer cancel()
-	resp, err := c.request(ctx, http.MethodGet, "/live/live.m3u8", nil, nil)
+	var query url.Values
+	if msn != nil {
+		query = url.Values{"_HLS_msn": {strconv.Itoa(*msn)}}
+		if part != nil {
+			query.Set("_HLS_part", strconv.Itoa(*part))
+		}
+	}
+	resp, err := c.request(ctx, http.MethodGet, "/live/live.m3u8", query, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -416,10 +448,54 @@ func (c *Client) LivePlaylist(ctx context.Context) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 }
 
-// LiveSegment streams one GET /live/live-<n>.ts. The caller owns the returned
-// ReadCloser and MUST close it (it wraps a per-request context timeout).
-func (c *Client) LiveSegment(ctx context.Context, name string) (io.ReadCloser, error) {
-	return c.downloadBinary(ctx, "/live/"+url.PathEscape(name), liveTimeout)
+// LiveSegmentResult is one GET /live/live-<n>.ts response: either a finalized
+// segment file (200) or an LL-HLS part/preload-hint byte range served out of
+// the segment still being encoded (206, with ContentRange set).
+type LiveSegmentResult struct {
+	StatusCode   int
+	ContentRange string // set on a 206; "" otherwise
+	Body         io.ReadCloser
+}
+
+// LiveSegment streams one GET /live/live-<n>.ts, optionally forwarding an
+// LL-HLS part/preload-hint byte-range request (rangeHeader, e.g.
+// "bytes=100-199") against a segment still being encoded. The caller owns
+// Body and MUST close it (it wraps a per-request context timeout). A 404
+// (fully evicted) surfaces as ErrEvicted; a 416 (range not muxed yet)
+// surfaces as an *HTTPError with StatusCode 416 so the proxy can pass it
+// straight through.
+func (c *Client) LiveSegment(ctx context.Context, name, rangeHeader string) (*LiveSegmentResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, liveTimeout)
+	var headers http.Header
+	if rangeHeader != "" {
+		headers = http.Header{"Range": {rangeHeader}}
+	}
+	resp, err := c.request(ctx, http.MethodGet, "/live/"+url.PathEscape(name), nil, nil, headers)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusPartialContent:
+		return &LiveSegmentResult{
+			StatusCode:   resp.StatusCode,
+			ContentRange: resp.Header.Get("Content-Range"),
+			Body:         &cancelOnCloseReader{ReadCloser: resp.Body, cancel: cancel},
+		}, nil
+	case http.StatusNotFound:
+		resp.Body.Close()
+		cancel()
+		return nil, ErrEvicted
+	case http.StatusUnauthorized:
+		resp.Body.Close()
+		cancel()
+		return nil, ErrUnauthorized
+	default:
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		cancel()
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: string(b)}
+	}
 }
 
 // ---- Segments (sync) ----
