@@ -17,6 +17,7 @@ interface ClipTileProps {
 function ClipTile({ clip: c, active, onClick }: ClipTileProps) {
   return (
     <div
+      data-clip-key={clipKey(c)}
       className={`ctile${c.watched ? ' watched' : ''}${active ? ' active' : ''}`}
       style={c.hasThumbnail ? { backgroundImage: `url('${c.thumbnailUrl}')` } : undefined}
       onClick={(e) => onClick({ shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey })}

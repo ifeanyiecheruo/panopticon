@@ -61,6 +61,21 @@ export function withWatched(clips: ClipView[] | null, key: string): ClipView[] |
   return clips?.map((c) => (clipKey(c) === key && !c.watched ? ({ ...c, watched: true } as ClipView) : c)) ?? null;
 }
 
+/** `selected` without the keys that are no longer in `clips` - a background
+ * refresh can drop a clip (trashed from elsewhere). Returns `selected` itself
+ * when nothing was dropped, so callers can skip a no-op state update. */
+export function pruneSelection(clips: ClipView[], selected: Set<string>): Set<string> {
+  const present = new Set(clips.map(clipKey));
+  const kept = [...selected].filter((k) => present.has(k));
+  return kept.length === selected.size ? selected : new Set(kept);
+}
+
+/** Whether a refetched list differs from what is painted, so an unchanged
+ * poll doesn't re-render the gallery. */
+export function sameClips(a: ClipView[] | null, b: ClipView[]): boolean {
+  return a !== null && JSON.stringify(a) === JSON.stringify(b);
+}
+
 export function groupByDay(clips: ClipView[]): DayGroup[] {
   const byDay = new Map<string, ClipView[]>();
   for (const c of clips) {
