@@ -210,6 +210,9 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
             <BatteryIcon
               percent={p.batteryPercent}
               charging={p.charging}
+              plugged={p.plugged}
+              powerSource={p.powerSource}
+              currentMa={p.hasBatteryCurrent ? p.batteryCurrentMa : null}
               hasBattery={p.hasBattery}
               thermalSeverity={p.thermalSeverity}
               thermalLevel={p.thermalLevel}

@@ -277,14 +277,22 @@ func (c *Client) BuildInfoCall(ctx context.Context) (BuildInfo, error) {
 }
 
 type Status struct {
-	Mode             string        `json:"mode"`
-	Status           string        `json:"status"`
-	CameraHealthy    bool          `json:"cameraHealthy"`
-	LiveViewers      int           `json:"liveViewers"`
-	StorageUsedBytes int64         `json:"storageUsedBytes"`
-	StorageCapBytes  int64         `json:"storageCapBytes"`
-	BatteryPercent   int           `json:"batteryPercent"`
-	Charging         bool          `json:"charging"`
+	Mode             string `json:"mode"`
+	Status           string `json:"status"`
+	CameraHealthy    bool   `json:"cameraHealthy"`
+	LiveViewers      int    `json:"liveViewers"`
+	StorageUsedBytes int64  `json:"storageUsedBytes"`
+	StorageCapBytes  int64  `json:"storageCapBytes"`
+	BatteryPercent   int    `json:"batteryPercent"`
+	Charging         bool   `json:"charging"` // the charge status: false on a charger too weak for the load
+	// Plugged is whether the phone is on external power at all, from PowerSource
+	// (ac|usb|wireless|dock|none). Missing from phones on older app builds: false/"".
+	Plugged     bool   `json:"plugged"`
+	PowerSource string `json:"powerSource"`
+	// BatteryCurrentMa is the net battery current averaged over about a minute:
+	// positive = gaining charge, negative = draining. Nil when the phone can't
+	// report it (or runs an app build that doesn't).
+	BatteryCurrentMa *int          `json:"batteryCurrentMa"`
 	Thermal          ThermalStatus `json:"thermal"`
 	ServerTimeMs     int64         `json:"serverTimeMs"`
 }

@@ -9,6 +9,8 @@ import com.panopticon.phoneapp.BuildConfig
 import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.state.AppConfig
 import com.panopticon.phoneapp.state.AppState
+import com.panopticon.phoneapp.state.BatteryCurrentSampler
+import com.panopticon.phoneapp.state.PowerSource
 import com.panopticon.phoneapp.state.ThermalReader
 import com.panopticon.phoneapp.state.ThermalStatus
 import com.panopticon.phoneapp.state.RecordingStatus
@@ -35,7 +37,17 @@ data class StatusResponse(
     val storageUsedBytes: Long,
     val storageCapBytes: Long,
     val batteryPercent: Int,
+    /** `BatteryManager.isCharging` - the charge *status*, which reads false on a charger too weak
+     *  for the load. Kept for older controllers; [plugged] and [batteryCurrentMa] are the two
+     *  independent answers. */
     val charging: Boolean,
+    /** On external power, whatever the battery is doing - see [PowerSource]. */
+    val plugged: Boolean,
+    /** `ac` | `usb` | `wireless` | `dock` | `none`. */
+    val powerSource: String,
+    /** Net battery current averaged over the last minute, mA: positive = gaining charge, negative
+     *  = draining. Null when the device can't report it - see [BatteryCurrentSampler]. */
+    val batteryCurrentMa: Int?,
     /** How close the device is to thermal throttling. Not a temperature - see [ThermalStatus].
      *  `supported` is false on devices that cannot report it (API < 29), and the controller
      *  renders no thermal icon at all for those rather than a guessed one. */
@@ -66,6 +78,7 @@ fun Route.deviceRoutes(
     appConfig: AppConfig,
     appState: AppState,
     segmentStore: SegmentStore,
+    batteryCurrent: BatteryCurrentSampler,
 ) {
     // Authenticated by the global installAuth() intercept.
     run {
@@ -89,6 +102,7 @@ fun Route.deviceRoutes(
             val battery = androidContext.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
             val batteryPercent = battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
             val charging = battery.isCharging
+            val powerSource = PowerSource.read(androidContext)
 
             val status = when (appState.recordingStatus.value) {
                 RecordingStatus.RECORDING -> "recording"
@@ -107,6 +121,9 @@ fun Route.deviceRoutes(
                     storageCapBytes = cfg.storageCapBytes,
                     batteryPercent = batteryPercent,
                     charging = charging,
+                    plugged = powerSource != "none",
+                    powerSource = powerSource,
+                    batteryCurrentMa = batteryCurrent.averageMa(),
                     thermal = ThermalReader.read(androidContext),
                     serverTimeMs = System.currentTimeMillis(),
                 ),

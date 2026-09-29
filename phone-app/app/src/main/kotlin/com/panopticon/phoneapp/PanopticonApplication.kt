@@ -13,6 +13,7 @@ import com.panopticon.phoneapp.pairing.InviteManager
 import com.panopticon.phoneapp.state.AppConfig
 import com.panopticon.phoneapp.state.AppMode
 import com.panopticon.phoneapp.state.AppState
+import com.panopticon.phoneapp.state.BatteryCurrentSampler
 
 /** What changed in `DeviceConfig` that the running camera pipeline needs to react to. */
 enum class CameraConfigChange {
@@ -51,6 +52,10 @@ class PanopticonApplication : Application() {
      * die and get rebuilt, which a counter owned by a pipeline could not see.
      */
     val cameraHealth = CameraHealthRegistry()
+
+    /** Averaged net battery current for `GET /api/status` - see [BatteryCurrentSampler]. */
+    lateinit var batteryCurrent: BatteryCurrentSampler
+        private set
 
     /**
      * Registered by [com.panopticon.phoneapp.service.PanopticonService] so the
@@ -100,6 +105,7 @@ class PanopticonApplication : Application() {
         evictSegmentsAsync() // catch up on anything the limits say should already be gone
         calibrationRunner = CalibrationRunner(this, CalibrationStore(this), appState)
         cameraCatalog = CameraCatalog(this)
+        batteryCurrent = BatteryCurrentSampler(this)
     }
 
     /** Enforce the ring buffer's limits from the current config - see [SegmentStore.evictAsync]. */

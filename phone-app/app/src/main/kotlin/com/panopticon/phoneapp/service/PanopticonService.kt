@@ -119,6 +119,7 @@ class PanopticonService : Service() {
                     calibrationRunner = app.calibrationRunner,
                     cameraCatalog = app.cameraCatalog,
                     cameraHealth = app.cameraHealth,
+                    batteryCurrent = app.batteryCurrent,
                     onModeChanged = ::handleModeChanged,
                     onCameraConfigChanged = ::handleCameraConfigChanged,
                     liveProvider = { app.livePipeline },

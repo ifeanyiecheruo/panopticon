@@ -146,6 +146,10 @@ export namespace main {
 	    batteryPercent: number;
 	    hasBattery: boolean;
 	    charging: boolean;
+	    plugged: boolean;
+	    powerSource: string;
+	    hasBatteryCurrent: boolean;
+	    batteryCurrentMa: number;
 	    hasThermal: boolean;
 	    thermalLevel: string;
 	    thermalSeverity: number;
@@ -169,6 +173,10 @@ export namespace main {
 	        this.batteryPercent = source["batteryPercent"];
 	        this.hasBattery = source["hasBattery"];
 	        this.charging = source["charging"];
+	        this.plugged = source["plugged"];
+	        this.powerSource = source["powerSource"];
+	        this.hasBatteryCurrent = source["hasBatteryCurrent"];
+	        this.batteryCurrentMa = source["batteryCurrentMa"];
 	        this.hasThermal = source["hasThermal"];
 	        this.thermalLevel = source["thermalLevel"];
 	        this.thermalSeverity = source["thermalSeverity"];
@@ -1012,6 +1020,9 @@ export namespace phoneapi {
 	    storageCapBytes: number;
 	    batteryPercent: number;
 	    charging: boolean;
+	    plugged: boolean;
+	    powerSource: string;
+	    batteryCurrentMa?: number;
 	    thermal: ThermalStatus;
 	    serverTimeMs: number;
 	
@@ -1029,6 +1040,9 @@ export namespace phoneapi {
 	        this.storageCapBytes = source["storageCapBytes"];
 	        this.batteryPercent = source["batteryPercent"];
 	        this.charging = source["charging"];
+	        this.plugged = source["plugged"];
+	        this.powerSource = source["powerSource"];
+	        this.batteryCurrentMa = source["batteryCurrentMa"];
 	        this.thermal = this.convertValues(source["thermal"], ThermalStatus);
 	        this.serverTimeMs = source["serverTimeMs"];
 	    }

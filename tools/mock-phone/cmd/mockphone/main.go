@@ -275,6 +275,10 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"storageCapBytes":  64_000_000_000,
 		"batteryPercent":   81,
 		"charging":         true,
+		// On power and gaining charge: the controller's plug + bolt case.
+		"plugged":          true,
+		"powerSource":      "usb",
+		"batteryCurrentMa": 420,
 		// A plausible mid-scale reading, so the controller renders the thermal glyph lit rather
 		// than exercising only the unsupported path. Static: the mock has no thermal model.
 		"thermal": map[string]any{
