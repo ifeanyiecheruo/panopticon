@@ -84,10 +84,14 @@ cd controller && wails dev
 browser tab — the main way the Go backend is exercised manually.
 
 On first launch the controller creates `panopticon-data/` (SQLite DB + single-instance lock) and
-`panopticon-archive/` (downloaded segments, one subdir per phone) **next to wherever the binary runs from**
-— both gitignored, runtime state not source. (A stable per-OS location is
-[planned](docs/status/controller-app-data-dir.md).) Closing the window hides it (sync
-keeps running); only the tray's "Quit" exits. A second launch prints a message and exits.
+`panopticon-archive/` (downloaded segments, one subdir per phone) under a fixed per-user
+directory: `%LocalAppData%\Panopticon` on Windows, `~/Library/Application Support/Panopticon` on
+macOS, `$XDG_DATA_HOME/Panopticon` (default `~/.local/share/Panopticon`) elsewhere. Two
+exceptions: set `PANOPTICON_HOME` to put them under any directory you like, and a `wails dev`
+build keeps them next to wherever it runs from (so `controller/`, gitignored), keeping
+mock-phone development away from real footage. If an older build left state in the launch
+directory, the controller moves it into the fixed location on its next launch. Closing the
+window hides it (sync keeps running); only the tray's "Quit" exits. A second launch prints a message and exits.
 
 ### Testing the controller without a real phone
 

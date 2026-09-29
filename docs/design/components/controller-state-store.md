@@ -107,6 +107,9 @@ Clip lifecycle transitions:
   transaction, guarded on the clip still being `purged`.
 - Verified: migration `002` + backfill collapsed the real Pixel 6 archive's 15 contiguous
   segments into one clip.
+- Segment `local_path`/`thumbnail_path` are stored relative to the archive directory
+  (`appdirs.ArchiveRelPath`, resolved with `Dirs.ArchivePath`); `Open()` converts rows older
+  builds stored absolute, once.
 
 ## 4. Design rationale and decisions
 

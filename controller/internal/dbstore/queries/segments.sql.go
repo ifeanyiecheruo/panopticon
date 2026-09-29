@@ -72,6 +72,49 @@ func (q *Queries) ListSegmentsForClip(ctx context.Context, clipID string) ([]Seg
 	return items, nil
 }
 
+const listSegmentsWithAbsoluteArchivePaths = `-- name: ListSegmentsWithAbsoluteArchivePaths :many
+SELECT phone_id, filename, local_path, thumbnail_path
+FROM segments
+WHERE instr(local_path, 'panopticon-archive') > 0 OR instr(thumbnail_path, 'panopticon-archive') > 0
+`
+
+type ListSegmentsWithAbsoluteArchivePathsRow struct {
+	PhoneID       string
+	Filename      string
+	LocalPath     string
+	ThumbnailPath string
+}
+
+// Rows written before archive paths were stored relative (see RelativizeArchivePaths) - every
+// absolute archive path runs through the archive directory's name.
+func (q *Queries) ListSegmentsWithAbsoluteArchivePaths(ctx context.Context) ([]ListSegmentsWithAbsoluteArchivePathsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listSegmentsWithAbsoluteArchivePaths)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSegmentsWithAbsoluteArchivePathsRow{}
+	for rows.Next() {
+		var i ListSegmentsWithAbsoluteArchivePathsRow
+		if err := rows.Scan(
+			&i.PhoneID,
+			&i.Filename,
+			&i.LocalPath,
+			&i.ThumbnailPath,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUnassignedSegments = `-- name: ListUnassignedSegments :many
 SELECT phone_id, filename, clip_id, local_path, thumbnail_path, created_at_ms, duration_ms, end_ms, size_bytes, width, height
 FROM segments WHERE clip_id = '' ORDER BY phone_id ASC, created_at_ms ASC
@@ -140,6 +183,27 @@ type SetSegmentClipParams struct {
 
 func (q *Queries) SetSegmentClip(ctx context.Context, arg SetSegmentClipParams) error {
 	_, err := q.db.ExecContext(ctx, setSegmentClip, arg.ClipID, arg.PhoneID, arg.Filename)
+	return err
+}
+
+const setSegmentPaths = `-- name: SetSegmentPaths :exec
+UPDATE segments SET local_path = ?, thumbnail_path = ? WHERE phone_id = ? AND filename = ?
+`
+
+type SetSegmentPathsParams struct {
+	LocalPath     string
+	ThumbnailPath string
+	PhoneID       string
+	Filename      string
+}
+
+func (q *Queries) SetSegmentPaths(ctx context.Context, arg SetSegmentPathsParams) error {
+	_, err := q.db.ExecContext(ctx, setSegmentPaths,
+		arg.LocalPath,
+		arg.ThumbnailPath,
+		arg.PhoneID,
+		arg.Filename,
+	)
 	return err
 }
 

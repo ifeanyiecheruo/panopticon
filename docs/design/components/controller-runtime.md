@@ -44,8 +44,6 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
 
 - [`../decisions/0011-controller-runtime-and-state.md`](../decisions/0011-controller-runtime-and-state.md),
   [`0001`](../decisions/0001-repository-and-build.md).
-- App-data dir plan:
-  [`../../status/controller-app-data-dir.md`](../../status/controller-app-data-dir.md).
 - Peers: [`controller-state-store.md`](controller-state-store.md),
   [`controller-sync.md`](controller-sync.md),
   [`controller-pairing.md`](controller-pairing.md),
@@ -68,7 +66,7 @@ package.
 | `main.go` | entrypoint | `wails.Run()` + config (`syncPollInterval`, 30s). Starts the syncer and tray goroutines. |
 | `trayapp` | tray menu | `getlantern/systray` Open/Quit; its own goroutine alongside the Wails message loop. Closing the window hides it; only Quit (or `RequestQuit`) exits. |
 | `singleinstance` | lock | Windows: an exclusive `CreateFile` share-mode handle (OS-released on crash, unlike a PID file). Second launch prints a message and exits. Other OSes: a best-effort PID file. |
-| `appdirs` | path resolver | `panopticon-data/` and `panopticon-archive/<phoneId>/`, resolved **relative to cwd** — dev convenience. |
+| `appdirs` | path resolver | `panopticon-data/` and `panopticon-archive/<phoneId>/` under one root: `$PANOPTICON_HOME` if set; the launch directory in a `wails dev` build (the `dev` build tag); otherwise a fixed per-user directory (`%LocalAppData%\Panopticon`, `~/Library/Application Support/Panopticon`, `$XDG_DATA_HOME/Panopticon`). Moves state an older build left in the launch directory there on first run. |
 | `liveproxy` | asset-server handler | Proxies `GET /live/<phoneID>/live.m3u8` and `.../live-<n>.ts` from the phone with the stored bearer token, so hls.js fetches same-origin (token server-side, no CORS/mixed-content). Playlist segment URIs are relative — no rewriting. |
 
 ### 3.2 Dependencies
@@ -92,8 +90,12 @@ runtime.
 - The tray and syncer goroutines outlive any window; closing the window only hides it.
 - A transient WebView2 `80080005` on the very first launch after a fresh build is a known race,
   not a regression.
-- Running the binary from the wrong cwd creates a stray `panopticon-data/`/`panopticon-archive/` there (gitignored,
-  harmless).
+- The launch directory doesn't matter outside `wails dev`: every launch finds the same state.
+- Legacy migration (`main.go` `migrateLegacyState`): if the launch directory holds a controller DB
+  and the fixed root has none, both directories are moved there by rename, after taking and
+  releasing the legacy directory's single-instance lock (a controller still running there makes
+  this launch exit as "already running"). A failed move leaves everything where it was and runs
+  from the launch directory, retrying next launch.
 
 ## 4. Design rationale and decisions
 
@@ -102,9 +104,13 @@ runtime.
   up to date" is only true if sync is independent of the window.
 - **Exclusive-file-handle single-instance lock** — OS-released on crash, unlike a PID file that
   can be left stale.
-- **`appdirs` cwd-relative (for now)** — a deliberate dev-convenience simplification, flagged
-  for a fix to a per-OS path
-  ([`../../status/controller-app-data-dir.md`](../../status/controller-app-data-dir.md)).
+- **A fixed per-user root, not the launch directory** — see
+  [`0011`](../decisions/0011-controller-runtime-and-state.md). `%LocalAppData%` rather than
+  `os.UserConfigDir()` (`%AppData%`) on Windows because the archive runs to gigabytes and must
+  not roam; `$XDG_DATA_HOME` rather than `os.UserCacheDir()` elsewhere because cache directories
+  get cleaned.
+- **`wails dev` keeps the launch directory** — mock-phone development stays out of real
+  footage, keyed off the `dev` build tag wails sets, so no flag or env var to remember.
 - **`liveproxy` keeps the token server-side** — see
   [`0007`](../decisions/0007-live-preview-plain-hls.md); the scoped `/live/*` token is
   deferred.

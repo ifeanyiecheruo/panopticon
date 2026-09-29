@@ -36,17 +36,22 @@ DB** — it does not re-derive gallery state from live phone calls on each rende
 Windows: an exclusive `CreateFile` share-mode handle (auto-released by the OS on crash, unlike a
 plain PID file). A second launch prints a message and exits.
 
-### App-data layout resolved relative to cwd (for now)
+### App-data layout under a fixed per-user root
 
-`internal/appdirs` resolves `panopticon-data/`/`panopticon-archive/` relative to the launch directory — convenient for
-`wails dev` / manual runs. A packaged installer should point this at a stable per-OS path
-(`os.UserConfigDir()`); deferred
-([`../../status/controller-app-data-dir.md`](../../status/controller-app-data-dir.md)).
+`internal/appdirs` puts `panopticon-data/` and `panopticon-archive/` under one root: a fixed
+per-user directory (`%LocalAppData%\Panopticon` on Windows - not the roaming `%AppData%`, the
+archive is gigabytes), overridable with `$PANOPTICON_HOME`. A `wails dev` build uses the launch
+directory instead, keeping mock-phone development away from real footage. Earlier builds always
+used the launch directory; the controller moves state it finds there into the fixed root on the
+next launch.
+
+Segment file and thumbnail paths are stored **relative to the archive directory**, so moving the
+archive is a directory rename with no row rewrite. (Older builds stored them absolute;
+`dbstore.Open` converts those once.)
 
 ## Consequences
 
 - Sync progress is decoupled from the UI; opening a window shows already-current data.
 - A crash can't corrupt a half-written sync step — the cursor only advances after a segment is
   durably written, assigned, and indexed.
-- Running the binary from the wrong cwd creates a stray `panopticon-data/`/`panopticon-archive/` there (gitignored,
-  harmless, worth cleaning up).
+- The launch directory doesn't matter: every launch of a built controller finds the same state.
