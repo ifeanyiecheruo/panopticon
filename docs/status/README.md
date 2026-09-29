@@ -22,6 +22,7 @@ arming, unpair / force-unpair.
 | Segment/clip model + tombstones | done, except the eviction-probe loop |
 | Calibration (empirical zoom probe, model-keyed controller store) | done, verified on Pixel 6 (lit scene) + BLU G5 |
 | Camera selection + manual controls (both sides) | done, verified on Pixel 6; no phone-side Compose UI |
+| Power state: plugged vs charging (both sides) | done: `/api/status` `plugged`/`powerSource`/`batteryCurrentMa` (1-minute average); plug + bolt / warning plug + arrow on the battery glyph |
 | Live view (LL-HLS, both sides) | plain HLS done, verified end to end; LL-HLS implemented, build/unit-verified — on-device soak still pending ([`ll-hls-upgrade.md`](ll-hls-upgrade.md)) |
 | Controller master-detail Fleet / Gallery / Trash / Add-phone | done |
 | Unpair / force-unpair (controller) | done, integration-tested |
@@ -51,7 +52,6 @@ which.
 | [`visual-language-pass.md`](visual-language-pass.md) | both | medium |
 | [`gallery-mse-playback.md`](gallery-mse-playback.md) | controller | medium–large |
 | [`recording-resolution-tradeoff.md`](recording-resolution-tradeoff.md) | phone | investigate, then medium |
-| [`battery-power-state.md`](battery-power-state.md) | both | small |
 
 No hard ordering. The cross-cutting ones (`ll-hls-upgrade`, `qr-pairing`) need coordinated
 phone + controller work; the rest are single-side.

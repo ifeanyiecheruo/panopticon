@@ -18,6 +18,7 @@ import com.panopticon.phoneapp.http.routes.modeRoutes
 import com.panopticon.phoneapp.http.routes.pairingRoutes
 import com.panopticon.phoneapp.pairing.ControllerRegistry
 import com.panopticon.phoneapp.pairing.InviteManager
+import com.panopticon.phoneapp.state.BatteryCurrentSampler
 import com.panopticon.phoneapp.state.AppConfig
 import com.panopticon.phoneapp.state.AppMode
 import com.panopticon.phoneapp.state.AppState
@@ -57,6 +58,7 @@ class PanopticonHttpServer(
     private val calibrationRunner: CalibrationRunner,
     private val cameraCatalog: CameraCatalog,
     private val cameraHealth: CameraHealthRegistry,
+    private val batteryCurrent: BatteryCurrentSampler,
     private val onModeChanged: (AppMode) -> Unit,
     private val onCameraConfigChanged: (CameraConfigChange) -> Unit,
     private val liveProvider: () -> LivePipeline?,
@@ -132,7 +134,7 @@ class PanopticonHttpServer(
 
         routing {
             pairingRoutes(registry, invites, appConfig, androidContext)
-            deviceRoutes(androidContext, appConfig, appState, segmentStore)
+            deviceRoutes(androidContext, appConfig, appState, segmentStore, batteryCurrent)
             modeRoutes(appState, onModeChanged)
             segmentRoutes(segmentStore)
             calibrationRoutes(calibrationRunner)

@@ -57,6 +57,14 @@ type PhoneView struct {
 	BatteryPercent int    `json:"batteryPercent"`
 	HasBattery     bool   `json:"hasBattery"`
 	Charging       bool   `json:"charging"`
+	// Plugged and the battery current are independent: a phone can be on power
+	// and still draining, which Charging (the charge status) can't tell apart
+	// from unplugged. HasBatteryCurrent is false when the phone can't report
+	// the current.
+	Plugged           bool   `json:"plugged"`
+	PowerSource       string `json:"powerSource"`
+	HasBatteryCurrent bool   `json:"hasBatteryCurrent"`
+	BatteryCurrentMa  int    `json:"batteryCurrentMa"`
 	// HasThermal is false both when the phone is unreachable and when it runs an Android old
 	// enough to have no thermal API (the BLU G5, API 28). Either way the UI draws no icon —
 	// a phone that cannot report its thermal state is not the same as one reporting "cool".
@@ -203,6 +211,12 @@ func (a *App) GetPhoneDetail(phoneID string) (PhoneDetailView, error) {
 		detail.Phone.HasBattery = true
 		detail.Phone.BatteryPercent = status.BatteryPercent
 		detail.Phone.Charging = status.Charging
+		detail.Phone.Plugged = status.Plugged
+		detail.Phone.PowerSource = status.PowerSource
+		if status.BatteryCurrentMa != nil {
+			detail.Phone.HasBatteryCurrent = true
+			detail.Phone.BatteryCurrentMa = *status.BatteryCurrentMa
+		}
 		detail.Phone.HasThermal = status.Thermal.Supported
 		detail.Phone.ThermalLevel = status.Thermal.Level
 		detail.Phone.ThermalSeverity = status.Thermal.Severity

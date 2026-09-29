@@ -53,7 +53,9 @@ needs it. It revokes **the calling token**, identified by the bearer token itsel
 - Favoriting removed entirely — no field, no route.
 - Added along the way: `batteryPercent` / `charging` / `serverTimeMs` on `/api/status` (battery
   display + clock-skew correction), and `GET /api/build-info` so a caller can version-gate before
-  hitting a route the phone may not support.
+  hitting a route the phone may not support. Later, `plugged` / `powerSource` /
+  `batteryCurrentMa` alongside `charging`, which can't tell "on a too-weak charger" from
+  "unplugged".
 
 ## Consequences
 
