@@ -58,6 +58,10 @@ export function ListTrash() {
   return window['go']['main']['App']['ListTrash']();
 }
 
+export function MarkClipWatched(arg1, arg2) {
+  return window['go']['main']['App']['MarkClipWatched'](arg1, arg2);
+}
+
 export function ParseInviteURL(arg1) {
   return window['go']['main']['App']['ParseInviteURL'](arg1);
 }

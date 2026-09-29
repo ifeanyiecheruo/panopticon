@@ -33,6 +33,9 @@ type Clip struct {
 	SizeBytes    int64
 	State        ClipState
 	CreatedAtMs  int64
+	// WatchedAtMs is when the clip was first played in the gallery, 0 if never (or since sync
+	// last appended footage to it).
+	WatchedAtMs int64
 }
 
 func clipFromRow(c queries.Clip) Clip {
@@ -45,6 +48,7 @@ func clipFromRow(c queries.Clip) Clip {
 		SizeBytes:    c.SizeBytes,
 		State:        ClipState(c.State),
 		CreatedAtMs:  c.CreatedAtMs,
+		WatchedAtMs:  c.WatchedAtMs,
 	}
 }
 
@@ -125,6 +129,15 @@ func (s *Store) SetClipState(phoneID, clipID string, state ClipState) error {
 		State:   string(state),
 		PhoneID: phoneID,
 		ID:      clipID,
+	})
+}
+
+// MarkClipWatched records the first time a clip was played; later calls are no-ops.
+func (s *Store) MarkClipWatched(phoneID, clipID string, atMs int64) error {
+	return s.q.MarkClipWatched(context.Background(), queries.MarkClipWatchedParams{
+		WatchedAtMs: atMs,
+		PhoneID:     phoneID,
+		ID:          clipID,
 	})
 }
 

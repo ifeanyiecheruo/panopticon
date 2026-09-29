@@ -29,7 +29,7 @@ func (q *Queries) DiskUsageBytes(ctx context.Context, phoneID string) (int64, er
 
 const extendClip = `-- name: ExtendClip :exec
 UPDATE clips
-SET ended_at_ms = ?, segment_count = segment_count + 1, size_bytes = size_bytes + ?
+SET ended_at_ms = ?, segment_count = segment_count + 1, size_bytes = size_bytes + ?, watched_at_ms = 0
 WHERE id = ?
 `
 
@@ -45,7 +45,7 @@ func (q *Queries) ExtendClip(ctx context.Context, arg ExtendClipParams) error {
 }
 
 const getClip = `-- name: GetClip :one
-SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms
+SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms, watched_at_ms
 FROM clips WHERE phone_id = ? AND id = ?
 `
 
@@ -66,12 +66,13 @@ func (q *Queries) GetClip(ctx context.Context, arg GetClipParams) (Clip, error) 
 		&i.SizeBytes,
 		&i.State,
 		&i.CreatedAtMs,
+		&i.WatchedAtMs,
 	)
 	return i, err
 }
 
 const getOpenClip = `-- name: GetOpenClip :one
-SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms
+SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms, watched_at_ms
 FROM clips
 WHERE phone_id = ? AND state = 'active'
 ORDER BY ended_at_ms DESC LIMIT 1
@@ -89,6 +90,7 @@ func (q *Queries) GetOpenClip(ctx context.Context, phoneID string) (Clip, error)
 		&i.SizeBytes,
 		&i.State,
 		&i.CreatedAtMs,
+		&i.WatchedAtMs,
 	)
 	return i, err
 }
@@ -124,7 +126,7 @@ func (q *Queries) InsertClip(ctx context.Context, arg InsertClipParams) error {
 }
 
 const listClips = `-- name: ListClips :many
-SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms
+SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms, watched_at_ms
 FROM clips
 WHERE (CAST(?1 AS TEXT) = '' OR phone_id = ?1)
   AND (CAST(?2 AS TEXT) = '' OR state = ?2)
@@ -157,6 +159,7 @@ func (q *Queries) ListClips(ctx context.Context, arg ListClipsParams) ([]Clip, e
 			&i.SizeBytes,
 			&i.State,
 			&i.CreatedAtMs,
+			&i.WatchedAtMs,
 		); err != nil {
 			return nil, err
 		}
@@ -169,6 +172,22 @@ func (q *Queries) ListClips(ctx context.Context, arg ListClipsParams) ([]Clip, e
 		return nil, err
 	}
 	return items, nil
+}
+
+const markClipWatched = `-- name: MarkClipWatched :exec
+UPDATE clips SET watched_at_ms = ? WHERE phone_id = ? AND id = ? AND watched_at_ms = 0
+`
+
+type MarkClipWatchedParams struct {
+	WatchedAtMs int64
+	PhoneID     string
+	ID          string
+}
+
+// Only the first play counts, so re-watching doesn't move the timestamp.
+func (q *Queries) MarkClipWatched(ctx context.Context, arg MarkClipWatchedParams) error {
+	_, err := q.db.ExecContext(ctx, markClipWatched, arg.WatchedAtMs, arg.PhoneID, arg.ID)
+	return err
 }
 
 const setClipState = `-- name: SetClipState :exec

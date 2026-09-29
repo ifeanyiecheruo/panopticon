@@ -184,7 +184,13 @@ data class CameraControlSpec(
 data class CameraStateResponse(
     val cameraId: String,
     val rotationDegrees: Int,
+    /** The ceiling the controller sets, and what LIVE broadcasts at. Settable. */
     val videoResolution: String,
+    /** What RECORD actually captures and encodes at: the smallest size that still holds the
+     *  detail the current zoom leaves, never larger than [videoResolution] in either dimension.
+     *  Derived, not settable - a zoomed-in camera records fewer pixels because there are fewer
+     *  real ones to record. Equal to [videoResolution] when un-zoomed. */
+    val recordingResolution: String,
     val manualControlEnabled: Boolean,
     val keys: CameraControlKeys,
     /** What the HAL was actually asked to zoom to, once [ZoomGeometry.split] limited it to a crop
@@ -202,8 +208,9 @@ data class CameraStatePatch(
      * `DeviceConfig`, not in [CameraControlSpec] - it's a pipeline-orientation
      * setting, not an auto/manual control key. */
     val rotationDegrees: Int? = null,
-    /** Record/broadcast size "<w>x<h>"; must be one of the camera's
-     * `outputResolutions`. Changing it rebuilds the running pipeline. */
+    /** Viewing size "<w>x<h>"; must be one of the camera's `outputResolutions`. Changing it
+     * rebuilds the running pipeline, so it is rejected while RECORD is in progress. The
+     * *recording* size is derived from this and the zoom, and cannot be set. */
     val videoResolution: String? = null,
     val keys: CameraControlKeys? = null,
 )

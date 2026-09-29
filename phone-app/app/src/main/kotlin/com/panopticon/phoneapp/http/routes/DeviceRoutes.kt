@@ -9,6 +9,8 @@ import com.panopticon.phoneapp.BuildConfig
 import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.state.AppConfig
 import com.panopticon.phoneapp.state.AppState
+import com.panopticon.phoneapp.state.ThermalReader
+import com.panopticon.phoneapp.state.ThermalStatus
 import com.panopticon.phoneapp.state.RecordingStatus
 import io.ktor.server.application.call
 import io.ktor.server.request.receive
@@ -34,6 +36,10 @@ data class StatusResponse(
     val storageCapBytes: Long,
     val batteryPercent: Int,
     val charging: Boolean,
+    /** How close the device is to thermal throttling. Not a temperature - see [ThermalStatus].
+     *  `supported` is false on devices that cannot report it (API < 29), and the controller
+     *  renders no thermal icon at all for those rather than a guessed one. */
+    val thermal: ThermalStatus,
     val serverTimeMs: Long,
 )
 
@@ -101,6 +107,7 @@ fun Route.deviceRoutes(
                     storageCapBytes = cfg.storageCapBytes,
                     batteryPercent = batteryPercent,
                     charging = charging,
+                    thermal = ThermalReader.read(androidContext),
                     serverTimeMs = System.currentTimeMillis(),
                 ),
             )

@@ -13,6 +13,7 @@ export {
   ListClips,
   ListTrash,
   TrashClip,
+  MarkClipWatched,
   RestoreClip,
   DeleteClipPermanently,
   EmptyTrash,

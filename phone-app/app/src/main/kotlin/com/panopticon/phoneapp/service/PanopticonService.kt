@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.panopticon.phoneapp.CameraConfigChange
@@ -27,6 +28,12 @@ private const val NOTIFICATION_CHANNEL_ID = "panopticon_recording"
 private const val NOTIFICATION_ID = 1001
 
 /**
+ * Shows up in `dumpsys power` and in battery attribution, so it is named for the thing it is
+ * protecting rather than for the app.
+ */
+private const val WAKE_LOCK_TAG = "panopticon:camera-pipeline"
+
+/**
  * The process's whole reason to exist, mirroring the old prototype's architecture: an unbound,
  * START_STICKY foreground service that owns the camera pipeline and starts the embedded HTTP
  * server in its own try/catch so a bind failure can never take down the camera pipeline itself.
@@ -37,12 +44,49 @@ class PanopticonService : Service() {
     private var cameraPipeline: CameraGlPipeline? = null
     private var httpServer: PanopticonHttpServer? = null
 
+    /**
+     * Held for as long as this service lives. A `camera` foreground service keeps the *process*
+     * from being killed; it does nothing to stop the application processor suspending, and the
+     * two are not the same thing. With the screen off this device attempts suspend every ~40s,
+     * and after a few of those in a row the Exynos MFC encoder comes back unusable: every
+     * `VIDIOC_QBUF` returns EINVAL, so the encoder accepts frames on its input surface and
+     * emits nothing, until the supervisor's output-stall timeout tears the pipeline down and
+     * rebuilds it. That is the shape of the stall - run uptimes quantised to multiples of the
+     * suspend period, camera frames and capture results fresh at the moment of death, encoder
+     * output four seconds stale. See docs/status/camera-stall-investigation.md.
+     */
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onCreate() {
         super.onCreate()
         app = PanopticonApplication.from(this)
         app.onModeChangeRequested = ::handleModeChanged
         app.onCameraConfigChanged = ::handleCameraConfigChanged
         createNotificationChannel()
+        acquireWakeLock()
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock != null) return
+        try {
+            val pm = getSystemService(PowerManager::class.java)
+            // No timeout: the lock's lifetime is the service's, and onDestroy releases it. A
+            // timeout here would be a slow leak of exactly the failure it exists to prevent.
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            Log.i(TAG, "partial wake lock held for the camera pipeline")
+        } catch (e: Exception) {
+            // Recording without it still works, it just stalls every few minutes, so this is
+            // worth a line in the log and not worth refusing to start over.
+            Log.e(TAG, "could not acquire wake lock; expect encoder stalls with the screen off", e)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+        wakeLock = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -74,6 +118,7 @@ class PanopticonService : Service() {
                     segmentStore = app.segmentStore,
                     calibrationRunner = app.calibrationRunner,
                     cameraCatalog = app.cameraCatalog,
+                    cameraHealth = app.cameraHealth,
                     onModeChanged = ::handleModeChanged,
                     onCameraConfigChanged = ::handleCameraConfigChanged,
                     liveProvider = { app.livePipeline },
@@ -158,6 +203,7 @@ class PanopticonService : Service() {
             initialControls = cfg.cameraControls,
             videoResolution = cfg.videoResolution,
             rotationDegreesConfig = cfg.rotationDegrees,
+            healthRegistry = app.cameraHealth,
             onHealthChanged = { healthy -> app.appState.setCameraHealthy(healthy) },
             onBroadcastingChanged = { broadcasting ->
                 app.appState.setLiveViewers(if (broadcasting) 1 else 0)
@@ -180,12 +226,15 @@ class PanopticonService : Service() {
         cameraPipeline = CameraGlPipeline(
             context = applicationContext,
             segmentsDir = app.segmentStore.segmentsDir,
+            onStorageLow = { app.evictSegmentsAsync() },
             appConfig = app.appConfig,
             cameraId = app.cameraCatalog.resolveActiveId(cfg.activeCameraId),
             initialControls = cfg.cameraControls,
+            healthRegistry = app.cameraHealth,
             onSegmentFinished = { file, createdAtMs, durationMs, width, height ->
                 app.segmentStore.addSegment(file, createdAtMs, durationMs, width, height)
                 Log.i(TAG, "segment finished: ${file.name} (${durationMs}ms, ${width}x$height, ${file.length()} bytes)")
+                app.evictSegmentsAsync()
             },
             onHealthChanged = { healthy ->
                 app.appState.setCameraHealthy(healthy)
@@ -218,6 +267,7 @@ class PanopticonService : Service() {
         stopLivePipeline()
         httpServer?.stop()
         httpServer = null
+        releaseWakeLock()
         super.onDestroy()
     }
 

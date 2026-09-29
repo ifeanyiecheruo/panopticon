@@ -162,7 +162,34 @@ internal object ZoomGeometry {
     ): Split {
         val target = sensorAspectCropFor(viewSensor, texCropX, texCropY)
         val wanted = maxCentredMagnificationContaining(target)
-        val hwRatio = largestRequestDelivering(lut, wanted)
+        return splitFor(viewSensor, lut, largestRequestDelivering(lut, wanted), texCropX, texCropY)
+    }
+
+    /**
+     * The split that holds while the hardware is **actually at** [hwRatio] - which, for several
+     * frames after a zoom request, is not the ratio [split] asked for.
+     *
+     * [split] answers "what should we ask for?"; this answers "given what the buffer in our hands
+     * really contains, where in it is the view?". They are the same call once the HAL has caught
+     * up, and they must be kept apart until then: a `CONTROL_ZOOM_RATIO` change takes effect some
+     * frames after the request is issued (on the Pixel 6, via a reconfigure that also drops a
+     * frame or two), and a shader that adopts the *requested* [Split.deliveredCrop] early is
+     * normalising the view against a crop the buffer does not hold yet. It then samples a sub-rect
+     * of a sub-rect: the wrong region, magnified further, and soft - until the hardware lands and
+     * the picture visibly snaps.
+     *
+     * Feeding this the ratio read back off a `CaptureResult` instead makes every intermediate
+     * frame geometrically correct. The view stays put; it merely sharpens as the hardware takes
+     * over from GL. `1.0` here - the honest starting state, before any result has been seen - is
+     * simply "GL does all of it", which is what an uncalibrated phone does permanently.
+     */
+    fun splitFor(
+        viewSensor: RectNorm,
+        lut: List<LutEntry>,
+        hwRatio: Float,
+        texCropX: Float = 1f,
+        texCropY: Float = 1f,
+    ): Split {
         val delivered = deliveredMagnificationFor(lut, hwRatio)
         val deliveredCrop = centredCropFor(delivered)
         // The shader samples the *view*, not the sensor-aspect region the buffer holds: the

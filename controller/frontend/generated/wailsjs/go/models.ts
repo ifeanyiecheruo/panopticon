@@ -146,6 +146,9 @@ export namespace main {
 	    batteryPercent: number;
 	    hasBattery: boolean;
 	    charging: boolean;
+	    hasThermal: boolean;
+	    thermalLevel: string;
+	    thermalSeverity: number;
 	    lastSeenMs: number;
 	    syncCursorMs: number;
 	    diskUsageBytes: number;
@@ -166,6 +169,9 @@ export namespace main {
 	        this.batteryPercent = source["batteryPercent"];
 	        this.hasBattery = source["hasBattery"];
 	        this.charging = source["charging"];
+	        this.hasThermal = source["hasThermal"];
+	        this.thermalLevel = source["thermalLevel"];
+	        this.thermalSeverity = source["thermalSeverity"];
 	        this.lastSeenMs = source["lastSeenMs"];
 	        this.syncCursorMs = source["syncCursorMs"];
 	        this.diskUsageBytes = source["diskUsageBytes"];
@@ -400,6 +406,7 @@ export namespace main {
 	    sizeBytes: number;
 	    thumbnailUrl: string;
 	    hasThumbnail: boolean;
+	    watched: boolean;
 	    segments: SegmentView[];
 	
 	    static createFrom(source: any = {}) {
@@ -418,6 +425,7 @@ export namespace main {
 	        this.sizeBytes = source["sizeBytes"];
 	        this.thumbnailUrl = source["thumbnailUrl"];
 	        this.hasThumbnail = source["hasThumbnail"];
+	        this.watched = source["watched"];
 	        this.segments = this.convertValues(source["segments"], SegmentView);
 	    }
 	
@@ -897,6 +905,7 @@ export namespace phoneapi {
 	    cameraId: string;
 	    rotationDegrees: number;
 	    videoResolution: string;
+	    recordingResolution: string;
 	    manualControlEnabled: boolean;
 	    keys: CameraControlKeys;
 	    hwZoomRatio: number;
@@ -911,6 +920,7 @@ export namespace phoneapi {
 	        this.cameraId = source["cameraId"];
 	        this.rotationDegrees = source["rotationDegrees"];
 	        this.videoResolution = source["videoResolution"];
+	        this.recordingResolution = source["recordingResolution"];
 	        this.manualControlEnabled = source["manualControlEnabled"];
 	        this.keys = this.convertValues(source["keys"], CameraControlKeys);
 	        this.hwZoomRatio = source["hwZoomRatio"];
@@ -975,6 +985,24 @@ export namespace phoneapi {
 	
 	
 	
+	export class ThermalStatus {
+	    supported: boolean;
+	    severity: number;
+	    level: string;
+	    headroom?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ThermalStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.supported = source["supported"];
+	        this.severity = source["severity"];
+	        this.level = source["level"];
+	        this.headroom = source["headroom"];
+	    }
+	}
 	export class Status {
 	    mode: string;
 	    status: string;
@@ -984,6 +1012,7 @@ export namespace phoneapi {
 	    storageCapBytes: number;
 	    batteryPercent: number;
 	    charging: boolean;
+	    thermal: ThermalStatus;
 	    serverTimeMs: number;
 	
 	    static createFrom(source: any = {}) {
@@ -1000,8 +1029,27 @@ export namespace phoneapi {
 	        this.storageCapBytes = source["storageCapBytes"];
 	        this.batteryPercent = source["batteryPercent"];
 	        this.charging = source["charging"];
+	        this.thermal = this.convertValues(source["thermal"], ThermalStatus);
 	        this.serverTimeMs = source["serverTimeMs"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

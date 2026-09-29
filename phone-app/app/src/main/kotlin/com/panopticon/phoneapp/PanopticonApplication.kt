@@ -5,6 +5,7 @@ import com.panopticon.phoneapp.calibration.CalibrationRunner
 import com.panopticon.phoneapp.calibration.CalibrationStore
 import com.panopticon.phoneapp.camera.CameraCatalog
 import com.panopticon.phoneapp.camera.CameraGlPipeline
+import com.panopticon.phoneapp.camera.CameraHealthRegistry
 import com.panopticon.phoneapp.camera.LivePipeline
 import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.pairing.ControllerRegistry
@@ -43,6 +44,13 @@ class PanopticonApplication : Application() {
     lateinit var cameraCatalog: CameraCatalog
         private set
     val appState = AppState()
+
+    /**
+     * Per-camera health counters, served by `GET /api/camera/health`. Process-wide and outliving
+     * every pipeline on purpose: what it is there to measure is how often and why the *pipelines*
+     * die and get rebuilt, which a counter owned by a pipeline could not see.
+     */
+    val cameraHealth = CameraHealthRegistry()
 
     /**
      * Registered by [com.panopticon.phoneapp.service.PanopticonService] so the
@@ -89,8 +97,17 @@ class PanopticonApplication : Application() {
         inviteManager = InviteManager()
         segmentStore = SegmentStore(this)
         segmentStore.reconcile()
+        evictSegmentsAsync() // catch up on anything the limits say should already be gone
         calibrationRunner = CalibrationRunner(this, CalibrationStore(this), appState)
         cameraCatalog = CameraCatalog(this)
+    }
+
+    /** Enforce the ring buffer's limits from the current config - see [SegmentStore.evictAsync]. */
+    fun evictSegmentsAsync() {
+        segmentStore.evictAsync {
+            val cfg = appConfig.get()
+            SegmentStore.Limits(capBytes = cfg.storageCapBytes, maxAgeMs = cfg.ringBufferMaxAgeMs)
+        }
     }
 
     companion object {

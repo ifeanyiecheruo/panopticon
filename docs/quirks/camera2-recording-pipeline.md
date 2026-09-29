@@ -193,6 +193,112 @@ The model also predicts the broken value independently — a square region stret
 `texCropFinalized` block). Pinned by `CameraFramingTest`, which asserts the cropped region's
 aspect ratio equals the recording target's for both swapping and non-swapping matrices.
 
+### A `CONTROL_ZOOM_RATIO` change lands ~10 frames late, via a reconfigure that drops a frame — and a shader that assumes otherwise reads as motion
+**What we assumed:** that the lag between requesting a hardware zoom and getting it is worth at
+most a comment. `CameraGlPipeline`/`LivePipeline` both said so in as many words: *"Reading a
+stale split for a frame or two after a change is harmless: the hardware takes a few frames to act
+on a new zoom anyway."*
+**Actually observed (Pixel 6 back camera, 3840x2160):** measured off the recorded `.mp4`s, the
+handover takes ~10 frames and includes a **67–133ms hole in an otherwise flat 33ms cadence** —
+the HAL reconfiguring. Inter-frame timing across whole clips is `{33ms: 152, 67ms: 1, 133ms: 1}`,
+with both outliers at the zoom transition and nowhere else.
+**Why the assumption was backwards:** the hazard is not the shader being *late*, which is
+harmless. It is the shader being **early**. `ZoomGeometry.split` returns the crop the buffer
+*will* hold, and the shader adopted it on the next frame, normalising the view against a crop
+that was not there yet — sampling a sub-rect of a sub-rect. Wrong region, over-magnified, soft,
+for ten frames, then a snap to the correct framing. `MotionDetector` cannot tell that snap from a
+person walking past: it is one frame in which 58–78% of the grid changes. **509 of 816 clips**
+recorded over three days were this and nothing else — a dead-still scene whose second-largest
+inter-frame change was 0.001.
+**What we do about it:** the shader renders against what the camera *reports*, not what was
+requested. `ZoomGeometry.splitFor(hwRatio)` computes the split for a ratio the hardware is
+actually at; `ZoomFeedback` records `CONTROL_ZOOM_RATIO` (or `SCALER_CROP_REGION` on devices
+driven that way) out of each `CaptureResult`, keyed by `SENSOR_TIMESTAMP` — the same clock and
+value as `SurfaceTexture.getTimestamp()`, so each frame is matched to its own reading rather than
+to the newest one. Every intermediate frame is then geometrically correct and the view simply
+sharpens. Separately, `MotionGate` brackets the transition so the detector drops those frames as
+a reference either way.
+**The enabling mistake, worth naming on its own:** all three `setRepeatingRequest` calls passed a
+`null` `CaptureCallback`. With no result listener there was no way to know where the zoom was, and
+no way to see `onCaptureFailed` / `onCaptureBufferLost` / `onCaptureSequenceAborted` at all.
+**Where:** `phone-app/.../camera/ZoomFeedback.kt`, `ZoomGeometry.splitFor()`,
+`CameraGlPipeline.deliveredCrop()`, `LivePipeline.deliveredCrop()`. Full measurements in
+[`../status/camera-stall-investigation.md`](../status/camera-stall-investigation.md).
+
+### The pipeline's encoder stops dead after ~155/195/235s of flawless 30fps (unexplained)
+**Observed (Pixel 6, `oriole`, 3840x2160 @ 30fps, `ENCODER_BIT_RATE` 4Mbps):** the supervisor's
+`OUTPUT_STALL_TIMEOUT_MS` fires every few minutes, around the clock, ~20–43 times an hour. The
+cadence is **quantised on a ~40.2s grid** — restart gaps cluster at 161.1s (n=292), 201.4s
+(n=100), 241.9s (n=19), 362.0s (n=5) with nothing between — and stays phase-locked to it for 7+
+hours at a stretch.
+**What it is not:** not a slow decay. A 130s clip holds 30.0fps in every 10s bucket and a 33ms
+inter-frame gap right up to its last frame, then output stops. Not light- or scene-dependent
+(same rate at 03:00 as at noon). Not an exception: the 4–6s hole before the next run matches the
+stall timeout plus teardown plus the 500ms retry, so nothing threw — frames simply stopped.
+**It tracks capture load, and the periodicity is 4K-only.** Restarts per hour of covered
+recording: Pixel 6 @ 3840x2160 **19.6/hr, mean uptime 184s** (43.7h sampled); the same Pixel @
+1280x720 **5.1/hr, 708s** (3.7h); BLU G5 @ 1280x720 **4.3/hr, 828s** (9.0h). At 720p the restarts
+are irregular — the ~40.2s grid appears only at 4K.
+**Status: SOLVED 2026-09-24 — see the entry below.** The ~40.2s grid is this device's suspend
+cadence, and the failure is in the MFC encoder driver, not in the camera or in our GL consumer.
+Everything from here to the end of this entry is the reasoning that did *not* pan out, kept
+because it shows how a single unrepresentative forensic sample steered two days of work.
+
+Thermal is the best-corroborated suspect (sustained 4K on a Tensor is a
+well-documented overheater, with frame drops reported at 4K30 specifically) but does not account
+for a seven-hour phase lock; camera buffer starvation fits the load dependence and the silence
+(one GL thread doing a synchronous `glReadPixels` *and* a 4K `eglSwapBuffers` per frame is a slow
+consumer). Instrumentation to separate them landed with the entry above — `GET /api/camera/health`
+records which of {camera frame, capture result, encoded output} stopped first, the measured fps at
+the moment of death, and the capture-failure counters.
+**Not changed on a guess:** `CONTROL_AE_TARGET_FPS_RANGE` is pinned in `LivePipeline` but not in
+`CameraGlPipeline`. Pinning it is a plausible fix *and* a plausible regression (it stops the HAL
+lengthening exposure at night), so the capture rate is measured rather than the behaviour changed
+until the cause is known.
+**Where:** `CameraGlPipeline.superviseUntilError()`, `recordStallForensics()`;
+[`../status/camera-stall-investigation.md`](../status/camera-stall-investigation.md).
+
+### A foreground service does not keep the SoC awake, and the hardware encoder dies when it sleeps
+
+**Symptom:** at 4K, the recording pipeline restarts every 160/200/240/285 seconds — multiples of
+~40.3s and never less than 160s. At the moment of death the camera looks perfectly healthy:
+`cameraFrameAgeMs` ~12ms, `captureResultAgeMs` ~10ms, `measuredFps` 29.9, and only
+`encodedOutputAgeMs` is stale at ~4.1s. `eglSwapBuffers` returns `true` throughout.
+
+**Cause:** with the screen off, the application processor attempts suspend every ~40.3s. After
+several such cycles the Exynos MFC encoder comes back unusable and the kernel driver rejects
+every input buffer:
+
+```
+E libexynosv4l2: failed to ioctl: VIDIOC_QBUF (22 - Invalid argument)
+E ExynosVideoEncoder: MFC_Encoder_Enqueue_Inbuf: Failed to enqueue input buffer
+```
+
+once per frame, at 30Hz, for as long as the codec instance lives. `MediaCodec` reports no error
+and throws nothing — it simply stops producing output, so only an output-staleness watchdog
+notices.
+
+**Why it was missed:** `android:foregroundServiceType="camera"` plus a `startForeground` call is
+what keeps the *process* alive, and it is easy to read that as "the system will leave my
+recording alone". It is a different guarantee entirely. Only a wake lock keeps the AP out of
+suspend, and `android.permission.WAKE_LOCK` had been declared in the manifest since the first
+commit without anything ever taking one out.
+
+**Fix:** hold a `PARTIAL_WAKE_LOCK` for the lifetime of the service, released in `onDestroy`.
+Verified: 2h 47m on a single run against a 176s mean and a 285s record, with the suspend
+attempts gone entirely and zero `VIDIOC_QBUF` failures.
+
+**How to recognise it:** run uptimes clustering on a grid of a few tens of seconds, with a floor
+several multiples up, is the tell — a resource being lost to a periodic system transition, not a
+degradation. Grep `logcat` for `VIDIOC_QBUF`, and check `adb shell dumpsys power | grep <tag>`.
+
+**What it is not:** not thermal (reproduced at `moderate` on a cold device), not the synchronous
+`glReadPixels` (disabling analysis entirely left mean uptime at 188s against a 176s baseline),
+not backpressure from the encoder input surface (the swaps succeed).
+
+**Where:** `PanopticonService.acquireWakeLock()`;
+[`../status/camera-stall-investigation.md`](../status/camera-stall-investigation.md).
+
 ## Carried forward, not yet re-verified in this project
 
 Adopted from `panopticon-prototype/QUIRKS.md` as defensive workarounds, not independently

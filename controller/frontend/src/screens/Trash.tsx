@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
-import { ListTrash, RestoreClip, DeleteClipPermanently, EmptyTrash, type ClipView } from '../api';
-import { groupByDay, clipKey, rangeKeys, stepKey } from '../lib/clips';
+import { ListTrash, RestoreClip, DeleteClipPermanently, EmptyTrash, MarkClipWatched, type ClipView } from '../api';
+import { groupByDay, clipKey, rangeKeys, stepKey, keyAfterRemoval, viewerKeyOf, withWatched } from '../lib/clips';
 import { fmtDuration } from '../lib/format';
 import { DayGroupList, type ClickMods } from '../components/ClipTiles';
 import { ClipPlayer } from '../components/ClipPlayer';
@@ -48,18 +48,29 @@ export function Trash() {
       if (!clips) return;
       const ts = clips.filter((c) => selectedKeys.has(clipKey(c)));
       if (ts.length === 0) return;
+      // Restore and delete both take the clips out of this list.
+      const removed = new Set(ts.map(clipKey));
+      const nextKey = keyAfterRemoval(clips, removed, viewerKeyOf(selectedKeys, anchorKey));
       setBusy(true);
       try {
         for (const c of ts) await fn(c.phoneId, c.clipId);
       } finally {
         setBusy(false);
       }
-      setSelectedKeys(new Set());
-      setAnchorKey(null);
+      setClips((prev) => prev?.filter((c) => !removed.has(clipKey(c))) ?? null);
+      setAutoplay(false);
+      setSelectedKeys(nextKey ? new Set([nextKey]) : new Set());
+      setAnchorKey(nextKey);
       setReload((r) => r + 1);
     },
-    [clips, selectedKeys],
+    [clips, selectedKeys, anchorKey],
   );
+
+  const handleStarted = useCallback((c: ClipView) => {
+    if (c.watched) return;
+    void MarkClipWatched(c.phoneId, c.clipId).catch(() => {});
+    setClips((prev) => withWatched(prev, clipKey(c)));
+  }, []);
 
   // Keyboard: arrows move/extend the selection, Delete permanently deletes it.
   useEffect(() => {
@@ -101,7 +112,7 @@ export function Trash() {
   }
 
   const orderedClips = clips;
-  const viewerKey = anchorKey && selectedKeys.has(anchorKey) ? anchorKey : [...selectedKeys][0] ?? null;
+  const viewerKey = viewerKeyOf(selectedKeys, anchorKey);
   const viewerIdx = viewerKey ? orderedClips.findIndex((c) => clipKey(c) === viewerKey) : -1;
   const viewer = viewerIdx >= 0 ? orderedClips[viewerIdx] : null;
   // orderedClips is newest-first, so forward-in-time is the lower index (see handleClipFinished).
@@ -202,6 +213,7 @@ export function Trash() {
                 clip={viewer}
                 autoplay={autoplay}
                 onFinished={handleClipFinished}
+                onStarted={handleStarted}
                 nextClip={nextClip}
               />
               <div className="viewer-meta">

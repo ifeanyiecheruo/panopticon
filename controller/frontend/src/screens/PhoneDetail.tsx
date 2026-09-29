@@ -207,7 +207,14 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
               <span className="dot"></span>
               {statusLabel(p.status)}
             </span>
-            <BatteryIcon percent={p.batteryPercent} charging={p.charging} hasBattery={p.hasBattery} />
+            <BatteryIcon
+              percent={p.batteryPercent}
+              charging={p.charging}
+              hasBattery={p.hasBattery}
+              thermalSeverity={p.thermalSeverity}
+              thermalLevel={p.thermalLevel}
+              hasThermal={p.hasThermal}
+            />
           </div>
         </div>
       </div>

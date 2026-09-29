@@ -121,9 +121,15 @@ type CameraControlKeys struct {
 }
 
 type CameraStateResponse struct {
-	CameraID             string            `json:"cameraId"`
-	RotationDegrees      int               `json:"rotationDegrees"`
-	VideoResolution      string            `json:"videoResolution"`
+	CameraID        string `json:"cameraId"`
+	RotationDegrees int    `json:"rotationDegrees"`
+	VideoResolution string `json:"videoResolution"`
+	// RecordingResolution is what RECORD actually captures and encodes at: the smallest size
+	// that still holds the detail the current zoom leaves, never larger than VideoResolution in
+	// either dimension. Derived on the phone and read-only here - a zoomed-in camera records
+	// fewer pixels because there are fewer real ones to record. Equal to VideoResolution when
+	// un-zoomed, and empty from a phone too old to report it.
+	RecordingResolution  string            `json:"recordingResolution"`
 	ManualControlEnabled bool              `json:"manualControlEnabled"`
 	Keys                 CameraControlKeys `json:"keys"`
 	// HWZoomRatio is what the camera hardware was actually asked for, once the phone limited it

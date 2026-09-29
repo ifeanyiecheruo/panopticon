@@ -63,3 +63,6 @@ node_modules/
 # repo. Keep the prefix if appdirs' layout ever changes.
 panopticon-data/
 panopticon-archive/
+
+# Python bytecode from tools/ (collect-health.py and friends) - local build state, not source.
+__pycache__/

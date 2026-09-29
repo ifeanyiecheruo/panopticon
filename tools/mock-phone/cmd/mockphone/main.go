@@ -97,20 +97,20 @@ func main() {
 	flag.Parse()
 
 	s := &server{
-		invite:         *invite,
-		controllers:    make(map[string]pairedController),
-		deviceName:     "Mock Porch Cam",
-		manufacturer:   "Google",
-		model:          "Pixel 6",
-		mode:           "record",
+		invite:             *invite,
+		controllers:        make(map[string]pairedController),
+		deviceName:         "Mock Porch Cam",
+		manufacturer:       "Google",
+		model:              "Pixel 6",
+		mode:               "record",
 		motionSensitivity:  "medium",
 		storageCapBytes:    64_000_000_000,
 		ringBufferMaxAgeMs: 604_800_000,
 		videoResolution:    "1280x720",
-		calSweepDurMs:  6000,
-		activeCameraID: "0",
-		controlKeys:    map[string]any{},
-		liveArmDelay:   time.Duration(*liveArmMs) * time.Millisecond,
+		calSweepDurMs:      6000,
+		activeCameraID:     "0",
+		controlKeys:        map[string]any{},
+		liveArmDelay:       time.Duration(*liveArmMs) * time.Millisecond,
 	}
 	s.seedSegments(*numSegments)
 
@@ -274,7 +274,15 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"storageCapBytes":  64_000_000_000,
 		"batteryPercent":   81,
 		"charging":         true,
-		"serverTimeMs":     time.Now().UnixMilli(),
+		// A plausible mid-scale reading, so the controller renders the thermal glyph lit rather
+		// than exercising only the unsupported path. Static: the mock has no thermal model.
+		"thermal": map[string]any{
+			"supported": true,
+			"severity":  1,
+			"level":     "light",
+			"headroom":  0.42,
+		},
+		"serverTimeMs": time.Now().UnixMilli(),
 	})
 }
 
