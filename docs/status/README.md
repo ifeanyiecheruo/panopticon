@@ -18,8 +18,8 @@ arming, unpair / force-unpair.
 | Area | State |
 |---|---|
 | Pair → record → sync → view | done, cross-verified against the Pixel 6 |
-| Motion-gated recording (GPU fan-out, pre-roll, gapless rotation) | done (phone); verified on Pixel 6 + BLU G5; **motion thresholds un-tuned**; the ~160s stall/restart cycle on the Pixel 6 at 4K was the SoC suspending out from under the hardware encoder - a `PARTIAL_WAKE_LOCK` fixes it (2h47m clean against a 176s mean) ([`camera-stall-investigation.md`](camera-stall-investigation.md)) |
-| Segment/clip model + tombstones | done, except the eviction-probe loop |
+| Motion-gated recording (GPU fan-out, pre-roll, gapless rotation) | done (phone); verified on Pixel 6 + BLU G5; **motion thresholds un-tuned**; the ~160s stall/restart cycle on the Pixel 6 at 4K was the SoC suspending out from under the hardware encoder - a `PARTIAL_WAKE_LOCK` fixes it (2h47m clean against a 176s mean); resolved ([`../quirks/camera2-recording-pipeline.md`](../quirks/camera2-recording-pipeline.md)) |
+| Segment/clip model + tombstones | done, including the eviction probe that drops a purged clip's tombstone once the phone has evicted it; integration-tested |
 | Calibration (empirical zoom probe, model-keyed controller store) | done, verified on Pixel 6 (lit scene) + BLU G5 |
 | Camera selection + manual controls (both sides) | done, verified on Pixel 6; no phone-side Compose UI |
 | Live view (LL-HLS, both sides) | plain HLS done, verified end to end; LL-HLS implemented, build/unit-verified — on-device soak still pending ([`ll-hls-upgrade.md`](ll-hls-upgrade.md)) |
@@ -38,8 +38,6 @@ which.
 
 | Plan | Side | Size |
 |---|---|---|
-| [`camera-stall-investigation.md`](camera-stall-investigation.md) | phone | medium |
-| [`eviction-probe-loop.md`](eviction-probe-loop.md) | controller | medium |
 | [`ll-hls-upgrade.md`](ll-hls-upgrade.md) | both | large |
 | [`motion-detection-tuning.md`](motion-detection-tuning.md) | phone | medium |
 | [`fleet-bulk-actions.md`](fleet-bulk-actions.md) | controller | small–medium |

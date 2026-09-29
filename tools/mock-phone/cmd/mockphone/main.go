@@ -122,6 +122,7 @@ func main() {
 	mux.HandleFunc("/api/build-info", s.withAuth(s.handleBuildInfo))
 	mux.HandleFunc("/api/mode", s.withAuth(s.handleMode))
 	mux.HandleFunc("/api/segments", s.withAuth(s.handleSegmentsList))
+	mux.HandleFunc("/api/segments/missing", s.withAuth(s.handleSegmentsMissing))
 	mux.HandleFunc("/api/segments/", s.withAuth(s.handleSegmentFileOrThumb))
 	mux.HandleFunc("/api/calibration/start", s.withAuth(s.handleCalibrationStart))
 	mux.HandleFunc("/api/calibration/status", s.withAuth(s.handleCalibrationStatus))
@@ -605,6 +606,35 @@ func (s *server) handleSegmentsList(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"segments": out})
+}
+
+// handleSegmentsMissing answers POST /api/segments/missing: the indices of the
+// posted filenames whose /file would 404.
+func (s *server) handleSegmentsMissing(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Filenames []string `json:"filenames"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad json"})
+		return
+	}
+	s.mu.Lock()
+	present := make(map[string]bool, len(s.segments))
+	for _, seg := range s.segments {
+		present[seg.filename] = true
+	}
+	s.mu.Unlock()
+	missing := []int{}
+	for i, name := range req.Filenames {
+		if !present[name] {
+			missing = append(missing, i)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"missing": missing})
 }
 
 func (s *server) handleSegmentFileOrThumb(w http.ResponseWriter, r *http.Request) {

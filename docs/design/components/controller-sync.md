@@ -40,8 +40,7 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
 - [`../decisions/0006-segments-clips-and-tombstones.md`](../decisions/0006-segments-clips-and-tombstones.md),
   [`0011`](../decisions/0011-controller-runtime-and-state.md).
 - [`../http-api.md`](../http-api.md) — `/api/segments`.
-- Plans: [`../../status/sync-cadence-and-backoff.md`](../../status/sync-cadence-and-backoff.md),
-  [`../../status/eviction-probe-loop.md`](../../status/eviction-probe-loop.md).
+- Plan: [`../../status/sync-cadence-and-backoff.md`](../../status/sync-cadence-and-backoff.md).
 
 ## 2. Design overview
 
@@ -95,8 +94,13 @@ goroutine and its own timeouts.
   concept; a tight 500 ms gap is safe because rotation is gapless.
 - **Cursor advances only after durable + assigned + indexed** — crash-safe and idempotent; a
   half-written step can't corrupt state.
-- **Known gaps:** the poll interval is fixed at process start with no backoff against a
+- **Eviction probe rides the sync tick** (`evictprobe.go`) — every `evictionProbeInterval`
+  (10 min), a tick whose segment poll reached the phone also sends every segment tombstone of
+  its purged clips to `POST /api/segments/missing`, in batches of up to 1000 filenames, and
+  drops a clip's tombstone once the phone reports all of its segments missing. Riding the tick
+  means an unreachable phone is never probed, and only the phone's own "missing" counts as gone:
+  any failed batch - including the `404` of a phone app too old to have the route - ends the
+  pass with nothing dropped. Trashed clips are never probed or dropped.
+- **Known gap:** the poll interval is fixed at process start with no backoff against a
   long-unreachable phone
-  ([`../../status/sync-cadence-and-backoff.md`](../../status/sync-cadence-and-backoff.md)), and
-  there is no eviction-probe loop, so purged tombstones are never dropped
-  ([`../../status/eviction-probe-loop.md`](../../status/eviction-probe-loop.md)).
+  ([`../../status/sync-cadence-and-backoff.md`](../../status/sync-cadence-and-backoff.md)).

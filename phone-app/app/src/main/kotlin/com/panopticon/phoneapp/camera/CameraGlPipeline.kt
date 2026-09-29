@@ -159,7 +159,7 @@ class CameraGlPipeline(
     // a crop the buffer did not hold yet, which renders the wrong region, magnified further and
     // soft, until the hardware lands and the picture snaps. That snap is a whole-frame change, so
     // motion detection recorded it: it accounted for the majority of all clips (see
-    // docs/status/camera-stall-investigation.md). So the shader now renders against what
+    // docs/quirks/camera2-recording-pipeline.md). So the shader now renders against what
     // CaptureResults say the camera is actually delivering ([zoomFeedback]), which makes every
     // intermediate frame correct - the view holds still and merely sharpens.
     @Volatile private var zoomLut: ZoomCalibrationLut.Lut = ZoomCalibrationLut.Lut.NONE
@@ -681,7 +681,7 @@ class CameraGlPipeline(
         // return until the GPU has drained everything queued, which at 4K includes the previous
         // frame's full-size draw. The 76KB it moves is nothing; the flush is the cost. While the
         // GL thread sits in it, nothing calls updateTexImage, and the camera's buffer queue is
-        // what runs dry - see docs/status/camera-stall-investigation.md.
+        // what runs dry - see docs/quirks/camera2-recording-pipeline.md.
         //
         // Analysing every Nth frame cuts how often that happens, in proportion. It does not
         // remove the stall (an async PBO readback would); it trades detection latency, which a

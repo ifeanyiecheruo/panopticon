@@ -237,7 +237,17 @@ runs from `standby`.
 **Not a stable contract, and nothing renders it yet.** A loosely-typed dump of per-camera
 pipeline counters, added to characterise the recording pipeline's restart cycle from a phone that
 has been running for hours rather than from a `logcat` session that happens to be attached at the
-right moment — see [`../status/camera-stall-investigation.md`](../status/camera-stall-investigation.md).
+right moment — the one that turned out to be the SoC suspending out from under the hardware
+encoder (see [`../quirks/camera2-recording-pipeline.md`](../quirks/camera2-recording-pipeline.md)).
+After a long screen-off recording run, the fields that tell failures apart:
+
+| Field | Reads as |
+|---|---|
+| `meanUpMsByEndReason.stall` | absent is healthy; anything near a ~160s floor is the suspend failure back |
+| `gauges.lastFailure.cameraFrameAgeMs` vs `…encodedOutputAgeMs` | fresh frames + stale output = the suspend failure |
+| `gauges.lastFailure.swapFailuresThisRun` | non-zero moves the fault to EGL, not the codec |
+| `counters.captureBufferLost` | the separate buffer-delivery fault, not this one |
+| `gauges.motion.disturbancesExpired` | non-zero means a `MotionGate` pairing bug, not a camera fault |
 
 Only the envelope (`generatedAtMs`, `processUptimeMs`, `cameras`) is fixed. Inside `cameras`, each
 key is `"<role>:<cameraId>"` (`role` being `record` or `live`, since the same physical camera
@@ -279,6 +289,7 @@ user-facing **clip** is a controller/UX concern (the controller does it on sync,
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
 | GET | `/api/segments` | `since=<epochMs>` | — | `{ "segments": [ { "filename": "clip_0004123.mp4", "url": "/api/segments/clip_0004123.mp4/file", "createdAtMs": 1755270012000, "durationMs": 8000, "endMs": 1755270020000, "sizeBytes": 2100000, "width": 1920, "height": 1080 } ] }` | Delta-pull of segments created after `since` (default `0` = everything on disk). |
+| POST | `/api/segments/missing` | — | `{ "filenames": ["clip_20260929_171502_3fa1.mp4", "clip_20260929_171512_9b0c.mp4"] }` | `{ "missing": [1] }` | Batch existence check: the indices into `filenames` whose `/file` would `404` (evicted or never existed). At most 1000 filenames per request (`400` beyond). The controller's eviction probe uses it to find which deleted clips' segments the phone no longer holds. |
 | GET | `/api/segments/:filename/file` | — | — | *(binary `video/mp4`, supports `Range`)* | Downloads one segment; `404` if evicted. |
 | GET | `/api/segments/:filename/thumbnail` | — | — | *(binary `image/jpeg`)* | Single extracted frame, for the Gallery filmstrip. |
 | DELETE | `/api/segments/:filename` | — | — | `{ "deleted": true }` | Explicit early eviction. |
@@ -290,8 +301,8 @@ statement that the file is a "clip" in the grouped sense.)
 
 Tracked as implementation work:
 
-- Controller-side sync cadence / backoff against an unreachable phone, and the eviction-probe
-  loop's cadence — [`../status/sync-cadence-and-backoff.md`](../status/sync-cadence-and-backoff.md).
+- Controller-side sync cadence / backoff against an unreachable phone —
+  [`../status/sync-cadence-and-backoff.md`](../status/sync-cadence-and-backoff.md).
 - A scoped GET-only `/live/*` token (currently the full bearer token, mitigated by the
   server-side proxy) — [`../status/ll-hls-upgrade.md`](../status/ll-hls-upgrade.md).
 - Multi-phone fleet concerns beyond the single-phone API surface — covered by

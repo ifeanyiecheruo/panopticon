@@ -33,6 +33,9 @@ type Manager struct {
 	dirs     appdirs.Dirs
 	interval time.Duration
 	gapMs    int64 // segments this close (createdAtMs - prev.endMs) join one clip
+	// probeInterval is how often each phone's purged clips are checked for
+	// eviction - see probeEvictions.
+	probeInterval time.Duration
 
 	mu       sync.Mutex
 	cancels  map[string]context.CancelFunc // phoneID -> stop this phone's goroutine
@@ -43,15 +46,17 @@ type Manager struct {
 
 // NewManager builds a Manager. interval is how often each phone is polled;
 // gapMs is the contiguity threshold for grouping downloaded segments into
-// clips (see dbstore.GroupingGapMs). Both are constructor arguments so
+// clips (see dbstore.GroupingGapMs); probeInterval is how often each phone's
+// purged clips are probed for eviction. All are constructor arguments so
 // they're easy to tune without touching the loop logic.
-func NewManager(store *dbstore.Store, dirs appdirs.Dirs, interval time.Duration, gapMs int64) *Manager {
+func NewManager(store *dbstore.Store, dirs appdirs.Dirs, interval time.Duration, gapMs int64, probeInterval time.Duration) *Manager {
 	return &Manager{
-		store:    store,
-		dirs:     dirs,
-		interval: interval,
-		gapMs:    gapMs,
-		cancels:  make(map[string]context.CancelFunc),
+		store:         store,
+		dirs:          dirs,
+		interval:      interval,
+		gapMs:         gapMs,
+		probeInterval: probeInterval,
+		cancels:       make(map[string]context.CancelFunc),
 	}
 }
 
@@ -123,9 +128,19 @@ func (m *Manager) reconcile() {
 
 // syncLoop is the per-phone poll loop. Runs one sync pass immediately, then
 // on m.interval, until ctx is cancelled (root Stop(), or this phone was
-// unpaired and reconcile() cancelled just this one).
+// unpaired and reconcile() cancelled just this one). Every m.probeInterval,
+// a tick whose sync pass reached the phone also probes its purged clips for
+// eviction - riding the sync tick means an unreachable phone is never probed.
 func (m *Manager) syncLoop(ctx context.Context, phoneID string) {
-	m.runOnce(ctx, phoneID)
+	var lastProbe time.Time
+	tick := func() {
+		client, reached := m.runOnce(ctx, phoneID)
+		if reached && time.Since(lastProbe) >= m.probeInterval {
+			lastProbe = time.Now()
+			m.probeEvictions(ctx, client, phoneID)
+		}
+	}
+	tick()
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
 	for {
@@ -133,25 +148,26 @@ func (m *Manager) syncLoop(ctx context.Context, phoneID string) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.runOnce(ctx, phoneID)
+			tick()
 		}
 	}
 }
 
 // runOnce performs one delta-pull-and-download pass for one phone. Never
 // panics or blocks other phones on failure — errors are logged and the loop
-// just tries again next tick.
-func (m *Manager) runOnce(ctx context.Context, phoneID string) {
+// just tries again next tick. reached reports whether the phone answered
+// its segment listing, with client the one that reached it.
+func (m *Manager) runOnce(ctx context.Context, phoneID string) (client *phoneapi.Client, reached bool) {
 	phone, err := m.store.GetPhone(phoneID)
 	if err != nil {
 		if errors.Is(err, dbstore.ErrNotFound) {
-			return // unpaired since this tick was scheduled; reconcile will stop us
+			return nil, false // unpaired since this tick was scheduled; reconcile will stop us
 		}
 		log.Printf("syncer[%s]: load phone: %v", phoneID, err)
-		return
+		return nil, false
 	}
 
-	client := phoneapi.New(phone.BaseURL, phone.Token)
+	client = phoneapi.New(phone.BaseURL, phone.Token)
 	resp, err := client.Segments(ctx, phone.SyncCursorMs)
 	if err != nil {
 		// Unreachable/auth-failed/etc: this is exactly the "phone can be
@@ -159,7 +175,7 @@ func (m *Manager) runOnce(ctx context.Context, phoneID string) {
 		// the next tick retry. Fleet/Phone-detail surfaces reachability
 		// live via its own GET /api/status call, not via this loop's state.
 		log.Printf("syncer[%s]: poll segments: %v", phoneID, err)
-		return
+		return client, false
 	}
 	if err := m.store.UpdatePhoneLastSeen(phoneID, dbstore.NowMs()); err != nil {
 		log.Printf("syncer[%s]: update last_seen: %v", phoneID, err)
@@ -171,7 +187,7 @@ func (m *Manager) runOnce(ctx context.Context, phoneID string) {
 	archiveDir, err := m.dirs.PhoneArchiveDir(phoneID)
 	if err != nil {
 		log.Printf("syncer[%s]: archive dir: %v", phoneID, err)
-		return
+		return client, true
 	}
 
 	cursor := phone.SyncCursorMs
@@ -258,6 +274,7 @@ func (m *Manager) runOnce(ctx context.Context, phoneID string) {
 			log.Printf("syncer[%s]: advance cursor: %v", phoneID, err)
 		}
 	}
+	return client, true
 }
 
 // assignClip returns the clip id a freshly-downloaded segment belongs to,

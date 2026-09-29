@@ -1,7 +1,6 @@
 # 0006 — Segments, clips, and the tombstone model
 
-**Status:** Accepted · implemented, except the eviction-probe loop
-([`../../status/eviction-probe-loop.md`](../../status/eviction-probe-loop.md)).
+**Status:** Accepted · implemented.
 
 ## Context
 
@@ -54,5 +53,6 @@ No favorite field on segments, no favorite route.
   act on the whole clip.
 - Verified: migration `002` + backfill collapsed the real Pixel 6 archive's 15 contiguous
   segments into one clip.
-- Until the eviction-probe loop is built, purged tombstones accumulate forever — harmless but
-  unbounded.
+- Purged tombstones are dropped by the syncer's eviction probe once the phone 404s every one
+  of the clip's segments (see [`controller-sync.md`](../components/controller-sync.md)), so they
+  don't accumulate with churn.

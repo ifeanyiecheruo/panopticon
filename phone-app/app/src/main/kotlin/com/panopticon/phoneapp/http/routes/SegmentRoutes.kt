@@ -5,11 +5,13 @@ import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.http.ErrorBody
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
+import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
+import io.ktor.server.routing.post
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -26,6 +28,16 @@ data class SegmentDto(
 
 @Serializable
 data class SegmentsResponse(val segments: List<SegmentDto>)
+
+@Serializable
+data class SegmentsMissingRequest(val filenames: List<String>)
+
+/** Indices into the request's `filenames` whose `/file` would `404`. */
+@Serializable
+data class SegmentsMissingResponse(val missing: List<Int>)
+
+/** Upper bound on one `POST /api/segments/missing` batch - callers chunk anything bigger. */
+private const val MAX_MISSING_BATCH = 1000
 
 @Serializable
 data class DeleteResponse(val deleted: Boolean)
@@ -56,6 +68,20 @@ fun Route.segmentRoutes(segmentStore: SegmentStore) {
             val since = call.request.queryParameters["since"]?.toLongOrNull() ?: 0L
             val segments = segmentStore.listSince(since).map { it.toDto() }
             call.respond(SegmentsResponse(segments))
+        }
+
+        // Batch existence check: which of these segments are gone? The controller asks this about
+        // the segment tombstones it keeps for clips the user deleted, and drops the ones the phone
+        // no longer has - one request per batch rather than one per segment. Exactly the /file
+        // route's test, so "missing" means "/file would 404".
+        post("/api/segments/missing") {
+            val req = call.receive<SegmentsMissingRequest>()
+            if (req.filenames.size > MAX_MISSING_BATCH) {
+                call.respond(HttpStatusCode.BadRequest, ErrorBody("at most $MAX_MISSING_BATCH filenames per request"))
+                return@post
+            }
+            val missing = req.filenames.indices.filter { segmentStore.fileFor(req.filenames[it]) == null }
+            call.respond(SegmentsMissingResponse(missing))
         }
 
         get("/api/segments/{filename}/file") {

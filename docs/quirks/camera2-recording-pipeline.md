@@ -222,8 +222,7 @@ a reference either way.
 `null` `CaptureCallback`. With no result listener there was no way to know where the zoom was, and
 no way to see `onCaptureFailed` / `onCaptureBufferLost` / `onCaptureSequenceAborted` at all.
 **Where:** `phone-app/.../camera/ZoomFeedback.kt`, `ZoomGeometry.splitFor()`,
-`CameraGlPipeline.deliveredCrop()`, `LivePipeline.deliveredCrop()`. Full measurements in
-[`../status/camera-stall-investigation.md`](../status/camera-stall-investigation.md).
+`CameraGlPipeline.deliveredCrop()`, `LivePipeline.deliveredCrop()`.
 
 ### The pipeline's encoder stops dead after ~155/195/235s of flawless 30fps (unexplained)
 **Observed (Pixel 6, `oriole`, 3840x2160 @ 30fps, `ENCODER_BIT_RATE` 4Mbps):** the supervisor's
@@ -255,8 +254,7 @@ the moment of death, and the capture-failure counters.
 `CameraGlPipeline`. Pinning it is a plausible fix *and* a plausible regression (it stops the HAL
 lengthening exposure at night), so the capture rate is measured rather than the behaviour changed
 until the cause is known.
-**Where:** `CameraGlPipeline.superviseUntilError()`, `recordStallForensics()`;
-[`../status/camera-stall-investigation.md`](../status/camera-stall-investigation.md).
+**Where:** `CameraGlPipeline.superviseUntilError()`, `recordStallForensics()`.
 
 ### A foreground service does not keep the SoC awake, and the hardware encoder dies when it sleeps
 
@@ -296,8 +294,8 @@ degradation. Grep `logcat` for `VIDIOC_QBUF`, and check `adb shell dumpsys power
 `glReadPixels` (disabling analysis entirely left mean uptime at 188s against a 176s baseline),
 not backpressure from the encoder input surface (the swaps succeed).
 
-**Where:** `PanopticonService.acquireWakeLock()`;
-[`../status/camera-stall-investigation.md`](../status/camera-stall-investigation.md).
+**Where:** `PanopticonService.acquireWakeLock()`. `GET /api/camera/health` (see
+[`../design/http-api.md`](../design/http-api.md)) is how to check it stays fixed.
 
 ## Carried forward, not yet re-verified in this project
 

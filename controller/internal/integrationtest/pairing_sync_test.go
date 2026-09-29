@@ -39,6 +39,9 @@ type fakePhone struct {
 	tokens      map[string]bool
 	segments    []fakeSegment
 	evictedName string // if set, this filename 404s on download even though listed
+	// noMissingRoute makes POST /api/segments/missing 404, like a phone on an
+	// app build that predates it.
+	noMissingRoute bool
 
 	manufacturer string // defaults to "Google" if empty
 	model        string // defaults to "Pixel 6" if empty
@@ -237,6 +240,35 @@ func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePho
 			})
 		}
 		writeJSON(w, map[string]any{"segments": out})
+	}))
+	mux.HandleFunc("/api/segments/missing", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+		fp.mu.Lock()
+		defer fp.mu.Unlock()
+		if fp.noMissingRoute || r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var req struct {
+			Filenames []string `json:"filenames"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		missing := []int{}
+		for i, name := range req.Filenames {
+			present := name != fp.evictedName
+			if present {
+				present = false
+				for _, s := range fp.segments {
+					present = present || s.filename == name
+				}
+			}
+			if !present {
+				missing = append(missing, i)
+			}
+		}
+		writeJSON(w, map[string]any{"missing": missing})
 	}))
 	mux.HandleFunc("/api/segments/", authed(fp, func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.TrimPrefix(r.URL.Path, "/api/segments/")
@@ -557,7 +589,7 @@ func TestSyncLoop_GroupsContiguousSegments(t *testing.T) {
 		t.Fatalf("AddPhone failed: %v", err)
 	}
 
-	mgr := syncer.NewManager(store, dirs, 50*time.Millisecond, dbstore.GroupingGapMs)
+	mgr := syncer.NewManager(store, dirs, 50*time.Millisecond, dbstore.GroupingGapMs, 50*time.Millisecond)
 	mgr.Start()
 	defer mgr.Stop()
 
@@ -624,7 +656,7 @@ func TestSyncLoop_SplitsOnGap(t *testing.T) {
 		t.Fatalf("AddPhone failed: %v", err)
 	}
 
-	mgr := syncer.NewManager(store, dirs, 50*time.Millisecond, dbstore.GroupingGapMs)
+	mgr := syncer.NewManager(store, dirs, 50*time.Millisecond, dbstore.GroupingGapMs, 50*time.Millisecond)
 	mgr.Start()
 	defer mgr.Stop()
 
@@ -666,7 +698,7 @@ func TestSyncLoop_TreatsEvictedSegmentAsSkipNotError(t *testing.T) {
 		t.Fatalf("AddPhone failed: %v", err)
 	}
 
-	mgr := syncer.NewManager(store, dirs, 50*time.Millisecond, dbstore.GroupingGapMs)
+	mgr := syncer.NewManager(store, dirs, 50*time.Millisecond, dbstore.GroupingGapMs, 50*time.Millisecond)
 	mgr.Start()
 	defer mgr.Stop()
 

@@ -23,6 +23,15 @@ func (q *Queries) DeleteSegment(ctx context.Context, arg DeleteSegmentParams) er
 	return err
 }
 
+const deleteSegmentsForClip = `-- name: DeleteSegmentsForClip :exec
+DELETE FROM segments WHERE clip_id = ?
+`
+
+func (q *Queries) DeleteSegmentsForClip(ctx context.Context, clipID string) error {
+	_, err := q.db.ExecContext(ctx, deleteSegmentsForClip, clipID)
+	return err
+}
+
 const listSegmentsForClip = `-- name: ListSegmentsForClip :many
 SELECT phone_id, filename, clip_id, local_path, thumbnail_path, created_at_ms, duration_ms, end_ms, size_bytes, width, height
 FROM segments WHERE clip_id = ? ORDER BY created_at_ms ASC

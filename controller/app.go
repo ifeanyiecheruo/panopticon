@@ -710,8 +710,8 @@ func (a *App) RestoreClip(phoneID, clipID string) error {
 // DeleteClipPermanently: trashed -> purged. Deletes every segment's on-disk
 // file + thumbnail immediately (permanent-on-disk right away per
 // docs/design/decisions/0006-segments-clips-and-tombstones.md) but keeps the DB rows as tombstones — the segment rows stop resync from
-// resurrecting the files, and the eviction-probe loop that would eventually
-// drop the tombstones entirely is out of scope for now (see docs/status/eviction-probe-loop.md).
+// resurrecting the files until the syncer's eviction probe confirms the phone
+// no longer has them, and drops the tombstones.
 func (a *App) DeleteClipPermanently(phoneID, clipID string) error {
 	segs, err := a.store.ListSegmentsForClip(clipID)
 	if err != nil {

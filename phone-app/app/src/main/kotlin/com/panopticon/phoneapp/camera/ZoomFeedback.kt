@@ -13,7 +13,7 @@ import com.panopticon.phoneapp.calibration.ZoomRatioApi30
  * to draw, and the shader can be told what the buffer in its hands really contains instead of
  * what we asked for some frames ago. That is the whole point: the request and the delivery are
  * different things for ~10 frames after a zoom change, and rendering as if they were not is what
- * produced the false motion events documented in docs/status/camera-stall-investigation.md.
+ * produced the false motion events documented in docs/quirks/camera2-recording-pipeline.md.
  *
  * A small ring is enough - the lookup is always for a frame that has just arrived, so the useful
  * history is a fraction of a second.
