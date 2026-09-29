@@ -1,10 +1,25 @@
-import { useCallback, useEffect, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { ListPhones, ListClips, TrashClip, MarkClipWatched, type PhoneView, type ClipView } from '../api';
-import { groupByDay, clipKey, rangeKeys, stepKey, keyAfterRemoval, viewerKeyOf, withWatched } from '../lib/clips';
+import {
+  groupByDay,
+  clipKey,
+  rangeKeys,
+  stepKey,
+  keyAfterRemoval,
+  viewerKeyOf,
+  withWatched,
+  pruneSelection,
+  sameClips,
+} from '../lib/clips';
 import { fmtDuration } from '../lib/format';
 import { DayGroupList, type ClickMods } from '../components/ClipTiles';
 import { ClipPlayer } from '../components/ClipPlayer';
 import { TrashIcon } from '../lib/icons';
+
+/** How often the gallery re-reads the local clip list. Cheap (a local DB
+ * query) and well under the phone sync interval, so new footage shows up
+ * within a few seconds of landing. */
+const POLL_MS = 5000;
 
 interface GalleryProps {
   galleryFilter: string;
@@ -25,9 +40,19 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
   // Cleared on any manual pick.
   const [autoplay, setAutoplay] = useState(false);
 
-  // Refetch only on a real input change (filter or a post-mutation reload) —
-  // never on selection. Keep the previous list painted during the refetch so
-  // the split view doesn't flash.
+  const listRef = useRef<HTMLDivElement>(null);
+  // The tile to hold still across a refresh and where it sat on screen - see
+  // captureScrollAnchor.
+  const scrollAnchor = useRef<{ key: string; top: number } | null>(null);
+  // Mirrors of render state for the async fetch, which closes over stale values.
+  const viewerKeyRef = useRef<string | null>(null);
+  viewerKeyRef.current = viewerKeyOf(selectedKeys, anchorKey);
+  const clipsRef = useRef<ClipView[] | null>(null);
+  clipsRef.current = clips;
+
+  // Refetch on a real input change (filter or a post-mutation reload) and on
+  // the poll below — never on selection. Keep the previous list painted during
+  // the refetch so the split view doesn't flash.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -37,8 +62,11 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
           ListClips(galleryFilter === 'all' ? '' : galleryFilter),
         ]);
         if (!cancelled) {
-          setPhones(p);
-          setClips(c);
+          setPhones((prev) => (prev && JSON.stringify(prev) === JSON.stringify(p) ? prev : p));
+          if (!sameClips(clipsRef.current, c)) {
+            captureScrollAnchor();
+            setClips(c);
+          }
         }
       } catch (err) {
         if (!cancelled) setError(String(err));
@@ -48,6 +76,56 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
       cancelled = true;
     };
   }, [galleryFilter, reload]);
+
+  // The sync loop pulls new footage in the background, so poll for it while
+  // the window is visible. Skipped mid-trash so a poll can't race the removal.
+  useEffect(() => {
+    if (busy) return;
+    const id = window.setInterval(() => {
+      if (!document.hidden) setReload((r) => r + 1);
+    }, POLL_MS);
+    return () => window.clearInterval(id);
+  }, [busy]);
+
+  // New clips land at the top of the list and push everything below them
+  // down. Remember where the selected tile sits on screen (or, if it's
+  // scrolled out of view, the first tile that is) so the layout effect below
+  // can put it back after the new list renders.
+  function captureScrollAnchor() {
+    const list = listRef.current;
+    const scroller = list?.closest('.main');
+    if (!list || !scroller) return;
+    const view = scroller.getBoundingClientRect();
+    const tiles = [...list.querySelectorAll<HTMLElement>('[data-clip-key]')];
+    const visible = (el: HTMLElement) => {
+      const r = el.getBoundingClientRect();
+      return r.bottom > view.top && r.top < view.bottom;
+    };
+    const selected = tiles.find((el) => el.dataset.clipKey === viewerKeyRef.current);
+    const el = selected && visible(selected) ? selected : tiles.find(visible);
+    scrollAnchor.current = el ? { key: el.dataset.clipKey!, top: el.getBoundingClientRect().top } : null;
+  }
+
+  useLayoutEffect(() => {
+    const a = scrollAnchor.current;
+    scrollAnchor.current = null;
+    const list = listRef.current;
+    const scroller = list?.closest('.main');
+    if (!a || !list || !scroller) return;
+    const el = [...list.querySelectorAll<HTMLElement>('[data-clip-key]')].find((t) => t.dataset.clipKey === a.key);
+    if (!el) return;
+    // Measured after layout, so this is also a no-op if the browser's own
+    // scroll anchoring already compensated.
+    scroller.scrollTop += el.getBoundingClientRect().top - a.top;
+  }, [clips]);
+
+  // A refresh can drop a selected clip (trashed from elsewhere); keep the
+  // rest of the selection, and let the default-select below cover an empty one.
+  useEffect(() => {
+    if (!clips) return;
+    const kept = pruneSelection(clips, selectedKeys);
+    if (kept !== selectedKeys) setSelectedKeys(kept);
+  }, [clips, selectedKeys]);
 
   // Filter change starts a fresh selection.
   useEffect(() => {
@@ -233,7 +311,7 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
             <div className="viewer-empty">No clip selected</div>
           )}
         </div>
-        <div className="clip-list-pane">
+        <div className="clip-list-pane" ref={listRef}>
           {days.length === 0 ? (
             <div className="empty-note">
               No synced clips yet. Pair a phone and wait for the background sync loop to pull its
