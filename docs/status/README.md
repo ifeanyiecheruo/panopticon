@@ -49,6 +49,7 @@ which.
 | [`sync-cadence-and-backoff.md`](sync-cadence-and-backoff.md) | controller | small |
 | [`controller-app-data-dir.md`](controller-app-data-dir.md) | controller | small |
 | [`visual-language-pass.md`](visual-language-pass.md) | both | medium |
+| [`gallery-mse-playback.md`](gallery-mse-playback.md) | controller | medium–large |
 
 No hard ordering. The cross-cutting ones (`ll-hls-upgrade`, `qr-pairing`) need coordinated
 phone + controller work; the rest are single-side.
