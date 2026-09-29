@@ -226,6 +226,7 @@ class PanopticonService : Service() {
         cameraPipeline = CameraGlPipeline(
             context = applicationContext,
             segmentsDir = app.segmentStore.segmentsDir,
+            onStorageLow = { app.evictSegmentsAsync() },
             appConfig = app.appConfig,
             cameraId = app.cameraCatalog.resolveActiveId(cfg.activeCameraId),
             initialControls = cfg.cameraControls,
@@ -233,6 +234,7 @@ class PanopticonService : Service() {
             onSegmentFinished = { file, createdAtMs, durationMs, width, height ->
                 app.segmentStore.addSegment(file, createdAtMs, durationMs, width, height)
                 Log.i(TAG, "segment finished: ${file.name} (${durationMs}ms, ${width}x$height, ${file.length()} bytes)")
+                app.evictSegmentsAsync()
             },
             onHealthChanged = { healthy ->
                 app.appState.setCameraHealthy(healthy)

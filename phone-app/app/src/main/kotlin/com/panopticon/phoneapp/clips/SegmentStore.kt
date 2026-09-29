@@ -57,6 +57,11 @@ class SegmentStore(context: Context) {
     private val flushExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SegmentIndexFlush") }
     private val flushPending = AtomicBoolean(false)
 
+    // Eviction runs here, never on the caller: the recorder's drain thread calls in after every
+    // segment, and a first pass over an overgrown store can delete thousands of files.
+    private val evictExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SegmentEvict") }
+    private val evictPending = AtomicBoolean(false)
+
     @Synchronized
     private fun index(): MutableMap<String, SegmentEntry> {
         cache?.let { return it }
@@ -160,6 +165,36 @@ class SegmentStore(context: Context) {
     @Synchronized
     fun totalBytes(): Long = index().values.sumOf { it.sizeBytes }
 
+    /** Free bytes on the volume segments are written to. */
+    fun usableBytes(): Long = segmentsDir.usableSpace
+
+    /**
+     * Enforce the ring buffer's limits (see [planEviction]) in the background. Calls that land
+     * while a pass is queued or running fold into it; [limits] is read when the pass starts, so
+     * it always sees the current config.
+     */
+    fun evictAsync(limits: () -> Limits) {
+        if (!evictPending.compareAndSet(false, true)) return
+        evictExecutor.execute {
+            evictPending.set(false)
+            runCatching { evictNow(limits()) }.onFailure { Log.w(TAG, "eviction failed", it) }
+        }
+    }
+
+    /** Synchronous eviction pass; returns how many segments it dropped. */
+    fun evictNow(limits: Limits): Int {
+        val entries = synchronized(this) { ArrayList(index().values) }
+        val short = (limits.minFreeBytes - usableBytes()).coerceAtLeast(0L)
+        val victims = planEviction(entries, limits.capBytes, limits.maxAgeMs, short, System.currentTimeMillis())
+        if (victims.isEmpty()) return 0
+        val removed = deleteAll(victims)
+        Log.i(TAG, "evicted ${victims.size} segments (cap=${limits.capBytes}B maxAge=${limits.maxAgeMs}ms " +
+            "short=${short}B); ${totalBytes()}B left, ${usableBytes()}B free")
+        return removed
+    }
+
+    data class Limits(val capBytes: Long, val maxAgeMs: Long, val minFreeBytes: Long = MIN_FREE_BYTES)
+
     /** Extracts (and caches) a single JPEG frame from a segment for the Gallery filmstrip. */
     fun thumbnailFor(filename: String): File? {
         val safe = sanitize(filename)
@@ -215,5 +250,8 @@ class SegmentStore(context: Context) {
 
     companion object {
         private const val KEY = "clips_index_json"
+
+        /** Headroom kept free on the volume - several minutes of recording at any resolution. */
+        const val MIN_FREE_BYTES = 500L * 1024 * 1024
     }
 }

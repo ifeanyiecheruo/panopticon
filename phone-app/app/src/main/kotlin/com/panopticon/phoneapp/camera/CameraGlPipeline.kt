@@ -98,6 +98,10 @@ private const val THERMAL_SAMPLE_MS = 10_000L
  */
 private const val ANALYSIS_FRAME_INTERVAL = 1
 
+/** Below this much free space a new segment isn't even attempted (see CameraGlPipeline.newMuxer):
+ *  one 10s segment at 4K is ~40MB, so this is a few segments' worth. */
+private const val MIN_FREE_TO_OPEN_BYTES = 200L * 1024 * 1024
+
 /**
  * Camera2 + **GPU texture fan-out** recording pipeline. Motion-gated, gapless, with pre-roll.
  *
@@ -134,6 +138,8 @@ class CameraGlPipeline(
     private val onHealthChanged: (Boolean) -> Unit,
     private val onPhaseChanged: (recording: Boolean) -> Unit = {},
     private val onMotionChanged: (motion: Boolean) -> Unit = {},
+    /** Asked to free space when a segment can't be opened for lack of it - see [newMuxer]. */
+    private val onStorageLow: () -> Unit = {},
 ) {
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
@@ -813,12 +819,49 @@ class CameraGlPipeline(
         }
     }
 
+    /**
+     * A started muxer on a new segment file, or null if there's no room for one. Returning null
+     * rather than throwing is the point: this runs on the drain thread, and an exception here
+     * (2026-09-29: `ENOSPC`, the disk full) killed the whole app, which restarted, tried again and
+     * died again. Instead the segment is skipped, eviction is asked to make room, and the next
+     * keyframe retries - motion keeps being detected, only the footage is lost meanwhile.
+     */
+    private fun newMuxer(fmt: MediaFormat): MediaMuxer? {
+        val dir = segmentsDir
+        if (dir.usableSpace < MIN_FREE_TO_OPEN_BYTES) {
+            noteStorageLow("usable=${dir.usableSpace}B")
+            return null
+        }
+        val file = File(dir, segmentFileName())
+        return try {
+            val mx = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            muxerTrack = mx.addTrack(fmt)
+            mx.start()
+            segFile = file
+            mx
+        } catch (e: Exception) {
+            noteStorageLow(e.message ?: e.javaClass.simpleName)
+            runCatching { file.delete() }
+            null
+        }
+    }
+
+    private var storageLowLoggedMs = 0L
+
+    private fun noteStorageLow(detail: String) {
+        onStorageLow()
+        val now = SystemClock.elapsedRealtime()
+        // At most one line a minute: the next keyframe retries every second or so.
+        if (now - storageLowLoggedMs >= 60_000L) {
+            storageLowLoggedMs = now
+            Log.w(TAG, "segment not opened, skipping footage: $detail")
+            health.event("segmentOpenFailed", detail)
+        }
+    }
+
     private fun openSegmentFromRing(nowMs: Long) {
         val fmt = trackFormat ?: return
-        segFile = File(segmentsDir, segmentFileName())
-        val mx = MediaMuxer(segFile!!.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        muxerTrack = mx.addTrack(fmt)
-        mx.start()
+        val mx = newMuxer(fmt) ?: return
         muxer = mx
 
         // start from the last keyframe at/before (now - preRollMs), else the oldest keyframe held.
@@ -861,10 +904,14 @@ class CameraGlPipeline(
     private fun rollMuxer(newAnchorPtsUs: Long) {
         finalizeMuxer(publish = true)
         val fmt = trackFormat ?: return
-        segFile = File(segmentsDir, segmentFileName())
-        val mx = MediaMuxer(segFile!!.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        muxerTrack = mx.addTrack(fmt)
-        mx.start()
+        val mx = newMuxer(fmt)
+        if (mx == null) {
+            // Drop out of writing; handleEncoded reopens (with pre-roll) at a later keyframe.
+            writing = false
+            pendingRoll = false
+            onPhaseChanged(false)
+            return
+        }
         muxer = mx
         segAnchorPtsUs = newAnchorPtsUs
         segStartPtsUs = newAnchorPtsUs

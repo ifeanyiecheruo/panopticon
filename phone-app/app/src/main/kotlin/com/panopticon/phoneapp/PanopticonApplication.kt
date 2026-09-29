@@ -97,8 +97,17 @@ class PanopticonApplication : Application() {
         inviteManager = InviteManager()
         segmentStore = SegmentStore(this)
         segmentStore.reconcile()
+        evictSegmentsAsync() // catch up on anything the limits say should already be gone
         calibrationRunner = CalibrationRunner(this, CalibrationStore(this), appState)
         cameraCatalog = CameraCatalog(this)
+    }
+
+    /** Enforce the ring buffer's limits from the current config - see [SegmentStore.evictAsync]. */
+    fun evictSegmentsAsync() {
+        segmentStore.evictAsync {
+            val cfg = appConfig.get()
+            SegmentStore.Limits(capBytes = cfg.storageCapBytes, maxAgeMs = cfg.ringBufferMaxAgeMs)
+        }
     }
 
     companion object {
