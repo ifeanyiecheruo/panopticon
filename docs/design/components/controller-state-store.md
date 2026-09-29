@@ -109,6 +109,9 @@ Clip lifecycle transitions:
   ([`../../status/eviction-probe-loop.md`](../../status/eviction-probe-loop.md)).
 - Verified: migration `002` + backfill collapsed the real Pixel 6 archive's 15 contiguous
   segments into one clip.
+- Segment `local_path`/`thumbnail_path` are stored relative to the archive directory
+  (`appdirs.ArchiveRelPath`, resolved with `Dirs.ArchivePath`); `Open()` converts rows older
+  builds stored absolute, once.
 
 ## 4. Design rationale and decisions
 

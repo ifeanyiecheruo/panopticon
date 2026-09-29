@@ -38,6 +38,12 @@ func main() {
 	if err != nil {
 		fatalf("resolve app directories: %v", err)
 	}
+	if legacy, ok := appdirs.LegacyCandidate(dirs); ok {
+		dirs = migrateLegacyState(legacy, dirs)
+	}
+	if err := dirs.Ensure(); err != nil {
+		fatalf("create app directories: %v", err)
+	}
 
 	// Single-instance guard: a second launch must not run a duplicate sync
 	// loop or duplicate tray icon (see internal/singleinstance's doc comment
@@ -124,6 +130,33 @@ func main() {
 	if err != nil {
 		log.Println("wails run error:", err)
 	}
+}
+
+// migrateLegacyState moves state an earlier build left in the launch directory
+// into dirs, returning the directories to run from: dirs once moved, or legacy
+// - used where it is, retried next launch - if it couldn't be.
+func migrateLegacyState(legacy, dirs appdirs.Dirs) appdirs.Dirs {
+	// A controller still running against the legacy directory holds its lock
+	// and its DB open; moving them out from under it would corrupt both. The
+	// lock is released again before the move: on Windows an open file blocks
+	// renaming the directory it's in.
+	lock, err := singleinstance.Acquire(legacy.LockPath())
+	if err == singleinstance.ErrAlreadyRunning {
+		fmt.Println("Panopticon is already running (check your system tray).")
+		os.Exit(0)
+	}
+	if err != nil {
+		log.Printf("appdirs: can't check %s is unused, leaving existing state there: %v", legacy.Root, err)
+		return legacy
+	}
+	lock.Release()
+
+	if err := appdirs.MigrateLegacy(legacy, dirs); err != nil {
+		log.Printf("appdirs: couldn't move existing state from %s to %s, running from where it is: %v", legacy.Root, dirs.Root, err)
+		return legacy
+	}
+	log.Printf("appdirs: moved existing state from %s to %s", legacy.Root, dirs.Root)
+	return dirs
 }
 
 func fatalf(format string, args ...interface{}) {

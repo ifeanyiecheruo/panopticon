@@ -582,12 +582,12 @@ func TestSyncLoop_GroupsContiguousSegments(t *testing.T) {
 		t.Fatalf("expected 3 segments in the clip, got %d", len(segs))
 	}
 	for _, s := range segs {
-		if _, statErr := os.Stat(s.LocalPath); statErr != nil {
+		if _, statErr := os.Stat(dirs.ArchivePath(s.LocalPath)); statErr != nil {
 			t.Errorf("expected segment file on disk at %s: %v", s.LocalPath, statErr)
 		}
 		if s.ThumbnailPath == "" {
 			t.Errorf("expected a thumbnail path for %s", s.Filename)
-		} else if _, statErr := os.Stat(s.ThumbnailPath); statErr != nil {
+		} else if _, statErr := os.Stat(dirs.ArchivePath(s.ThumbnailPath)); statErr != nil {
 			t.Errorf("expected thumbnail file on disk at %s: %v", s.ThumbnailPath, statErr)
 		}
 	}

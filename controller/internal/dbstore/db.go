@@ -78,6 +78,15 @@ func Open(path string) (*Store, error) {
 		log.Printf("dbstore: grouped unassigned segments into %d clip(s)", made)
 	}
 
+	// One-time conversion of archive paths older builds stored absolute. No-op
+	// once every row is relative.
+	if n, err := store.RelativizeArchivePaths(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("relativize archive paths: %w", err)
+	} else if n > 0 {
+		log.Printf("dbstore: made %d segment archive path(s) relative", n)
+	}
+
 	return store, nil
 }
 

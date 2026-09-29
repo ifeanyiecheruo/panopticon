@@ -11,8 +11,9 @@ feed the file to the summary at the bottom).
     python collect-health.py --window evening --mark
 
 There are no path or phone arguments. --window picks one of a fixed set of file pairs under
-panopticon-data/health/ (already gitignored), and the controller DB path is a constant - so
-nothing from the command line is ever joined into a path or into the URL that gets fetched.
+the controller's panopticon-data/health/, and the controller DB path is resolved exactly the way
+the controller resolves it (controller/internal/appdirs) - so nothing from the command line is
+ever joined into a path or into the URL that gets fetched.
 
 The controller keeps that DB open with WAL, so it is copied before reading rather than opened
 in place.
@@ -31,12 +32,28 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# The controller's DB, relative to this file's home in tools/.
-DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "panopticon-data", "panopticon.db")
 
-# Where this script's own files live. Under the controller's runtime data dir, which is already
-# gitignored, so soak logs never land in a commit.
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "panopticon-data", "health")
+def _controller_root():
+    """The controller's state root, mirroring controller/internal/appdirs: $PANOPTICON_HOME if
+    set, else the per-user application-data directory."""
+    home = os.environ.get("PANOPTICON_HOME")
+    if home:
+        return os.path.abspath(home)
+    if sys.platform == "win32":
+        base = os.environ["LOCALAPPDATA"]
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, "Panopticon")
+
+
+# The controller's DB.
+DB = os.path.join(_controller_root(), "panopticon-data", "panopticon.db")
+
+# Where this script's own files live: beside the controller's own data, out of the repo, so soak
+# logs never land in a commit.
+DATA_DIR = os.path.join(_controller_root(), "panopticon-data", "health")
 
 # The only schemes a paired phone's base URL may use. The URL is read out of the controller's
 # SQLite DB rather than typed here, so it is not trusted blindly: a DB that had been tampered
@@ -77,7 +94,7 @@ def _data_file(label, which, must_exist):
 def phone_rows():
     """The paired phones, read from a snapshot of the controller's DB.
 
-    The DB path is fixed rather than a flag: it is always the controller's, next to this repo,
+    The DB path is fixed rather than a flag: it is always the controller's (see _controller_root),
     and there is no second one worth pointing at.
     """
     db_path = os.path.normpath(DB)

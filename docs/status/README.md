@@ -25,6 +25,7 @@ arming, unpair / force-unpair.
 | Live view (LL-HLS, both sides) | plain HLS done, verified end to end; LL-HLS implemented, build/unit-verified — on-device soak still pending ([`ll-hls-upgrade.md`](ll-hls-upgrade.md)) |
 | Controller master-detail Fleet / Gallery / Trash / Add-phone | done |
 | Unpair / force-unpair (controller) | done, integration-tested |
+| Controller state in a fixed per-user directory | done: `%LocalAppData%\Panopticon` (etc.), `$PANOPTICON_HOME` override, `wails dev` keeps the launch dir; moves an older build's launch-dir state on first run; archive paths stored relative; unit-tested |
 
 ### Device coverage
 
@@ -47,7 +48,6 @@ which.
 | [`phone-camera-control-ui.md`](phone-camera-control-ui.md) | phone | large |
 | [`phone-remaining-screens.md`](phone-remaining-screens.md) | phone | medium |
 | [`sync-cadence-and-backoff.md`](sync-cadence-and-backoff.md) | controller | small |
-| [`controller-app-data-dir.md`](controller-app-data-dir.md) | controller | small |
 | [`visual-language-pass.md`](visual-language-pass.md) | both | medium |
 | [`gallery-mse-playback.md`](gallery-mse-playback.md) | controller | medium–large |
 | [`recording-resolution-tradeoff.md`](recording-resolution-tradeoff.md) | phone | investigate, then medium |

@@ -230,12 +230,17 @@ func (m *Manager) runOnce(ctx context.Context, phoneID string) {
 			break
 		}
 
+		// Stored relative to the archive dir (see appdirs.ArchiveRelPath).
+		thumbRel := ""
+		if thumbPath != "" {
+			thumbRel = appdirs.ArchiveRelPath(phoneID, seg.Filename+".jpg")
+		}
 		err = m.store.UpsertSegment(dbstore.Segment{
 			PhoneID:       phoneID,
 			Filename:      seg.Filename,
 			ClipID:        clipID,
-			LocalPath:     localPath,
-			ThumbnailPath: thumbPath,
+			LocalPath:     appdirs.ArchiveRelPath(phoneID, seg.Filename),
+			ThumbnailPath: thumbRel,
 			CreatedAtMs:   seg.CreatedAtMs,
 			DurationMs:    seg.DurationMs,
 			EndMs:         endMs,

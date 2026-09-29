@@ -719,12 +719,12 @@ func (a *App) DeleteClipPermanently(phoneID, clipID string) error {
 	}
 	for _, s := range segs {
 		if s.LocalPath != "" {
-			if err := removeIfExists(s.LocalPath); err != nil {
+			if err := removeIfExists(a.dirs.ArchivePath(s.LocalPath)); err != nil {
 				log.Printf("delete segment file: %v", err)
 			}
 		}
 		if s.ThumbnailPath != "" {
-			if err := removeIfExists(s.ThumbnailPath); err != nil {
+			if err := removeIfExists(a.dirs.ArchivePath(s.ThumbnailPath)); err != nil {
 				log.Printf("delete segment thumbnail: %v", err)
 			}
 		}
