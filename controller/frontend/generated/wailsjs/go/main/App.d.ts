@@ -32,6 +32,8 @@ export function ListPhones():Promise<Array<main.PhoneView>>;
 
 export function ListTrash():Promise<Array<main.ClipView>>;
 
+export function MarkClipWatched(arg1:string,arg2:string):Promise<void>;
+
 export function ParseInviteURL(arg1:string):Promise<main.ParsedInvite>;
 
 export function RequestQuit():Promise<void>;

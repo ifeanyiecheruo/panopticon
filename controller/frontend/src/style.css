@@ -169,6 +169,38 @@ body{
 .viewer-pane video{width:100%; height:100%; border-radius:14px; background:#000; object-fit:contain; display:block;}
 .clip-player video{position:absolute; inset:0;}
 .clip-player video[hidden]{display:none;}
+/* Fullscreen belongs to the wrapper (see ClipPlayer.tsx), so it must fill the
+   screen itself and drop the inline card styling. */
+.clip-player.is-fullscreen{aspect-ratio:auto; width:100vw; height:100vh; border-radius:0;}
+.clip-player.is-fullscreen video{border-radius:0;}
+.clip-player.controls-hidden{cursor:none;}
+/* Our own transport (see ClipPlayer.tsx): a click surface over the videos, and
+   a bar along the bottom that fades while playing with the pointer at rest. */
+.clip-surface{position:absolute; inset:0; z-index:1;}
+.clip-controls{
+  position:absolute; left:0; right:0; bottom:0; z-index:2; display:flex; align-items:center; gap:10px;
+  padding:22px 12px 10px; background:linear-gradient(transparent, rgba(0,0,0,.65));
+  color:#fff; transition:opacity .2s;
+}
+.clip-controls.hidden{opacity:0; pointer-events:none;}
+.clip-btn{
+  display:flex; align-items:center; justify-content:center; flex:0 0 auto;
+  width:30px; height:30px; padding:0; border:none; border-radius:7px; cursor:pointer;
+  color:#fff; background:transparent;
+}
+.clip-btn:hover{background:rgba(255,255,255,.15);}
+.clip-time{font-family:"Consolas",monospace; font-size:11px; color:rgba(255,255,255,.85); flex:0 0 auto; font-variant-numeric:tabular-nums;}
+.clip-track{flex:1 1 auto; height:18px; display:flex; align-items:center; cursor:pointer; touch-action:none;}
+.clip-track-rail{position:relative; width:100%; height:4px; border-radius:2px; background:rgba(255,255,255,.25);}
+.clip-track:hover .clip-track-rail{height:6px;}
+.clip-track-fill{position:absolute; left:0; top:0; bottom:0; border-radius:2px; background:var(--accent);}
+.clip-track-thumb{
+  position:absolute; top:50%; width:12px; height:12px; margin:-6px 0 0 -6px; border-radius:50%;
+  background:#fff; box-shadow:0 0 0 2px rgba(0,0,0,.25);
+}
+/* Segment boundaries within the clip - a faint tick, so a seek that crosses
+   one (and briefly reloads) isn't a surprise. */
+.clip-track-seg{position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:rgba(0,0,0,.45);}
 .viewer-empty{
   width:100%; aspect-ratio:16/9; border-radius:14px; background:var(--surface);
   border:1px dashed var(--border); display:flex; align-items:center; justify-content:center;
@@ -188,7 +220,11 @@ body{
   border:2px solid transparent; background:var(--surface-2) center/cover no-repeat;
   display:flex; align-items:flex-end;
 }
-.ctile.active{border-color:var(--accent);}
+/* Watched: played since sync last added footage, so unwatched (new) clips are
+   the ones without it. Declared before .active, which wins when both apply. */
+/* The inset shadow doubles the band to 4px without resizing the tile. */
+.ctile.watched{border-color:rgba(220,70,70,.45); box-shadow:inset 0 0 0 2px rgba(220,70,70,.45);}
+.ctile.active{border-color:var(--accent); box-shadow:none;}
 .ctile .cphone,.ctile .ctime,.ctile .clen{
   font-family:"Consolas",monospace; font-size:8.5px; color:rgba(233,243,238,.9);
   background:rgba(0,0,0,.5); padding:2px 6px; border-radius:5px; margin:6px;

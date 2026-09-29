@@ -20,6 +20,7 @@ type Clip struct {
 	SizeBytes    int64
 	State        string
 	CreatedAtMs  int64
+	WatchedAtMs  int64
 }
 
 type Identity struct {

@@ -34,6 +34,33 @@ export function stepKey(clips: ClipView[], current: string | null, dir: 1 | -1):
   return keys[next];
 }
 
+/** Where the selection goes once the `removed` clips leave the list (trashed,
+ * restored, deleted): the next clip in play order after `fromKey` that wasn't
+ * removed, else the nearest earlier one that wasn't, else nothing. `clips` is
+ * newest-first (ListClips sorts DESC) and play order runs forward in time, so
+ * "next" is toward *lower* indices. */
+export function keyAfterRemoval(clips: ClipView[], removed: Set<string>, fromKey: string | null): string | null {
+  const keys = clips.map(clipKey);
+  let from = fromKey ? keys.indexOf(fromKey) : -1;
+  if (from < 0) from = keys.findIndex((k) => removed.has(k));
+  if (from < 0) return null;
+  for (let i = from - 1; i >= 0; i--) if (!removed.has(keys[i])) return keys[i];
+  for (let i = from + 1; i < keys.length; i++) if (!removed.has(keys[i])) return keys[i];
+  return null;
+}
+
+/** The clip the viewer shows for a selection: the anchor when it's selected,
+ * else any selected clip. */
+export function viewerKeyOf(selectedKeys: Set<string>, anchorKey: string | null): string | null {
+  return anchorKey && selectedKeys.has(anchorKey) ? anchorKey : [...selectedKeys][0] ?? null;
+}
+
+/** `clips` with `key` marked watched - the local echo of MarkClipWatched, so
+ * the tile's border appears without waiting for a refetch. */
+export function withWatched(clips: ClipView[] | null, key: string): ClipView[] | null {
+  return clips?.map((c) => (clipKey(c) === key && !c.watched ? ({ ...c, watched: true } as ClipView) : c)) ?? null;
+}
+
 export function groupByDay(clips: ClipView[]): DayGroup[] {
   const byDay = new Map<string, ClipView[]>();
   for (const c of clips) {

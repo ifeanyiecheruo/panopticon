@@ -3,29 +3,33 @@ INSERT INTO clips (id, phone_id, started_at_ms, ended_at_ms, segment_count, size
 VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetOpenClip :one
-SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms
+SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms, watched_at_ms
 FROM clips
 WHERE phone_id = ? AND state = 'active'
 ORDER BY ended_at_ms DESC LIMIT 1;
 
 -- name: ExtendClip :exec
 UPDATE clips
-SET ended_at_ms = ?, segment_count = segment_count + 1, size_bytes = size_bytes + ?
+SET ended_at_ms = ?, segment_count = segment_count + 1, size_bytes = size_bytes + ?, watched_at_ms = 0
 WHERE id = ?;
 
 -- name: GetClip :one
-SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms
+SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms, watched_at_ms
 FROM clips WHERE phone_id = ? AND id = ?;
 
 -- sqlc.arg(phone_id) = "" means every phone, sqlc.arg(state) = "" means every
 -- state - the sentinel-OR trick keeps this one static query doing what would
 -- otherwise be several hand-built variants.
 -- name: ListClips :many
-SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms
+SELECT id, phone_id, started_at_ms, ended_at_ms, segment_count, size_bytes, state, created_at_ms, watched_at_ms
 FROM clips
 WHERE (CAST(sqlc.arg(phone_id) AS TEXT) = '' OR phone_id = sqlc.arg(phone_id))
   AND (CAST(sqlc.arg(state) AS TEXT) = '' OR state = sqlc.arg(state))
 ORDER BY started_at_ms DESC;
+
+-- Only the first play counts, so re-watching doesn't move the timestamp.
+-- name: MarkClipWatched :exec
+UPDATE clips SET watched_at_ms = ? WHERE phone_id = ? AND id = ? AND watched_at_ms = 0;
 
 -- name: SetClipState :exec
 UPDATE clips SET state = ? WHERE phone_id = ? AND id = ?;

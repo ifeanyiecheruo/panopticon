@@ -620,6 +620,7 @@ type ClipView struct {
 	SizeBytes    int64         `json:"sizeBytes"`
 	ThumbnailURL string        `json:"thumbnailUrl"`
 	HasThumbnail bool          `json:"hasThumbnail"`
+	Watched      bool          `json:"watched"` // played in the gallery since sync last added footage
 	Segments     []SegmentView `json:"segments"`
 }
 
@@ -673,6 +674,7 @@ func (a *App) listClipsByState(phoneID string, state dbstore.ClipState) ([]ClipV
 			PhoneID: c.PhoneID, PhoneName: name, ClipID: c.ID, State: string(c.State),
 			StartedAtMs: c.StartedAtMs, EndedAtMs: c.EndedAtMs,
 			DurationMs: c.EndedAtMs - c.StartedAtMs, SizeBytes: c.SizeBytes,
+			Watched:  c.WatchedAtMs != 0,
 			Segments: segViews,
 		}
 		// Thumbnail is the first segment's <filename>.jpg.
@@ -687,6 +689,12 @@ func (a *App) listClipsByState(phoneID string, state dbstore.ClipState) ([]ClipV
 
 func archiveURL(phoneID, name string) string {
 	return "/archive/" + phoneID + "/" + name
+}
+
+// MarkClipWatched records that the gallery started playing a clip. Idempotent: only the
+// first play is stored.
+func (a *App) MarkClipWatched(phoneID, clipID string) error {
+	return a.store.MarkClipWatched(phoneID, clipID, dbstore.NowMs())
 }
 
 // TrashClip: active -> trashed (segment files stay on disk, restorable).

@@ -406,6 +406,7 @@ export namespace main {
 	    sizeBytes: number;
 	    thumbnailUrl: string;
 	    hasThumbnail: boolean;
+	    watched: boolean;
 	    segments: SegmentView[];
 	
 	    static createFrom(source: any = {}) {
@@ -424,6 +425,7 @@ export namespace main {
 	        this.sizeBytes = source["sizeBytes"];
 	        this.thumbnailUrl = source["thumbnailUrl"];
 	        this.hasThumbnail = source["hasThumbnail"];
+	        this.watched = source["watched"];
 	        this.segments = this.convertValues(source["segments"], SegmentView);
 	    }
 	
