@@ -19,7 +19,7 @@ private const val NOT_RUNNING = -1L
  * This exists to answer a question we cannot yet state precisely: the recording pipeline's
  * encoder stops producing output after a few minutes of otherwise perfect 30fps, the supervisor's
  * stall timeout fires, and the rebuilt pipeline's first frames get recorded as a false motion
- * event (see docs/status/camera-stall-investigation.md). Nobody knows which counter settles that
+ * event (see docs/quirks/camera2-recording-pipeline.md). Nobody knows which counter settles that
  * yet, so the wire shape is a free-form JSON object of names to numbers and strings: a new probe
  * is one [count] call, with no wire type, no controller model and no migration to keep in step.
  * Once the failure is understood the handful of fields that turned out to matter can be promoted

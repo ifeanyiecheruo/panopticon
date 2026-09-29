@@ -11,8 +11,8 @@ import (
 // ClipState mirrors the three-state lifecycle from docs/design/decisions/0006-segments-clips-and-tombstones.md:
 // active (visible in Gallery) -> trashed (visible in Trash, files still on
 // disk) -> purged (tombstone only, files gone). The tombstone is only dropped
-// once eviction from the phone's ring buffer is confirmed - that probe loop is
-// out of scope (see docs/status/eviction-probe-loop.md), so purged rows accumulate here for now.
+// once the phone's ring buffer has evicted every one of its segments - see the
+// syncer's eviction probe and DropPurgedClip.
 type ClipState string
 
 const (
@@ -130,6 +130,50 @@ func (s *Store) SetClipState(phoneID, clipID string, state ClipState) error {
 		PhoneID: phoneID,
 		ID:      clipID,
 	})
+}
+
+// PurgedSegment is one segment tombstone of a purged clip.
+type PurgedSegment struct {
+	ClipID   string
+	Filename string
+}
+
+// ListPurgedClipSegments returns every segment tombstone of one phone's
+// purged clips - what the eviction probe checks against the phone.
+func (s *Store) ListPurgedClipSegments(phoneID string) ([]PurgedSegment, error) {
+	rows, err := s.q.ListPurgedClipSegments(context.Background(), phoneID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PurgedSegment, len(rows))
+	for i, r := range rows {
+		out[i] = PurgedSegment{ClipID: r.ClipID, Filename: r.Filename}
+	}
+	return out, nil
+}
+
+// DropPurgedClip deletes a purged clip's row and its segment tombstones in one
+// transaction. Only call it once the phone has confirmed (404) that none of
+// the clip's segments exist any more: without the tombstones, a resync would
+// happily download anything the phone still has. Returns false, dropping
+// nothing, if the clip isn't (or is no longer) purged.
+func (s *Store) DropPurgedClip(phoneID, clipID string) (bool, error) {
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	q := s.q.WithTx(tx)
+
+	n, err := q.DeletePurgedClip(ctx, queries.DeletePurgedClipParams{PhoneID: phoneID, ID: clipID})
+	if err != nil || n == 0 {
+		return false, err
+	}
+	if err := q.DeleteSegmentsForClip(ctx, clipID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 // MarkClipWatched records the first time a clip was played; later calls are no-ops.

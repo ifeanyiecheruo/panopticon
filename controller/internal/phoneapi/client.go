@@ -577,6 +577,40 @@ func (c *Client) DownloadSegmentFile(ctx context.Context, filename string) (io.R
 	return c.downloadBinary(ctx, "/api/segments/"+url.PathEscape(filename)+"/file", fileTimeout)
 }
 
+// MaxSegmentsMissingBatch is the most filenames one SegmentsMissing call may
+// send - the phone refuses bigger batches.
+const MaxSegmentsMissingBatch = 1000
+
+type segmentsMissingRequest struct {
+	Filenames []string `json:"filenames"`
+}
+
+type segmentsMissingResponse struct {
+	Missing []int `json:"missing"`
+}
+
+// SegmentsMissing asks the phone which of filenames it no longer has
+// (POST /api/segments/missing), returning their indices into filenames -
+// exactly the segments whose /file would 404. At most
+// MaxSegmentsMissingBatch filenames per call. A phone on an app build without
+// the route answers 404, which surfaces as an error like any other, never as
+// "all missing".
+func (c *Client) SegmentsMissing(ctx context.Context, filenames []string) ([]int, error) {
+	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	defer cancel()
+	var out segmentsMissingResponse
+	err := c.doJSON(ctx, http.MethodPost, "/api/segments/missing", nil, segmentsMissingRequest{Filenames: filenames}, &out)
+	if err != nil {
+		return nil, err
+	}
+	for _, i := range out.Missing {
+		if i < 0 || i >= len(filenames) {
+			return nil, fmt.Errorf("segments/missing: index %d out of range for %d filenames", i, len(filenames))
+		}
+	}
+	return out.Missing, nil
+}
+
 // DownloadSegmentThumbnail fetches GET /api/segments/:filename/thumbnail.
 func (c *Client) DownloadSegmentThumbnail(ctx context.Context, filename string) (io.ReadCloser, error) {
 	return c.downloadBinary(ctx, "/api/segments/"+url.PathEscape(filename)+"/thumbnail", thumbnailTimeout)

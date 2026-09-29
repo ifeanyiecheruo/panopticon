@@ -33,6 +33,12 @@ var assets embed.FS
 // it's trivial to retune.
 const syncPollInterval = 30 * time.Second
 
+// evictionProbeInterval is how often each phone's purged clips are probed for
+// eviction from its ring buffer (their tombstones are dropped once it has).
+// Nothing is waiting on it, so it can be lazy - each pass costs at least one
+// request per phone with purged clips.
+const evictionProbeInterval = 10 * time.Minute
+
 func main() {
 	dirs, err := appdirs.Resolve()
 	if err != nil {
@@ -62,7 +68,7 @@ func main() {
 		fatalf("load/create controller identity: %v", err)
 	}
 
-	syncMgr := syncer.NewManager(store, dirs, syncPollInterval, dbstore.GroupingGapMs)
+	syncMgr := syncer.NewManager(store, dirs, syncPollInterval, dbstore.GroupingGapMs, evictionProbeInterval)
 	syncMgr.Start()
 	defer syncMgr.Stop()
 

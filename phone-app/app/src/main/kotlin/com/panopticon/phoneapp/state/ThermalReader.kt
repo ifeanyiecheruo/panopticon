@@ -27,7 +27,7 @@ import kotlinx.serialization.Serializable
  * @param headroom 0..1+ forecast of thermal headroom (API 30+), where 1.0 is the throttling
  *   threshold and above 1.0 means throttling is already expected. Null when unavailable. Finer
  *   grained than [severity] and the more useful of the two for the stall investigation, because
- *   it moves *before* the severity level does - see docs/status/camera-stall-investigation.md.
+ *   it moves *before* the severity level does - see docs/quirks/camera2-recording-pipeline.md.
  */
 @Serializable
 data class ThermalStatus(

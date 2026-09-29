@@ -51,8 +51,6 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
   [`0001`](../decisions/0001-repository-and-build.md) (sqlc/goose, pure-Go driver).
 - `controller/internal/dbstore/README.md`,
   [`../../../tools/dbstore/README.md`](../../../tools/dbstore/README.md) — codegen mechanics.
-- Eviction-probe plan:
-  [`../../status/eviction-probe-loop.md`](../../status/eviction-probe-loop.md).
 
 ## 2. Design overview
 
@@ -104,9 +102,9 @@ Clip lifecycle transitions:
 ### 3.5 Processing and behaviour
 
 - Migrations run on `Open()`; a fresh DB is created and migrated transparently.
-- A purged row's tombstone is only removed once an eviction probe confirms the phone no longer
-  holds the segments — **not yet implemented**, so tombstones accumulate
-  ([`../../status/eviction-probe-loop.md`](../../status/eviction-probe-loop.md)).
+- A purged clip's tombstone (its clip row and segment rows) is only removed once the syncer's
+  eviction probe confirms the phone no longer holds any of its segments - `DropPurgedClip`, one
+  transaction, guarded on the clip still being `purged`.
 - Verified: migration `002` + backfill collapsed the real Pixel 6 archive's 15 contiguous
   segments into one clip.
 

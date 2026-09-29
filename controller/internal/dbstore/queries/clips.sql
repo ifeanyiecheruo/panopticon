@@ -43,3 +43,15 @@ FROM segments s
 JOIN clips c ON c.id = s.clip_id
 WHERE c.state IN ('active', 'trashed')
   AND (CAST(sqlc.arg(phone_id) AS TEXT) = '' OR c.phone_id = sqlc.arg(phone_id));
+
+-- Every segment tombstone of one phone's purged clips - what the eviction probe checks against
+-- the phone's own listing.
+-- name: ListPurgedClipSegments :many
+SELECT s.clip_id, s.filename
+FROM segments s
+JOIN clips c ON c.id = s.clip_id
+WHERE c.phone_id = ? AND c.state = 'purged';
+
+-- Guarded on state so only a tombstone is ever dropped this way.
+-- name: DeletePurgedClip :execrows
+DELETE FROM clips WHERE phone_id = ? AND id = ? AND state = 'purged';

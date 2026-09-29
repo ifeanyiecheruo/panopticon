@@ -9,6 +9,24 @@ import (
 	"context"
 )
 
+const deletePurgedClip = `-- name: DeletePurgedClip :execrows
+DELETE FROM clips WHERE phone_id = ? AND id = ? AND state = 'purged'
+`
+
+type DeletePurgedClipParams struct {
+	PhoneID string
+	ID      string
+}
+
+// Guarded on state so only a tombstone is ever dropped this way.
+func (q *Queries) DeletePurgedClip(ctx context.Context, arg DeletePurgedClipParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deletePurgedClip, arg.PhoneID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const diskUsageBytes = `-- name: DiskUsageBytes :one
 SELECT CAST(COALESCE(SUM(s.size_bytes), 0) AS INTEGER)
 FROM segments s
@@ -161,6 +179,43 @@ func (q *Queries) ListClips(ctx context.Context, arg ListClipsParams) ([]Clip, e
 			&i.CreatedAtMs,
 			&i.WatchedAtMs,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPurgedClipSegments = `-- name: ListPurgedClipSegments :many
+SELECT s.clip_id, s.filename
+FROM segments s
+JOIN clips c ON c.id = s.clip_id
+WHERE c.phone_id = ? AND c.state = 'purged'
+`
+
+type ListPurgedClipSegmentsRow struct {
+	ClipID   string
+	Filename string
+}
+
+// Every segment tombstone of one phone's purged clips - what the eviction probe checks against
+// the phone's own listing.
+func (q *Queries) ListPurgedClipSegments(ctx context.Context, phoneID string) ([]ListPurgedClipSegmentsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPurgedClipSegments, phoneID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPurgedClipSegmentsRow{}
+	for rows.Next() {
+		var i ListPurgedClipSegmentsRow
+		if err := rows.Scan(&i.ClipID, &i.Filename); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

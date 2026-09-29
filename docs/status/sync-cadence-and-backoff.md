@@ -17,15 +17,15 @@ Left as an open item by the original controller UX design, and confirmed in the 
   forever on the same interval.
 - `ListPhones` / `GetPhoneDetail`'s live-status fetch has **no caching** — every Fleet render
   re-hits every paired phone's `/api/status`. Fine for a handful of phones; not at fleet scale.
-- The [eviction-probe loop](eviction-probe-loop.md) needs the same "how often, how to behave
-  against an unreachable phone" answer.
+- The eviction probe (`internal/syncer/evictprobe.go`) rides the sync tick, on its own
+  10-minute `evictionProbeInterval`, so it inherits whatever cadence the sync loop gets.
 
 ## Approach
 
 - **Backoff** — per phone, on consecutive failures grow the interval (e.g. 30s → 1m → 5m → cap
   at ~15m); reset to base on the first success. Keep the base interval configurable.
-- **Shared policy** — a small `pollpolicy` helper both `syncer` and the eviction-probe loop
-  consult, so "skip an unreachable phone / when to retry" is defined once.
+- **Shared policy** — the eviction probe already only runs on a tick that reached the phone,
+  so backing off the sync tick backs it off too; no second policy needed.
 - **Status caching** — a short TTL cache (a few seconds) in front of the `/api/status` fetch
   behind `ListPhones` / `GetPhoneDetail`, plus optional coalescing so concurrent renders share
   one in-flight request. (A full continuously-updating background poll is

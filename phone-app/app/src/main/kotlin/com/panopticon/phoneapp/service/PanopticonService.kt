@@ -53,7 +53,7 @@ class PanopticonService : Service() {
      * emits nothing, until the supervisor's output-stall timeout tears the pipeline down and
      * rebuilds it. That is the shape of the stall - run uptimes quantised to multiples of the
      * suspend period, camera frames and capture results fresh at the moment of death, encoder
-     * output four seconds stale. See docs/status/camera-stall-investigation.md.
+     * output four seconds stale. See docs/quirks/camera2-recording-pipeline.md.
      */
     private var wakeLock: PowerManager.WakeLock? = null
 
