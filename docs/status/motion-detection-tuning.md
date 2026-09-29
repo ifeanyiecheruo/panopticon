@@ -10,10 +10,32 @@ real phone in real lighting, and evaluate whether a background-subtraction model
 ## Context
 
 [`../design/decisions/0005-motion-detection.md`](../design/decisions/0005-motion-detection.md):
-`MotionDetector` is frame-difference on a 32×24 luma grid, no background model. The
-`motionSensitivity` → threshold mapping in the code was chosen by reasoning and **never measured
-against the Pixel 6 in real lighting**. It is knowingly naive about lighting steps and slow
-drift.
+`MotionDetector` is frame-difference on a 32×24 grid, no background model.
+
+**Done 2026-09-28 (partial):** a night-time scene where a window's blinds were drawn went
+undetected on `high`. Replaying 72 recorded Pixel 6 clips offline showed the change was colour
+(green −4, blue −12), gradual, and in ~30 of 768 cells - invisible to luma against the previous
+frame at any threshold. The detector now compares cell means on every RGB channel against a
+~30-frame-old reference, with per-level (cell delta, fraction): high (10, 1.5%), medium
+(26, 4%), low (22, 8%). Fit to recordings, not the live readback, and to one scene; steps 1-3
+below (live instrumentation, more scenes, background model) are still open.
+
+**Done 2026-09-28/29:** step 1 exists - `debug/DebugMotionTraceReceiver` records the detector's
+exact input (80x60 RGB at 10fps, plus its per-frame verdict) for offline replay. From those
+traces:
+
+- `high` gained a fine 80x60 grid that fires on any 2x2 block of changed cells, for small
+  movements (a head behind a laptop was ~1 coarse cell). The block rejects sub-pixel camera shake,
+  which only lights thin lines along edges.
+- Every threshold on `high` is now relative to each cell's own running noise (fine 6x, coarse
+  5x): pixel noise over 1s is ~2 by day and ~12 at night, so no fixed delta suits both - the
+  fixed one fired on 90% of night frames.
+- The frame-wide brightness shift (median over cells, capped at 24) is removed first: night
+  auto-exposure hunting, worse with exposure compensation raised, moved the whole frame 6-18
+  levels in steps. Coarse cells also need a changed neighbour to count.
+
+Result on the 2026-09-29 night: from recording 50-100% of the time to ~0.2-4% of frames, the
+remainder being lit windows (a TV behind blinds, lamps). Still one scene; medium/low unchanged.
 
 ## Approach
 

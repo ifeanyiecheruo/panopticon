@@ -57,6 +57,8 @@ class MotionAnalyzer(
         val changedFraction: Double,
         /** True when this frame was ours, not the scene's - see [MotionGate]. */
         val suppressed: Boolean,
+        /** Whether the detector's fine small-object test fired - see [MotionDetector]. */
+        val block: Boolean = false,
     )
 
     /** In-force disturbances, each with the time it began - see [maxHoldMs]. */
@@ -106,7 +108,7 @@ class MotionAnalyzer(
      * resets the detector's reference while it is, so the first frame through a re-opened gate
      * becomes the new reference rather than being compared against a disturbed one.
      */
-    fun accept(luma: ByteArray, width: Int, height: Int, rowStride: Int, nowMs: Long): Verdict {
+    fun accept(pixels: ByteArray, width: Int, height: Int, rowStride: Int, nowMs: Long, pixelStride: Int = 1): Verdict {
         framesAnalysed++
         if (consumeSuppressed(nowMs)) {
             framesSuppressed++
@@ -114,8 +116,8 @@ class MotionAnalyzer(
             return Verdict(motion = false, changedFraction = 0.0, suppressed = true)
         }
         detector.sensitivity = sensitivity()
-        val r = detector.accept(luma, width, height, rowStride)
-        return Verdict(motion = r.motion, changedFraction = r.changedFraction, suppressed = false)
+        val r = detector.accept(pixels, width, height, rowStride, pixelStride)
+        return Verdict(motion = r.motion, changedFraction = r.changedFraction, suppressed = false, block = r.block)
     }
 
     /** True if this frame is suppressed; counts it against the frame floor if it is. */

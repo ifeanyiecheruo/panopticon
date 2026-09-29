@@ -17,5 +17,8 @@
         <receiver
             android:name=".debug.DebugLiveReceiver"
             android:exported="true" />
+        <receiver
+            android:name=".debug.DebugMotionTraceReceiver"
+            android:exported="true" />
     </application>
 </manifest>

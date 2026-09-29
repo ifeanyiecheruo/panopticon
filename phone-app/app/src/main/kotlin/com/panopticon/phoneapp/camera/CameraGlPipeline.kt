@@ -35,6 +35,7 @@ import android.view.Surface
 import com.panopticon.phoneapp.motion.CameraDisturbance
 import com.panopticon.phoneapp.motion.MotionAnalyzer
 import com.panopticon.phoneapp.motion.MotionGate
+import com.panopticon.phoneapp.motion.MotionTrace
 import com.panopticon.phoneapp.state.AppConfig
 import com.panopticon.phoneapp.state.ThermalReader
 import com.panopticon.phoneapp.state.ThermalStatus
@@ -217,7 +218,7 @@ class CameraGlPipeline(
     // transform matrix, then corrected once we have one in case this camera swaps axes.
     @Volatile private var texCropFinalized = false
     private val readback = ByteBuffer.allocateDirect(READBACK_W * READBACK_H * 4).order(ByteOrder.nativeOrder())
-    private val lumaPlane = ByteArray(READBACK_W * READBACK_H)
+    private val rgbaPlane = ByteArray(READBACK_W * READBACK_H * 4)
 
     // Motion detection, and the one channel the camera half of this class uses to talk to it.
     // Everything below that reconfigures, re-requests or restarts the camera brackets itself in
@@ -716,11 +717,14 @@ class CameraGlPipeline(
     }
 
     private fun detectMotion(now: Long) {
-        var i = 1 // green channel as a luma proxy for frame-differencing
-        for (p in lumaPlane.indices) { lumaPlane[p] = readback.get(i); i += 4 }
+        // All three colour channels: a change of colour with no change of brightness is still
+        // something happening in the scene - see MotionDetector.
+        readback.position(0)
+        readback.get(rgbaPlane)
         // The analyzer, not the detector: it drops the frames our own reconfigures produced, and
         // re-bases the reference frame across them, before any of this asks "did something move?"
-        val verdict = analyzer.accept(lumaPlane, READBACK_W, READBACK_H, READBACK_W, now)
+        val verdict = analyzer.accept(rgbaPlane, READBACK_W, READBACK_H, READBACK_W * 4, now, pixelStride = 4)
+        MotionTrace.sink?.onFrame(rgbaPlane, READBACK_W, READBACK_H, now, verdict)
         val motion = verdict.motion
         if (motion) {
             lastMotionMs.set(now)

@@ -76,7 +76,7 @@ authoritative index of what's on disk.
 | Entity | Type | Responsibility |
 |---|---|---|
 | `CameraGlPipeline` | pipeline (record mode) | Camera2 → one `SurfaceTexture` → GL thread renders each frame twice: a downscaled FBO copy for `glReadPixels`, and the full frame to an EGL window surface on `MediaCodec.createInputSurface()`. Continuous H.264 encoder; a drain thread keeps an in-RAM pre-roll ring of encoded access units. |
-| `MotionDetector` | analyser | Frame-difference on a 32×24 luma grid off the GL readback; verdict gates the muxer. Threshold chosen by `motionSensitivity`. |
+| `MotionDetector` | analyser | Per-channel difference on a 32×24 grid of cell means off the GL readback, against a ~1s-old reference; verdict gates the muxer. Thresholds chosen by `motionSensitivity`. |
 | `RecordingPhaseController` | state machine | idle(armed) → recording → trailer-tail → idle; drives muxer open/close. |
 | motion-gated `MediaMuxer` | writer | On motion, opens at the next keyframe primed from the ring back to ~`preRollMs` (default 3s); rotates by swapping muxers at a keyframe, PTS rebased per segment, `createdAtMs` chained. |
 | `SegmentStore` | index | Parsed index held in memory as the authoritative copy; reads hit it directly; mutations update the map and schedule **one coalesced background flush**; `deleteAll(filenames)` = N removals + one flush; `reconcile()` on launch. Backed by `SharedPreferences` (`panopticon_clips` / `clips_index_json`) + a `clips/` directory — names unchanged for historical reasons. |
