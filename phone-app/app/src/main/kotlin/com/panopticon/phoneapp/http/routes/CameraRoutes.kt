@@ -305,7 +305,7 @@ private fun cameraStateResponse(
         cameraId = id,
         rotationDegrees = rotationDegrees,
         videoResolution = videoResolution,
-        recordingResolution = recordingResolutionFor(androidContext, id, videoResolution, spec),
+        recordingResolution = recordingResolutionFor(androidContext, id, videoResolution),
         manualControlEnabled = spec.manualControlEnabled,
         keys = spec.keys,
         hwZoomRatio = split.hwRatio,
@@ -314,35 +314,27 @@ private fun cameraStateResponse(
 }
 
 /**
- * What RECORD would capture at, for reporting only - the pipeline makes the same call itself at
- * start-up via [RecordingSizeSelection.recordModeSizes]. Reported because the controller
- * otherwise shows a resolution the recordings do not have: it sets the ceiling, the zoom decides
- * what is spent against it. Falls back to [videoResolution] when the camera can't be queried,
- * which is also what the pipeline falls back to.
+ * What RECORD captures at, for reporting only - the pipeline makes the same call itself at
+ * start-up via [RecordingSizeSelection.recordingSize]. Now always the viewing size; kept in the
+ * response so the controller's contract doesn't change. Falls back to [videoResolution] when the
+ * camera can't be queried.
  */
 private fun recordingResolutionFor(
     androidContext: Context,
     id: String,
     videoResolution: String,
-    spec: CameraControlSpec,
 ): String {
     val cm = androidContext.getSystemService(CameraManager::class.java) ?: return videoResolution
-    val sizes = RecordingSizeSelection.recordModeSizes(
-        cm,
-        id,
-        videoResolution,
-        RecordingSizeSelection.viewFractionOf(spec.keys.zoomViewNorm, spec.manualControlEnabled),
-    ) ?: return videoResolution
-    return "${sizes.recording.width}x${sizes.recording.height}"
+    val size = RecordingSizeSelection.recordModeSize(cm, id, videoResolution) ?: return videoResolution
+    return "${size.width}x${size.height}"
 }
 
 /**
  * Zoom and resolution are frozen while RECORD runs, and nothing else is.
  *
- * Both of them decide the recording size, which is fixed when the pipeline starts: honouring a
- * change would mean rebuilding the camera session mid-recording - a real hole in the footage, and
- * segments of two different sizes inside one clip. Deferring instead of rebuilding is the whole
- * reason the size can be chosen from the zoom at all.
+ * Resolution fixes the recording size when the pipeline starts, and a hardware zoom change
+ * reconfigures the camera (on the Pixel 6) and reframes the shot: honouring either mid-recording
+ * would mean a real hole in the footage, and segments of two sizes or framings inside one clip.
  *
  * Exposure, focus and white balance are deliberately *not* frozen. They do not affect how many
  * real pixels the frame carries, they apply through the light `CONTROLS` path (a repeating-request

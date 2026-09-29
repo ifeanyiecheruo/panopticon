@@ -50,6 +50,8 @@ which.
 | [`controller-app-data-dir.md`](controller-app-data-dir.md) | controller | small |
 | [`visual-language-pass.md`](visual-language-pass.md) | both | medium |
 | [`gallery-mse-playback.md`](gallery-mse-playback.md) | controller | medium–large |
+| [`recording-resolution-tradeoff.md`](recording-resolution-tradeoff.md) | phone | investigate, then medium |
+| [`battery-power-state.md`](battery-power-state.md) | both | small |
 
 No hard ordering. The cross-cutting ones (`ll-hls-upgrade`, `qr-pairing`) need coordinated
 phone + controller work; the rest are single-side.

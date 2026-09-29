@@ -186,30 +186,23 @@ came from. An uncalibrated phone simply gets `hwZoomRatio: 1` and does it all in
 
 ### Viewing vs recording resolution
 
-`videoResolution` is a **ceiling the controller sets**; `recordingResolution` is what RECORD
-actually captures and encodes at, derived on the phone and read-only.
+`videoResolution` is what both RECORD and LIVE capture and encode at. `recordingResolution` is
+reported alongside it, read-only, and is always the same size.
 
-Digital zoom is a crop-and-upscale. At a view covering a fraction of the frame, only
-`videoResolution x fraction` real pixels exist across it, and rendering those into a full-size
-frame manufactures the rest. So the phone picks the smallest offered size that still holds that
-detail — at 4.2x zoom on a Pixel 6 that is `1024x576` rather than `3840x2160`, fourteen times less
-pixel work through the ISP and the encoder for a frame carrying the same real detail. Un-zoomed,
-the two are equal.
-
-**No dimension of `recordingResolution` ever exceeds the corresponding dimension of
-`videoResolution`.** This is enforced as its own rule rather than being left to fall out of the
-arithmetic, so an estimator bug cannot silently raise what is captured above what was asked for.
-
-`LIVE` always broadcasts at `videoResolution`: a viewer needs the detail back the moment they zoom
-out, and a preview that had been reduced could not supply it without a reconfigure.
+RECORD used to reduce it for zoom (to `1024x576` at 4.2x on a Pixel 6), on the reasoning that
+digital zoom is a crop-and-upscale. That stopped holding once most of the zoom moved into the
+camera (`CONTROL_ZOOM_RATIO`): the ISP crops the sensor and reads the crop out at the *stream*
+size, so a smaller stream discarded real detail, and recordings came out visibly softer than the
+live preview (2026-09-29: ~640 real pixels across the view against ~2400). The recording bitrate
+is fixed, so full size costs encoder work, not storage.
 
 ### What is frozen while recording
 
 `videoResolution` and the zoom keys (`zoomRatio`, `zoomSelectNorm`, `zoomViewNorm`) are rejected
-with `409` while the mode is `record`. Both decide the recording size, which is fixed when the
-pipeline starts; honouring a change would mean rebuilding the camera session mid-recording — a
-real hole in the footage, and segments of two different sizes inside one clip. Deferring them is
-what makes it safe to derive the size from the zoom at all.
+with `409` while the mode is `record`. Resolution fixes the recording size when the pipeline
+starts, and a hardware zoom change reconfigures the camera and reframes the shot; honouring either
+mid-recording would mean a real hole in the footage, and segments of two sizes or framings inside
+one clip.
 
 Everything else stays live. Exposure, focus and white balance do not change how many real pixels
 the frame carries and apply through the light repeating-request path, so a badly-exposed camera

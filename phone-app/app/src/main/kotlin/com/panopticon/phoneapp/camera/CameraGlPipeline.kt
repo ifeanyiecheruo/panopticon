@@ -1301,29 +1301,13 @@ class CameraGlPipeline(
         return physId ?: logicalId
     }
 
-    /**
-     * Not the size the user picked - the size the zoom justifies capturing, which is at most that.
-     *
-     * The viewing resolution is a ceiling set while framing the shot; what is worth *recording* is
-     * whatever still holds the detail the current zoom leaves. At 4.2x on this device that is
-     * 1024x576 rather than 3840x2160: fourteen times less pixel work through the ISP and the
-     * encoder, for a frame carrying the same real detail, since GL was only upscaling to fill the
-     * difference. The choice is made here, once, at pipeline start - zoom is frozen for the
-     * lifetime of a RECORD session (see `cameraRoutes`), so it cannot go stale underneath a
-     * running pipeline, and no clip ever contains segments of two different sizes.
-     */
+    /** The size to capture and encode at: the viewing size, as LIVE uses - see
+     *  [RecordingSizeSelection.recordingSize] for why it is no longer reduced for zoom. */
     private fun pickRecordingSize(): Size {
         val id = sizingCameraId() ?: return Size(1280, 720)
-        val cfg = appConfig.get()
-        val spec = cfg.cameraControls
-        val sizes = RecordingSizeSelection.recordModeSizes(
-            cameraManager,
-            id,
-            cfg.videoResolution,
-            RecordingSizeSelection.viewFractionOf(spec.keys.zoomViewNorm, spec.manualControlEnabled),
-        ) ?: return Size(1280, 720)
-        health.gauge("viewingSize", "${sizes.viewing.width}x${sizes.viewing.height}")
-        return sizes.recording
+        val size = RecordingSizeSelection.recordingSize(cameraManager, id, appConfig.get().videoResolution)
+        health.gauge("viewingSize", "${size.width}x${size.height}")
+        return size
     }
 
     /** The camera → SurfaceTexture buffer size for [target]'s aspect ratio - see
