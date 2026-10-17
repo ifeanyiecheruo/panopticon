@@ -36,6 +36,9 @@ function fmtClock(s: number): string {
 /** How long the pointer must rest before the controls fade while playing. */
 const CONTROLS_IDLE_MS = 2500;
 
+/** Speeds the fast-forward button cycles through, wrapping back to 1x. */
+const RATES = [1, 2, 4, 8] as const;
+
 /**
  * Plays a clip as a gapless sequence of its own segments and then, if
  * `nextClip` is supplied, straight into that clip's first segment - all
@@ -83,6 +86,7 @@ export function ClipPlayer({ clip, controls = false, autoplay = false, onFinishe
   const [scrubbing, setScrubbing] = useState(false);
   const [hovering, setHovering] = useState(false);
   const [idle, setIdle] = useState(false);
+  const [rate, setRate] = useState<number>(1);
   const idleTimer = useRef<number | undefined>(undefined);
 
   const segments = clip.segments ?? [];
@@ -122,6 +126,9 @@ export function ClipPlayer({ clip, controls = false, autoplay = false, onFinishe
     const alreadyOnIt = trackedClipRef.current === cid;
     trackedClipRef.current = cid;
     if (alreadyOnIt) return; // we already cut over to this clip ourselves (see handleEnded)
+    // A clip picked by hand starts back at 1x; auto-advance (the caller sets
+    // `autoplay`) keeps the play-through's speed.
+    if (!autoplay) setRate(1);
 
     const cur = activeRef.current;
     const idle = cur === 0 ? 1 : 0;
@@ -175,6 +182,18 @@ export function ClipPlayer({ clip, controls = false, autoplay = false, onFinishe
     document.addEventListener('fullscreenchange', onChange);
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
+
+  // Apply the speed to both slots so a swap keeps it. defaultPlaybackRate too:
+  // every load() (hard cut, idle-slot preload) resets playbackRate to it.
+  useEffect(() => {
+    for (const r of refs) {
+      const v = r.current;
+      if (!v) continue;
+      v.defaultPlaybackRate = rate;
+      v.playbackRate = rate;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rate]);
 
   useEffect(() => () => window.clearTimeout(idleTimer.current), []);
 
@@ -241,6 +260,18 @@ export function ClipPlayer({ clip, controls = false, autoplay = false, onFinishe
     if (!v) return;
     if (v.paused) void v.play().catch(() => {});
     else v.pause();
+  };
+
+  const nextRate = RATES[(RATES.indexOf(rate as (typeof RATES)[number]) + 1) % RATES.length];
+  // While paused the button is a way to start playing, so it starts at 1x
+  // rather than stepping the speed of a clip that isn't moving.
+  const cycleRate = () => {
+    if (playing) {
+      setRate(nextRate);
+      return;
+    }
+    setRate(1);
+    void refs[activeRef.current].current?.play().catch(() => {});
   };
 
   const toggleFullscreen = () => {
@@ -368,6 +399,21 @@ export function ClipPlayer({ clip, controls = false, autoplay = false, onFinishe
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="currentColor">
                 {playing ? <path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" /> : <path d="M8 5.5v13l10.5-6.5z" />}
               </svg>
+            </button>
+            <button
+              type="button"
+              className={rate === 1 ? 'clip-btn clip-rate' : 'clip-btn clip-rate active'}
+              title={playing ? `Playback speed ${rate}x - click for ${nextRate}x` : 'Play at 1x'}
+              aria-label={`Fast forward (currently ${rate}x)`}
+              onClick={(e) => { cycleRate(); (e.currentTarget as HTMLButtonElement).blur(); }}
+            >
+              {rate === 1
+                ? (
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="currentColor">
+                    <path d="M3.5 6v12l8.5-6zM12.5 6v12l8.5-6z" />
+                  </svg>
+                )
+                : `${rate}×`}
             </button>
             <span className="clip-time">
               {fmtClock(position)} / {fmtClock(total)}
