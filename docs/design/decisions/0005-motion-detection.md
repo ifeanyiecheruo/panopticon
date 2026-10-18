@@ -1,7 +1,8 @@
 # 0005 — Motion detection scope
 
-**Status:** Accepted · implemented (phone-app), thresholds fit to recorded Pixel 6 footage (2026-09-28). Follow-up:
-[`../../status/motion-detection-tuning.md`](../../status/motion-detection-tuning.md).
+**Status:** Detection algorithm **superseded by [`0013`](0013-motion-detection-tracked-displacement.md)**
+(2026-10-17): tracked displacement replaced frame-difference change detection. "Motion detection
+stays out of the live API" below still stands.
 
 ## Context
 
@@ -11,6 +12,8 @@ the GL readback FBO, on-device, every frame — it has to be cheap.
 ## Decision
 
 ### Frame-difference only, no background model, no CV library
+
+**Superseded by [`0013`](0013-motion-detection-tracked-displacement.md).** Kept for the record.
 
 `MotionDetector` averages the RGBA readback into a 32×24 grid and counts cells where any colour
 channel moved beyond a per-cell delta against the frame ~1s (30 frames) earlier; a cell-count
@@ -24,6 +27,9 @@ blue glow gone, green −4 vs blue −12) and gradual. Cell means rather than on
 the extra sensor noise a lagged reference sees below the lower thresholds.
 
 ### Thresholds are fit to recorded footage
+
+**Superseded by [`0013`](0013-motion-detection-tracked-displacement.md)** (thresholds are now
+object-level and noise-relative).
 
 The per-sensitivity thresholds were fit by replaying 72 recorded Pixel 6 clips (a fixed night
 scene) through the detector offline: `high` (Δ10, 1.5%) is the only level that catches the drawn

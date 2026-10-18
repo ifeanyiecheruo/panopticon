@@ -21,7 +21,7 @@ package com.panopticon.phoneapp.motion
  * frames stop arriving, and a deadline expires during a stall while no frames have been seen at
  * all.
  *
- * Not thread-safe by accident: [accept] is called from the single GL/camera-callback thread, but
+ * Not thread-safe by accident: [accept] is called from the single motion-analysis thread, but
  * [beginDisturbance]/[endDisturbance] arrive from the supervisor coroutine and the camera
  * callback thread too, so the gate state is synchronised. Contention is a handful of calls per
  * pipeline lifetime against one lock held for a few field writes.
@@ -54,11 +54,10 @@ class MotionAnalyzer(
     /** What [accept] concluded, and whether it was allowed to conclude anything. */
     data class Verdict(
         val motion: Boolean,
-        val changedFraction: Double,
         /** True when this frame was ours, not the scene's - see [MotionGate]. */
         val suppressed: Boolean,
-        /** Whether the detector's fine small-object test fired - see [MotionDetector]. */
-        val block: Boolean = false,
+        /** The detector's view of the frame; empty when [suppressed]. */
+        val detail: MotionDetector.Result = MotionDetector.Result(motion = false),
     )
 
     /** In-force disturbances, each with the time it began - see [maxHoldMs]. */
@@ -100,24 +99,32 @@ class MotionAnalyzer(
         active.clear()
         settleFramesLeft = settleFrames
         settleUntilMs = 0L
-        detector.reset()
+        // Not detector.reset() here: the detector belongs to the thread calling [accept], which
+        // may be mid-frame. It is reset there, before the next frame is analysed.
+        detectorResetPending = true
     }
+
+    @Volatile private var detectorResetPending = false
 
     /**
      * Analyse one frame. Returns [Verdict.motion] `false` for any frame the gate is shut for, and
      * resets the detector's reference while it is, so the first frame through a re-opened gate
      * becomes the new reference rather than being compared against a disturbed one.
      */
-    fun accept(pixels: ByteArray, width: Int, height: Int, rowStride: Int, nowMs: Long, pixelStride: Int = 1): Verdict {
+    fun accept(luma: ByteArray, width: Int, height: Int, rowStride: Int, nowMs: Long): Verdict {
         framesAnalysed++
+        if (detectorResetPending) {
+            detectorResetPending = false
+            detector.reset()
+        }
         if (consumeSuppressed(nowMs)) {
             framesSuppressed++
             detector.reset()
-            return Verdict(motion = false, changedFraction = 0.0, suppressed = true)
+            return Verdict(motion = false, suppressed = true)
         }
         detector.sensitivity = sensitivity()
-        val r = detector.accept(pixels, width, height, rowStride, pixelStride)
-        return Verdict(motion = r.motion, changedFraction = r.changedFraction, suppressed = false, block = r.block)
+        val r = detector.accept(luma, width, height, rowStride, nowMs)
+        return Verdict(motion = r.motion, suppressed = false, detail = r)
     }
 
     /** True if this frame is suppressed; counts it against the frame floor if it is. */

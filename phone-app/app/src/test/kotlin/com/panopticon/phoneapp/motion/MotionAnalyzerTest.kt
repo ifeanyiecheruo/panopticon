@@ -28,28 +28,38 @@ class MotionAnalyzerTest {
 
     private fun MotionAnalyzer.feed(value: Int) = accept(frame(value), W, H, W, now)
 
+    /** Something walking across a textured scene - what the detector exists to catch. */
+    private val scene = SyntheticScene().apply { texturedObject(12, 26) { t -> (10.0 + 1.5 * t) to 50.0 } }
+    private var sceneT = 0
+
+    /** Feed [frames] frames of [scene] at ~15fps; whether any was motion. */
+    private fun MotionAnalyzer.walk(frames: Int = 30): Boolean {
+        var any = false
+        repeat(frames) {
+            now += 66
+            any = any or accept(scene.frame(sceneT++), scene.width, scene.height, scene.width, now).motion
+        }
+        return any
+    }
+
     /** Run enough uniform frames that the detector is past its warm-up and holding a reference. */
     private fun MotionAnalyzer.settle(value: Int = 0, frames: Int = 8) {
         repeat(frames) { now += 33; feed(value) }
     }
 
     @Test
-    fun `a whole-frame change with no disturbance in force is motion`() {
+    fun `something moving with no disturbance in force is motion`() {
         val a = analyzer()
-        a.settle(value = 0)
-        now += 33
-        assertTrue(a.feed(120).motion)
+        assertTrue(a.walk())
     }
 
     @Test
-    fun `the same change is not motion while a disturbance is in force`() {
-        val a = analyzer()
-        a.settle(value = 0)
+    fun `nothing is motion while a disturbance is in force`() {
+        val a = analyzer(maxHoldMs = 60_000L)
         a.beginDisturbance(CameraDisturbance.ZOOM)
+        assertFalse("frames during our own zoom are not the scene moving", a.walk())
         now += 33
-        val v = a.feed(120)
-        assertFalse("our own zoom is not the scene moving", v.motion)
-        assertTrue(v.suppressed)
+        assertTrue(a.feed(120).suppressed)
     }
 
     @Test
@@ -143,9 +153,7 @@ class MotionAnalyzerTest {
         a.feed(0) // the frame that notices and drops it
         assertEquals(1L, a.disturbancesExpired)
 
-        a.settle(value = 0)
-        now += 33
-        assertTrue("motion detection is working again", a.feed(120).motion)
+        assertTrue("motion detection is working again", a.walk())
     }
 
     @Test
@@ -154,9 +162,7 @@ class MotionAnalyzerTest {
         a.beginDisturbance(CameraDisturbance.PIPELINE_START)
         a.reset()
         assertTrue(a.activeDisturbances().isEmpty())
-        a.settle(value = 0)
-        now += 33
-        assertTrue(a.feed(120).motion)
+        assertTrue(a.walk())
     }
 
     @Test

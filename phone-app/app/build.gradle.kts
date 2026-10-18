@@ -52,6 +52,16 @@ android {
         jvmTarget = "17"
     }
 
+    testOptions {
+        unitTests.all { test ->
+            // MotionReplayTest: replays footage through the motion detector when pointed at it.
+            listOf("motion.replay", "motion.replay.snapshots", "motion.replay.labels", "motion.replay.tracks").forEach { key ->
+                (project.findProperty(key) as String?)?.let { test.systemProperty(key, it) }
+            }
+            test.maxHeapSize = "1g"
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true

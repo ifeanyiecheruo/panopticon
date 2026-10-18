@@ -185,7 +185,7 @@ flowchart TB
     Svc["PanopticonService\n(foreground service, mode owner)"]
     HTTP["PanopticonHttpServer\n(Ktor: auth gate + route groups)"]
     Rec["CameraGlPipeline (record)\nCamera2 → SurfaceTexture → GL fan-out\n→ continuous MediaCodec\n→ motion-gated MediaMuxer + pre-roll ring"]
-    Motion["MotionDetector\n(frame-difference on GL readback)"]
+    Motion["MotionDetector\n(tracked displacement on GL luma readback)"]
     Live["LivePipeline (live)\nCamera2 → MediaCodec → LiveHlsRelay\n→ hand-rolled TsMuxer"]
     Cal["CalibrationRunner\n(empirical per-camera zoom sweep)"]
     CamCtl["Camera control\nCatalog · CapabilitiesReader ·\nControlApply · ControlValidation"]
@@ -325,7 +325,8 @@ The thematic decision records in [`decisions/`](decisions/) are the rationale of
 | [0002](decisions/0002-http-api-surface-and-auth.md) | Per-controller bearer token, no permission tiers, no pairing confirmation, which actions are routes vs local library functions |
 | [0003](decisions/0003-pairing-and-unpairing.md) | Phone-only invite generation, address+code (QR carries both), Unpair vs Force unpair, public-key-only identity |
 | [0004](decisions/0004-recording-pipeline.md) | Single camera stream + GPU fan-out, continuous encoder + motion-gated muxer, pre-roll ring, gapless rotation, no audio |
-| [0005](decisions/0005-motion-detection.md) | Frame-difference only, un-tuned thresholds, motion kept out of the live API |
+| [0005](decisions/0005-motion-detection.md) | Motion kept out of the live API (its frame-difference algorithm superseded by 0013) |
+| [0013](decisions/0013-motion-detection-tracked-displacement.md) | Motion = structure that moves and keeps moving: census block matching + tracking, async luma readback |
 | [0006](decisions/0006-segments-clips-and-tombstones.md) | Phone speaks segments; controller assembles clips; three-state lifecycle; purge-keeps-tombstone; no favorites |
 | [0007](decisions/0007-live-preview-plain-hls.md) | Plain HLS not LL-HLS, hand-rolled TS muxer, vendored hls.js, RECORD/LIVE exclusive, arming-retry contract |
 | [0008](decisions/0008-camera-control-and-multi-camera.md) | Multi-camera first-class, logical+physical ids, `CameraControlKeys`, validate-then-apply, control state spans pipelines |
