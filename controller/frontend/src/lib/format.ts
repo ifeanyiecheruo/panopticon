@@ -21,6 +21,7 @@ export function statusLabel(s: string): string {
   const labels: Record<string, string> = {
     recording: 'Recording',
     standby: 'Standby',
+    overheated: 'Overheated',
     unreachable: 'Unreachable',
   };
   return labels[s] || s;

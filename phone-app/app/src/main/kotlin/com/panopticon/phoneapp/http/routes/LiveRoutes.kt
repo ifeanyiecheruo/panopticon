@@ -77,10 +77,16 @@ private fun parseByteRange(header: String): IntRange? {
  * [live] is looked up per request because the pipeline only exists while the phone is in LIVE
  * mode - `PanopticonService` creates it on the mode switch and releases it on the way out.
  */
-fun Route.liveRoutes(live: () -> LivePipeline?) {
+fun Route.liveRoutes(live: () -> LivePipeline?, overheated: () -> Boolean) {
     // Authenticated by the global installAuth() intercept.
     run {
         post("/api/live/start") {
+            if (overheated()) {
+                return@post call.respond(
+                    HttpStatusCode.ServiceUnavailable,
+                    ErrorBody("phone is overheated; live preview is unavailable until it cools"),
+                )
+            }
             val pipeline = live() ?: return@post call.respond(
                 HttpStatusCode.Conflict,
                 ErrorBody("not in live mode: POST /api/mode {\"mode\":\"live\"} first"),

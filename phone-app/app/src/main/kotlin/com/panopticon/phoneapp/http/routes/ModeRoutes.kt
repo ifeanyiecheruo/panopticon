@@ -26,6 +26,9 @@ data class ModeBody(val mode: String)
  *  - `live`     - allowed only from STANDBY (or LIVE); from RECORD it's a 409,
  *                 the caller must stop recording first. `live` itself is still a
  *                 stub - no real HLS encoder/relay behind it yet.
+ *
+ * While the thermal guard has the phone shut down, `record`/`standby` are recorded and applied
+ * on cooldown, and `live` is a 503 (docs/design/decisions/0014-thermal-safety-shutdown.md).
  */
 fun Route.modeRoutes(appState: AppState, onModeChanged: (AppMode) -> Unit) {
     // Authenticated by the global installAuth() intercept.
@@ -44,6 +47,18 @@ fun Route.modeRoutes(appState: AppState, onModeChanged: (AppMode) -> Unit) {
             }
             if (requested == null) {
                 call.respond(HttpStatusCode.BadRequest, ErrorBody("mode must be 'record', 'live', or 'standby'"))
+                return@post
+            }
+
+            // Overheated: `record` and `standby` are accepted and take effect once the phone cools
+            // (record is the unattended resting mode - asking for it while hot is a reasonable
+            // thing to queue). `live` is interactive and would come back to a viewer long gone,
+            // so it is refused outright.
+            if (requested == AppMode.LIVE && appState.overheated) {
+                call.respond(
+                    HttpStatusCode.ServiceUnavailable,
+                    ErrorBody("phone is overheated; live preview is unavailable until it cools"),
+                )
                 return@post
             }
 

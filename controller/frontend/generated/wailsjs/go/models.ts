@@ -958,6 +958,10 @@ export namespace phoneapi {
 	    motionSensitivity: string;
 	    storageCapBytes: number;
 	    ringBufferMaxAgeMs: number;
+	    thermalCriticalLevel: string;
+	    thermalSafeLevel: string;
+	    thermalCriticalTempC: number;
+	    thermalSafeTempC: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Config(source);
@@ -969,6 +973,10 @@ export namespace phoneapi {
 	        this.motionSensitivity = source["motionSensitivity"];
 	        this.storageCapBytes = source["storageCapBytes"];
 	        this.ringBufferMaxAgeMs = source["ringBufferMaxAgeMs"];
+	        this.thermalCriticalLevel = source["thermalCriticalLevel"];
+	        this.thermalSafeLevel = source["thermalSafeLevel"];
+	        this.thermalCriticalTempC = source["thermalCriticalTempC"];
+	        this.thermalSafeTempC = source["thermalSafeTempC"];
 	    }
 	}
 	export class ConfigPatch {
@@ -976,6 +984,10 @@ export namespace phoneapi {
 	    motionSensitivity?: string;
 	    storageCapBytes?: number;
 	    ringBufferMaxAgeMs?: number;
+	    thermalCriticalLevel?: string;
+	    thermalSafeLevel?: string;
+	    thermalCriticalTempC?: number;
+	    thermalSafeTempC?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigPatch(source);
@@ -987,12 +999,46 @@ export namespace phoneapi {
 	        this.motionSensitivity = source["motionSensitivity"];
 	        this.storageCapBytes = source["storageCapBytes"];
 	        this.ringBufferMaxAgeMs = source["ringBufferMaxAgeMs"];
+	        this.thermalCriticalLevel = source["thermalCriticalLevel"];
+	        this.thermalSafeLevel = source["thermalSafeLevel"];
+	        this.thermalCriticalTempC = source["thermalCriticalTempC"];
+	        this.thermalSafeTempC = source["thermalSafeTempC"];
 	    }
 	}
 	
 	
 	
 	
+	export class ThermalShutdown {
+	    active: boolean;
+	    source: string;
+	    reason?: string;
+	    sinceMs?: number;
+	    level?: string;
+	    criticalLevel: string;
+	    safeLevel: string;
+	    batteryTempC?: number;
+	    criticalTempC: number;
+	    safeTempC: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ThermalShutdown(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.active = source["active"];
+	        this.source = source["source"];
+	        this.reason = source["reason"];
+	        this.sinceMs = source["sinceMs"];
+	        this.level = source["level"];
+	        this.criticalLevel = source["criticalLevel"];
+	        this.safeLevel = source["safeLevel"];
+	        this.batteryTempC = source["batteryTempC"];
+	        this.criticalTempC = source["criticalTempC"];
+	        this.safeTempC = source["safeTempC"];
+	    }
+	}
 	export class ThermalStatus {
 	    supported: boolean;
 	    severity: number;
@@ -1024,6 +1070,7 @@ export namespace phoneapi {
 	    powerSource: string;
 	    batteryCurrentMa?: number;
 	    thermal: ThermalStatus;
+	    thermalShutdown?: ThermalShutdown;
 	    serverTimeMs: number;
 	
 	    static createFrom(source: any = {}) {
@@ -1044,6 +1091,7 @@ export namespace phoneapi {
 	        this.powerSource = source["powerSource"];
 	        this.batteryCurrentMa = source["batteryCurrentMa"];
 	        this.thermal = this.convertValues(source["thermal"], ThermalStatus);
+	        this.thermalShutdown = this.convertValues(source["thermalShutdown"], ThermalShutdown);
 	        this.serverTimeMs = source["serverTimeMs"];
 	    }
 	
@@ -1065,6 +1113,7 @@ export namespace phoneapi {
 		    return a;
 		}
 	}
+	
 
 }
 

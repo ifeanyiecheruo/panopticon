@@ -7,13 +7,18 @@ import android.os.Environment
 import android.os.StatFs
 import com.panopticon.phoneapp.BuildConfig
 import com.panopticon.phoneapp.clips.SegmentStore
+import com.panopticon.phoneapp.http.ErrorBody
 import com.panopticon.phoneapp.state.AppConfig
 import com.panopticon.phoneapp.state.AppState
+import com.panopticon.phoneapp.state.DeviceConfig
 import com.panopticon.phoneapp.state.BatteryCurrentSampler
 import com.panopticon.phoneapp.state.PowerSource
+import com.panopticon.phoneapp.state.ThermalPolicy
 import com.panopticon.phoneapp.state.ThermalReader
+import com.panopticon.phoneapp.state.ThermalShutdownStatus
 import com.panopticon.phoneapp.state.ThermalStatus
 import com.panopticon.phoneapp.state.RecordingStatus
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -31,6 +36,9 @@ data class BuildInfo(val appVersionName: String, val appVersionCode: Int, val bu
 @Serializable
 data class StatusResponse(
     val mode: String,
+    /** `recording` | `idle` | `unavailable` | `stopped` | `overheated`. `overheated` wins over
+     *  everything else: it means the thermal guard has shut camera work down - see
+     *  [thermalShutdown] - and [mode] is the mode that resumes once the phone cools. */
     val status: String,
     val cameraHealthy: Boolean,
     val liveViewers: Int,
@@ -52,6 +60,9 @@ data class StatusResponse(
      *  `supported` is false on devices that cannot report it (API < 29), and the controller
      *  renders no thermal icon at all for those rather than a guessed one. */
     val thermal: ThermalStatus,
+    /** The thermal guard: whether it has shut the camera down, why, the battery temperature it
+     *  last read, and the thresholds it trips and resumes at. */
+    val thermalShutdown: ThermalShutdownStatus,
     val serverTimeMs: Long,
 )
 
@@ -61,6 +72,10 @@ data class ConfigResponse(
     val motionSensitivity: String,
     val storageCapBytes: Long,
     val ringBufferMaxAgeMs: Long,
+    val thermalCriticalLevel: String,
+    val thermalSafeLevel: String,
+    val thermalCriticalTempC: Float,
+    val thermalSafeTempC: Float,
 )
 
 // `rotationDegrees` is a camera-pipeline setting - read/written via
@@ -71,6 +86,21 @@ data class ConfigPatch(
     val motionSensitivity: String? = null,
     val storageCapBytes: Long? = null,
     val ringBufferMaxAgeMs: Long? = null,
+    val thermalCriticalLevel: String? = null,
+    val thermalSafeLevel: String? = null,
+    val thermalCriticalTempC: Float? = null,
+    val thermalSafeTempC: Float? = null,
+)
+
+private fun DeviceConfig.toResponse() = ConfigResponse(
+    deviceName = deviceName,
+    motionSensitivity = motionSensitivity,
+    storageCapBytes = storageCapBytes,
+    ringBufferMaxAgeMs = ringBufferMaxAgeMs,
+    thermalCriticalLevel = thermalCriticalLevel,
+    thermalSafeLevel = thermalSafeLevel,
+    thermalCriticalTempC = thermalCriticalTempC,
+    thermalSafeTempC = thermalSafeTempC,
 )
 
 fun Route.deviceRoutes(
@@ -104,7 +134,8 @@ fun Route.deviceRoutes(
             val charging = battery.isCharging
             val powerSource = PowerSource.read(androidContext)
 
-            val status = when (appState.recordingStatus.value) {
+            val thermalShutdown = appState.thermalShutdown.value
+            val status = if (thermalShutdown.active) "overheated" else when (appState.recordingStatus.value) {
                 RecordingStatus.RECORDING -> "recording"
                 RecordingStatus.UNAVAILABLE -> "unavailable"
                 RecordingStatus.IDLE -> "idle"
@@ -125,41 +156,46 @@ fun Route.deviceRoutes(
                     powerSource = powerSource,
                     batteryCurrentMa = batteryCurrent.averageMa(),
                     thermal = ThermalReader.read(androidContext),
+                    thermalShutdown = thermalShutdown,
                     serverTimeMs = System.currentTimeMillis(),
                 ),
             )
         }
 
         get("/api/config") {
-            val cfg = appConfig.get()
-            call.respond(
-                ConfigResponse(
-                    deviceName = cfg.deviceName,
-                    motionSensitivity = cfg.motionSensitivity,
-                    storageCapBytes = cfg.storageCapBytes,
-                    ringBufferMaxAgeMs = cfg.ringBufferMaxAgeMs,
-                ),
-            )
+            call.respond(appConfig.get().toResponse())
         }
 
         post("/api/config") {
             val patch = call.receive<ConfigPatch>()
+            val current = appConfig.get()
+            if (patch.thermalCriticalLevel != null || patch.thermalSafeLevel != null) {
+                ThermalPolicy.validateLevels(
+                    patch.thermalCriticalLevel ?: current.thermalCriticalLevel,
+                    patch.thermalSafeLevel ?: current.thermalSafeLevel,
+                )?.let { return@post call.respond(HttpStatusCode.BadRequest, ErrorBody(it)) }
+            }
+            if (patch.thermalCriticalTempC != null || patch.thermalSafeTempC != null) {
+                ThermalPolicy.validate(
+                    patch.thermalCriticalTempC ?: current.thermalCriticalTempC,
+                    patch.thermalSafeTempC ?: current.thermalSafeTempC,
+                )?.let { return@post call.respond(HttpStatusCode.BadRequest, ErrorBody(it)) }
+            }
+            // The guard reads the config on every sample, so a new threshold takes effect within
+            // one sample period. Levels are stored lowercased, the form /api/status reports.
             val updated = appConfig.update { current ->
                 current.copy(
                     deviceName = patch.deviceName ?: current.deviceName,
                     motionSensitivity = patch.motionSensitivity ?: current.motionSensitivity,
                     storageCapBytes = patch.storageCapBytes ?: current.storageCapBytes,
                     ringBufferMaxAgeMs = patch.ringBufferMaxAgeMs ?: current.ringBufferMaxAgeMs,
+                    thermalCriticalLevel = patch.thermalCriticalLevel?.lowercase() ?: current.thermalCriticalLevel,
+                    thermalSafeLevel = patch.thermalSafeLevel?.lowercase() ?: current.thermalSafeLevel,
+                    thermalCriticalTempC = patch.thermalCriticalTempC ?: current.thermalCriticalTempC,
+                    thermalSafeTempC = patch.thermalSafeTempC ?: current.thermalSafeTempC,
                 )
             }
-            call.respond(
-                ConfigResponse(
-                    deviceName = updated.deviceName,
-                    motionSensitivity = updated.motionSensitivity,
-                    storageCapBytes = updated.storageCapBytes,
-                    ringBufferMaxAgeMs = updated.ringBufferMaxAgeMs,
-                ),
-            )
+            call.respond(updated.toResponse())
         }
     }
 }

@@ -36,3 +36,6 @@ The phone's own Calibrate screen surfaces a "Stop recording" affordance that per
   moving reports `status:"idle"` and shows as **Standby** on the controller's Fleet.
 - Any feature needing exclusive camera access has exactly one precondition to check: mode ==
   `standby`.
+- A thermal shutdown ([`0014`](0014-thermal-safety-shutdown.md)) sits outside this machine. It
+  stops whatever the mode is running without changing the mode, and the mode resumes once the
+  phone has cooled.

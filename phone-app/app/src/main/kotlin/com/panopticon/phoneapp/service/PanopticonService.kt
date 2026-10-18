@@ -21,6 +21,7 @@ import com.panopticon.phoneapp.camera.LivePipeline
 import com.panopticon.phoneapp.http.PanopticonHttpServer
 import com.panopticon.phoneapp.state.AppMode
 import com.panopticon.phoneapp.state.RecordingStatus
+import com.panopticon.phoneapp.state.ThermalGuard
 import java.io.File
 
 private const val TAG = "PanopticonService"
@@ -41,8 +42,16 @@ private const val WAKE_LOCK_TAG = "panopticon:camera-pipeline"
 class PanopticonService : Service() {
 
     private lateinit var app: PanopticonApplication
-    private var cameraPipeline: CameraGlPipeline? = null
+    @Volatile private var cameraPipeline: CameraGlPipeline? = null
     private var httpServer: PanopticonHttpServer? = null
+    private var thermalGuard: ThermalGuard? = null
+
+    /**
+     * Serialises every pipeline start/stop. Mode changes arrive on HTTP threads and the UI
+     * thread, and thermal trips on the guard's own thread; without this a trip landing mid-way
+     * through a mode switch could leave a pipeline running that nothing will ever stop.
+     */
+    private val pipelineLock = Any()
 
     /**
      * Held for as long as this service lives. A `camera` foreground service keeps the *process*
@@ -64,6 +73,10 @@ class PanopticonService : Service() {
         app.onCameraConfigChanged = ::handleCameraConfigChanged
         createNotificationChannel()
         acquireWakeLock()
+        // Before onStartCommand brings the camera up: the first sample is synchronous, so a phone
+        // that boots (or is restarted by START_STICKY) already hot never opens the camera at all.
+        thermalGuard = ThermalGuard(applicationContext, app.appConfig, app.appState, ::handleThermalChanged)
+            .also { it.start() }
     }
 
     private fun acquireWakeLock() {
@@ -103,8 +116,8 @@ class PanopticonService : Service() {
             startForeground(NOTIFICATION_ID, buildNotification())
         }
 
-        if (cameraPipeline == null) {
-            startCameraPipeline()
+        synchronized(pipelineLock) {
+            if (cameraPipeline == null && !app.appState.overheated) startCameraPipeline()
         }
 
         if (httpServer == null) {
@@ -136,7 +149,14 @@ class PanopticonService : Service() {
         return START_STICKY
     }
 
-    private fun handleModeChanged(mode: AppMode) {
+    private fun handleModeChanged(mode: AppMode) = synchronized(pipelineLock) {
+        // Overheated: the mode is recorded (AppState already holds it) but nothing starts.
+        // handleThermalChanged applies it once the phone has cooled.
+        if (app.appState.overheated) return@synchronized
+        applyMode(mode)
+    }
+
+    private fun applyMode(mode: AppMode) {
         when (mode) {
             AppMode.RECORD -> {
                 stopLivePipeline()
@@ -166,7 +186,9 @@ class PanopticonService : Service() {
      * tears down and brings back up); a controls change is a light re-issue of the repeating
      * request. STANDBY has no pipeline - the persisted `DeviceConfig` is picked up next start.
      */
-    private fun handleCameraConfigChanged(change: CameraConfigChange) {
+    private fun handleCameraConfigChanged(change: CameraConfigChange) = synchronized(pipelineLock) {
+        // Nothing is running to reconfigure; the persisted config is picked up on resume.
+        if (app.appState.overheated) return@synchronized
         when (change) {
             CameraConfigChange.ACTIVE_CAMERA -> when (app.appState.mode.value) {
                 AppMode.RECORD -> {
@@ -187,10 +209,42 @@ class PanopticonService : Service() {
         }
     }
 
+    /**
+     * The thermal guard's edges (docs/design/decisions/0014-thermal-safety-shutdown.md).
+     *
+     * Tripped: stop everything that keeps the SoC busy - the recording pipeline (camera, GL,
+     * encoder, motion analysis), the live pipeline, and a calibration sweep - and say why in the
+     * notification. The HTTP server stays up, so the controller can see `overheated` and keep
+     * syncing finished clips; so does the wake lock, without which the guard's own sampling
+     * would stop with the CPU and nothing would notice the phone cooling.
+     *
+     * Cleared: re-apply whatever mode is current - the one in force at the trip, or whatever a
+     * controller asked for since.
+     */
+    private fun handleThermalChanged(tripped: Boolean) = synchronized(pipelineLock) {
+        if (tripped) {
+            releaseCameraPipeline()
+            stopLivePipeline()
+            app.calibrationRunner.cancelActive()
+            app.appState.setMotionActive(false)
+            app.appState.setRecordingStatus(RecordingStatus.STOPPED)
+            // Nothing is open to be unhealthy; the next pipeline reports for itself on resume.
+            app.appState.setCameraHealthy(true)
+        } else {
+            applyMode(app.appState.mode.value)
+        }
+        updateNotification()
+    }
+
     private fun releaseCameraPipeline() {
-        cameraPipeline?.release()
+        // Detach before releasing: release() cancels the pipeline's supervisor, which reports
+        // itself unhealthy on the way out, asynchronously. The callbacks below drop anything
+        // from a pipeline that is no longer [cameraPipeline], so that stale "unhealthy" can't
+        // overwrite the state set for the mode (or the thermal shutdown) that replaced it.
+        val pipeline = cameraPipeline ?: return
         cameraPipeline = null
         app.cameraGlPipeline = null
+        pipeline.release()
     }
 
     private fun startLivePipeline() {
@@ -224,7 +278,8 @@ class PanopticonService : Service() {
         app.appState.setRecordingStatus(RecordingStatus.IDLE)
         app.appState.setMotionActive(false)
         val cfg = app.appConfig.get()
-        cameraPipeline = CameraGlPipeline(
+        lateinit var pipeline: CameraGlPipeline
+        pipeline = CameraGlPipeline(
             context = applicationContext,
             segmentsDir = app.segmentStore.segmentsDir,
             onStorageLow = { app.evictSegmentsAsync() },
@@ -237,7 +292,8 @@ class PanopticonService : Service() {
                 Log.i(TAG, "segment finished: ${file.name} (${durationMs}ms, ${width}x$height, ${file.length()} bytes)")
                 app.evictSegmentsAsync()
             },
-            onHealthChanged = { healthy ->
+            onHealthChanged = cb@{ healthy ->
+                if (cameraPipeline !== pipeline) return@cb
                 app.appState.setCameraHealthy(healthy)
                 if (!healthy) {
                     app.appState.setRecordingStatus(RecordingStatus.UNAVAILABLE)
@@ -246,7 +302,8 @@ class PanopticonService : Service() {
                     app.appState.setRecordingStatus(RecordingStatus.IDLE)
                 }
             },
-            onPhaseChanged = { recording ->
+            onPhaseChanged = cb@{ recording ->
+                if (cameraPipeline !== pipeline) return@cb
                 if (app.appState.mode.value == AppMode.RECORD && app.appState.cameraHealthy.value) {
                     app.appState.setRecordingStatus(
                         if (recording) RecordingStatus.RECORDING else RecordingStatus.IDLE,
@@ -254,18 +311,25 @@ class PanopticonService : Service() {
                 }
                 if (!recording) app.appState.setMotionActive(false)
             },
-            onMotionChanged = { motion -> app.appState.setMotionActive(motion) },
-        ).also {
-            app.cameraGlPipeline = it
-            it.start()
-        }
+            onMotionChanged = cb@{ motion ->
+                if (cameraPipeline !== pipeline) return@cb
+                app.appState.setMotionActive(motion)
+            },
+        )
+        cameraPipeline = pipeline
+        app.cameraGlPipeline = pipeline
+        pipeline.start()
     }
 
     override fun onDestroy() {
         app.onModeChangeRequested = null
         app.onCameraConfigChanged = null
-        releaseCameraPipeline()
-        stopLivePipeline()
+        thermalGuard?.stop()
+        thermalGuard = null
+        synchronized(pipelineLock) {
+            releaseCameraPipeline()
+            stopLivePipeline()
+        }
         httpServer?.stop()
         httpServer = null
         releaseWakeLock()
@@ -285,7 +349,14 @@ class PanopticonService : Service() {
         }
     }
 
+    private fun updateNotification() {
+        runCatching {
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification())
+        }.onFailure { Log.w(TAG, "could not update notification", it) }
+    }
+
     private fun buildNotification(): Notification {
+        val thermal = app.appState.thermalShutdown.value
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
@@ -293,8 +364,15 @@ class PanopticonService : Service() {
             PendingIntent.FLAG_IMMUTABLE,
         )
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Panopticon is running")
-            .setContentText("Recording and serving the phone HTTP API")
+            .apply {
+                if (thermal.active) {
+                    setContentTitle("Panopticon paused: overheating")
+                    setContentText("Camera off (${thermal.readingText()}). Resumes ${thermal.resumeText()}.")
+                } else {
+                    setContentTitle("Panopticon is running")
+                    setContentText("Recording and serving the phone HTTP API")
+                }
+            }
             .setSmallIcon(R.drawable.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)

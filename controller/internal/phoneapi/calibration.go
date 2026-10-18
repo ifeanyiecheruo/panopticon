@@ -22,6 +22,10 @@ var (
 	// stopped (POST /api/mode standby) first.
 	ErrPhoneRecording = errors.New("phone is recording; stop it before calibrating")
 
+	// ErrPhoneOverheated is POST /api/calibration/start's 409 while the phone's thermal
+	// guard has its camera shut down.
+	ErrPhoneOverheated = errors.New("phone is overheated")
+
 	// ErrNoCalibrationResult is GET /api/calibration/result's 404: this phone
 	// has never completed a calibration. Per docs/design/decisions/0009-calibration-model.md this is
 	// a normal "nothing to ingest yet", not a failure.
@@ -200,7 +204,11 @@ func (c *Client) StartCalibration(ctx context.Context) (CalibrationStartResponse
 	if err != nil {
 		var httpErr *HTTPError
 		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
-			if strings.Contains(strings.ToLower(httpErr.Body), "recording") {
+			body := strings.ToLower(httpErr.Body)
+			if strings.Contains(body, "overheated") {
+				return CalibrationStartResponse{}, ErrPhoneOverheated
+			}
+			if strings.Contains(body, "recording") {
 				return CalibrationStartResponse{}, ErrPhoneRecording
 			}
 			return CalibrationStartResponse{}, ErrCalibrationRunning

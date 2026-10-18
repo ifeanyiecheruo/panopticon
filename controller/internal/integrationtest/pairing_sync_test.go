@@ -60,6 +60,12 @@ type fakePhone struct {
 	// mode: "record" (default) blocks calibration; "standby" allows it.
 	mode string
 
+	// overheated reports the thermal guard tripped on /api/status and refuses calibration,
+	// the way a phone does whatever its mode. thermalGuard=false omits thermalShutdown
+	// entirely, like a phone on an app build that predates it.
+	overheated   bool
+	thermalGuard bool
+
 	// Camera selection + manual controls. activeCameraID defaults to "0"; the
 	// device has cameras "0" (wide) and "2" (ultra-wide). cameraKeys echoes the
 	// last POST /api/camera/state keys.
@@ -163,6 +169,11 @@ func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePho
 	mux.HandleFunc("/api/calibration/start", authed(fp, func(w http.ResponseWriter, r *http.Request) {
 		fp.mu.Lock()
 		defer fp.mu.Unlock()
+		if fp.overheated {
+			w.WriteHeader(http.StatusConflict)
+			writeJSON(w, map[string]string{"error": "phone is overheated; calibration is unavailable until it cools"})
+			return
+		}
 		if fp.mode == "" || fp.mode == "record" {
 			w.WriteHeader(http.StatusConflict)
 			writeJSON(w, map[string]string{"error": "stop recording on the phone before calibrating"})
@@ -211,11 +222,29 @@ func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePho
 		writeJSON(w, map[string]bool{"cancelled": true})
 	}))
 	mux.HandleFunc("/api/status", authed(fp, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{
+		fp.mu.Lock()
+		defer fp.mu.Unlock()
+		body := map[string]any{
 			"mode": "record", "status": "recording", "cameraHealthy": true, "liveViewers": 0,
 			"storageUsedBytes": 100, "storageCapBytes": 1000, "batteryPercent": 50, "charging": false,
 			"serverTimeMs": time.Now().UnixMilli(),
-		})
+		}
+		if fp.overheated {
+			body["status"] = "overheated"
+		}
+		if fp.thermalGuard || fp.overheated {
+			guard := map[string]any{
+				"active": fp.overheated, "source": "thermalStatus", "level": "light",
+				"criticalLevel": "severe", "safeLevel": "moderate", "batteryTempC": nil, "criticalTempC": 45, "safeTempC": 40,
+			}
+			if fp.overheated {
+				guard["reason"] = "thermalStatus"
+				guard["sinceMs"] = 1_700_000_000_000
+				guard["level"] = "severe"
+			}
+			body["thermalShutdown"] = guard
+		}
+		writeJSON(w, body)
 	}))
 	mux.HandleFunc("/api/config", authed(fp, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"deviceName": "Test Phone", "motionSensitivity": "medium", "storageCapBytes": 1000, "ringBufferMaxAgeMs": 1000, "rotationDegrees": 0})

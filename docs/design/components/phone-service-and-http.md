@@ -73,6 +73,7 @@ of every route but `POST /api/pair`, and keeps the pairing/invite state the gate
 | `AuthPlugin` | Ktor plugin | Bearer-token gate on every route except `POST /api/pair`; `401` on missing/unknown/revoked. |
 | `http/routes/*` | route handlers | `DeviceRoutes`, `ModeRoutes`, `SegmentRoutes`, `CameraRoutes`, `CalibrationRoutes`, `LiveRoutes`, pairing. |
 | `InviteManager` | local library | `createInvite()` / `listPendingInvites()` / `revokeInvite(id)` — **not** HTTP routes. |
+| `ThermalGuard` / `ThermalPolicy` | owned by the service | Judges by `PowerManager` thermal status (API 29+; sampled every 10s and on every change), or by battery °C only on devices without it; trips/resumes at thresholds from `DeviceConfig` (default `severe` / `moderate`, or 45 / 40°C for the fallback), with a 2-minute resume dwell; publishes `AppState.thermalShutdown`. The service shuts down / restores pipelines on its edges. |
 | `ControllerRegistry` | local library | Per-controller `{controllerId, publicKey, name, kind, token}`; `list()` / `revoke(id)` local-only; token lookup for `AuthPlugin`. `POST /api/pair` adds; `DELETE /api/pair` revokes the calling token. |
 
 ### 3.2 Dependencies
@@ -104,6 +105,11 @@ of every route but `POST /api/pair`, and keeps the pairing/invite state the gate
 - **Foreground service** — API-gated `startForeground` overload: 2-arg below API 29, 3-arg with
   `foregroundServiceType` on API 29+ (calling the 3-arg form unconditionally is a
   `NoSuchMethodError` on API 28 — see [`../../quirks/android-service.md`](../../quirks/android-service.md)).
+- **Thermal shutdown** — while `ThermalGuard` is tripped, the service holds no camera pipeline
+  and runs no calibration. Mode requests are recorded and applied on resume (`live` is a `503`).
+  `/api/status` reports `status:"overheated"` plus a `thermalShutdown` object. The HTTP server,
+  wake lock and service stay up. Every pipeline start and stop runs under one lock, so a trip
+  can't race a mode switch. See [`0014`](../decisions/0014-thermal-safety-shutdown.md).
 - **Bind-retry** — retries a `BindException` crash-loop socket-not-released race (carried
   forward from the prototype; not stress-tested here).
 - **Auth** — every request enters through `AuthPlugin`; `POST /api/pair` is the sole
@@ -120,6 +126,9 @@ of every route but `POST /api/pair`, and keeps the pairing/invite state the gate
 - **Mode exclusivity and stickiness** —
   [`0010`](../decisions/0010-mode-state-machine.md): the camera is one exclusive
   resource; recording must not be interrupted by a page load.
+- **Thermal safety shutdown** — [`0014`](../decisions/0014-thermal-safety-shutdown.md):
+  the platform's thermal status where it exists (battery temperature only as the fallback),
+  hysteresis with a resume dwell, and mode intent kept across the shutdown.
 - **Trade-off accepted:** the bind-retry and the CORS header exposure are defensive
   carry-overs, not re-verified on this hardware — see
   [`../../quirks/android-service.md`](../../quirks/android-service.md).

@@ -231,7 +231,9 @@ export function useLivePreview(phoneId: string): LiveController {
           res.message ||
           (res.outcome === 'recording'
             ? 'The phone is recording — stop recording to watch live.'
-            : 'Could not start live preview.'),
+            : res.outcome === 'overheated'
+              ? 'The phone is too hot — live preview resumes once it cools.'
+              : 'Could not start live preview.'),
       });
       return;
     }

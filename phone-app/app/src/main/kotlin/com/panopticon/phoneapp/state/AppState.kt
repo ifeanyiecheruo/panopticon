@@ -49,6 +49,18 @@ class AppState {
     private val _liveViewers = MutableStateFlow(0)
     val liveViewers: StateFlow<Int> = _liveViewers
 
+    // Published by ThermalGuard. While `active`, the service has shut the camera pipelines down
+    // and /api/status reports `status:"overheated"` regardless of [recordingStatus]; [mode] keeps
+    // the mode that was asked for, and is what resumes once the phone cools.
+    private val _thermalShutdown = MutableStateFlow(ThermalShutdownStatus())
+    val thermalShutdown: StateFlow<ThermalShutdownStatus> = _thermalShutdown
+
+    val overheated: Boolean get() = _thermalShutdown.value.active
+
+    fun setThermalShutdown(status: ThermalShutdownStatus) {
+        _thermalShutdown.value = status
+    }
+
     fun setMode(mode: AppMode) {
         _mode.value = mode
     }
