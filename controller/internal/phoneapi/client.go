@@ -294,7 +294,33 @@ type Status struct {
 	// report it (or runs an app build that doesn't).
 	BatteryCurrentMa *int          `json:"batteryCurrentMa"`
 	Thermal          ThermalStatus `json:"thermal"`
-	ServerTimeMs     int64         `json:"serverTimeMs"`
+	// ThermalShutdown is the phone's thermal guard. Nil from phones on app builds that
+	// predate it. While Active, Status is "overheated" and the camera is off.
+	ThermalShutdown *ThermalShutdown `json:"thermalShutdown"`
+	ServerTimeMs    int64            `json:"serverTimeMs"`
+}
+
+// ThermalShutdown is the phone shutting its camera work down because it got too hot,
+// and bringing it back once it has cooled.
+type ThermalShutdown struct {
+	Active bool `json:"active"`
+	// Source is what the phone judges by: "thermalStatus" (Android's own thermal status,
+	// Android 10+, the only signal used where it exists), "batteryTemperature" (the
+	// fallback on older phones), or "none" (can never trip).
+	Source string `json:"source"`
+	// Reason is the Source that tripped it; empty while not Active.
+	Reason  string `json:"reason,omitempty"`
+	SinceMs *int64 `json:"sinceMs"`
+	// Level is the current thermal-status name when Source is "thermalStatus";
+	// CriticalLevel/SafeLevel are where it trips and resumes.
+	Level         string `json:"level,omitempty"`
+	CriticalLevel string `json:"criticalLevel"`
+	SafeLevel     string `json:"safeLevel"`
+	// BatteryTempC is the last reading when Source is "batteryTemperature", else nil.
+	// CriticalTempC/SafeTempC are the configured fallback thresholds, only applied then.
+	BatteryTempC  *float32 `json:"batteryTempC"`
+	CriticalTempC float32  `json:"criticalTempC"`
+	SafeTempC     float32  `json:"safeTempC"`
 }
 
 // ThermalStatus is how close the phone is to thermal throttling. Deliberately not a
@@ -323,6 +349,13 @@ type Config struct {
 	MotionSensitivity  string `json:"motionSensitivity"`
 	StorageCapBytes    int64  `json:"storageCapBytes"`
 	RingBufferMaxAgeMs int64  `json:"ringBufferMaxAgeMs"`
+	// Thermal guard thresholds (docs/design/decisions/0014-thermal-safety-shutdown.md).
+	// The levels apply on phones with Android's thermal-status API, the temperatures only
+	// on phones without it. Empty/zero from phones on builds that predate them.
+	ThermalCriticalLevel string  `json:"thermalCriticalLevel"` // default "severe"
+	ThermalSafeLevel     string  `json:"thermalSafeLevel"`     // default "moderate"
+	ThermalCriticalTempC float32 `json:"thermalCriticalTempC"`
+	ThermalSafeTempC     float32 `json:"thermalSafeTempC"`
 }
 
 func (c *Client) Config(ctx context.Context) (Config, error) {
@@ -341,6 +374,12 @@ type ConfigPatch struct {
 	MotionSensitivity  *string `json:"motionSensitivity,omitempty"`
 	StorageCapBytes    *int64  `json:"storageCapBytes,omitempty"`
 	RingBufferMaxAgeMs *int64  `json:"ringBufferMaxAgeMs,omitempty"`
+	// Levels are PowerManager thermal-status names (none..shutdown): critical must be
+	// light..critical and safe below it, else the phone answers 400.
+	ThermalCriticalLevel *string  `json:"thermalCriticalLevel,omitempty"`
+	ThermalSafeLevel     *string  `json:"thermalSafeLevel,omitempty"`
+	ThermalCriticalTempC *float32 `json:"thermalCriticalTempC,omitempty"`
+	ThermalSafeTempC     *float32 `json:"thermalSafeTempC,omitempty"`
 }
 
 // SetConfig batch-updates device config and returns the full resulting document.

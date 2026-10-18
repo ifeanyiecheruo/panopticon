@@ -28,6 +28,15 @@ data class DeviceConfig(
     /** Physical camera id the pipelines open; "" = resolve the default back camera. */
     val activeCameraId: String = "",
     val cameraControls: CameraControlSpec = CameraControlSpec(),
+    /** `PowerManager` thermal status at which camera work shuts down - see [ThermalPolicy]. */
+    val thermalCriticalLevel: String = ThermalPolicy.DEFAULT_CRITICAL_LEVEL,
+    /** Thermal status it must fall back to (and stay at) before camera work resumes. */
+    val thermalSafeLevel: String = ThermalPolicy.DEFAULT_SAFE_LEVEL,
+    /** Battery temperature at which camera work shuts down, on devices with no thermal-status API
+     *  (API < 29) - elsewhere the platform's own status decides. See [ThermalPolicy]. */
+    val thermalCriticalTempC: Float = ThermalPolicy.DEFAULT_CRITICAL_C,
+    /** Battery temperature it must fall back to (and stay at) before camera work resumes; same caveat. */
+    val thermalSafeTempC: Float = ThermalPolicy.DEFAULT_SAFE_C,
 )
 
 class AppConfig(context: Context) {

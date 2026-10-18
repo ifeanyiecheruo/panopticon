@@ -103,7 +103,9 @@ go run ./tools/mock-phone/cmd/mockphone -addr :8091 -invite TESTCODE1234 -segmen
 
 `-segments N` seeds N fake segments as two back-to-back runs split by a gap, so the controller's
 segment→clip grouping collapses them into 2 gallery clips. `-live-arm-ms` (default 1500) mimics
-the cold-camera start so the live-start retry path is testable.
+the cold-camera start so the live-start retry path is testable. `-overheated` reports the thermal
+guard as tripped on `/api/status`, to check the controller's overheated state (status only: the
+mock has no thermal model).
 
 `controller/internal/integrationtest` runs automated tests against an in-process fake server
 (pairing with a real Ed25519 identity, error classification, download + cursor advancement,

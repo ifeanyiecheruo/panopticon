@@ -53,7 +53,7 @@ type PhoneView struct {
 	Model          string `json:"model"`
 	BaseURL        string `json:"baseUrl"`
 	Reachable      bool   `json:"reachable"`
-	Status         string `json:"status"` // "recording" | "standby" | "unreachable"
+	Status         string `json:"status"` // "recording" | "standby" | "overheated" | "unreachable"
 	BatteryPercent int    `json:"batteryPercent"`
 	HasBattery     bool   `json:"hasBattery"`
 	Charging       bool   `json:"charging"`
@@ -220,9 +220,10 @@ func (a *App) GetPhoneDetail(phoneID string) (PhoneDetailView, error) {
 		detail.Phone.HasThermal = status.Thermal.Supported
 		detail.Phone.ThermalLevel = status.Thermal.Level
 		detail.Phone.ThermalSeverity = status.Thermal.Severity
-		if status.Status == "recording" {
-			detail.Phone.Status = "recording"
-		} else {
+		switch status.Status {
+		case "recording", "overheated":
+			detail.Phone.Status = status.Status
+		default:
 			detail.Phone.Status = "standby"
 		}
 	}
@@ -313,7 +314,7 @@ func (a *App) SetRecording(phoneID string, recording bool) CameraActionResult {
 
 type CalibrationStartResult struct {
 	OK      bool   `json:"ok"`
-	Outcome string `json:"outcome"` // "ok" | "running" | "recording" | "unreachable" | "other"
+	Outcome string `json:"outcome"` // "ok" | "running" | "recording" | "overheated" | "unreachable" | "other"
 	RunID   string `json:"runId,omitempty"`
 	Message string `json:"message,omitempty"`
 }
@@ -336,6 +337,8 @@ func (a *App) StartCalibration(phoneID string) CalibrationStartResult {
 		return CalibrationStartResult{Outcome: "running", Message: "A calibration sweep is already running on this phone."}
 	case errors.Is(err, phoneapi.ErrPhoneRecording):
 		return CalibrationStartResult{Outcome: "recording", Message: "The phone is recording. Stop recording on the phone before calibrating."}
+	case errors.Is(err, phoneapi.ErrPhoneOverheated):
+		return CalibrationStartResult{Outcome: "overheated", Message: overheatedMessage}
 	case errors.Is(err, phoneapi.ErrUnreachable):
 		return CalibrationStartResult{Outcome: "unreachable", Message: "Could not reach the phone."}
 	default:
@@ -343,11 +346,15 @@ func (a *App) StartCalibration(phoneID string) CalibrationStartResult {
 	}
 }
 
+// overheatedMessage is what the camera actions say while the phone's thermal guard has
+// its camera shut down (docs/design/decisions/0014-thermal-safety-shutdown.md).
+const overheatedMessage = "The phone is too hot and has shut its camera down. It resumes on its own once it cools."
+
 // ---- Live preview (driven from Phone detail) ----
 
 type LivePreviewResult struct {
 	OK           bool   `json:"ok"`
-	Outcome      string `json:"outcome"` // "ok" | "recording" | "unreachable" | "other"
+	Outcome      string `json:"outcome"` // "ok" | "recording" | "overheated" | "unreachable" | "other"
 	PlaylistPath string `json:"playlistPath,omitempty"`
 	Message      string `json:"message,omitempty"`
 }
@@ -371,6 +378,9 @@ func (a *App) StartLivePreview(phoneID string) LivePreviewResult {
 			return LivePreviewResult{Outcome: "unreachable", Message: "Could not reach the phone."}
 		}
 		return LivePreviewResult{Outcome: "other", Message: err.Error()}
+	}
+	if status.Status == "overheated" {
+		return LivePreviewResult{Outcome: "overheated", Message: overheatedMessage}
 	}
 	if status.Mode == "record" {
 		return LivePreviewResult{Outcome: "recording", Message: "The phone is recording. Stop recording on the phone before watching live."}

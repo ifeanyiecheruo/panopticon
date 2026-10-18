@@ -201,7 +201,7 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
             </span>
             <span
               className={`status-pill ${
-                p.status === 'recording' ? 'recording' : p.status === 'unreachable' ? 'unreachable' : ''
+                p.status === 'recording' || p.status === 'unreachable' || p.status === 'overheated' ? p.status : ''
               }`}
             >
               <span className="dot"></span>

@@ -60,6 +60,11 @@ type server struct {
 	manufacturer string
 	model        string
 	mode         string // "record" | "standby" | "live" - RECORD blocks calibration
+	overheated   bool   // thermal guard tripped: status "overheated" whatever the mode
+
+	// Thermal guard thresholds (GET/POST /api/config); echoed in /api/status. Not validated.
+	thermalCriticalLevel string
+	thermalSafeLevel     string
 
 	// Editable device config (GET/POST /api/config).
 	motionSensitivity  string
@@ -94,23 +99,27 @@ func main() {
 	invite := flag.String("invite", "TEST-INVITE-CODE", "invite code this mock phone accepts (once)")
 	numSegments := flag.Int("segments", 6, "number of fake pre-existing segments to seed (as two runs split by a gap)")
 	liveArmMs := flag.Int("live-arm-ms", 1500, "ms the camera 'arms' after entering live mode; POST /api/live/start 503s with retryAfterMs until it elapses (0 disables)")
+	overheated := flag.Bool("overheated", false, "report the thermal guard as tripped (status \"overheated\", battery over the critical temperature)")
 	flag.Parse()
 
 	s := &server{
-		invite:             *invite,
-		controllers:        make(map[string]pairedController),
-		deviceName:         "Mock Porch Cam",
-		manufacturer:       "Google",
-		model:              "Pixel 6",
-		mode:               "record",
-		motionSensitivity:  "medium",
-		storageCapBytes:    64_000_000_000,
-		ringBufferMaxAgeMs: 604_800_000,
-		videoResolution:    "1280x720",
-		calSweepDurMs:      6000,
-		activeCameraID:     "0",
-		controlKeys:        map[string]any{},
-		liveArmDelay:       time.Duration(*liveArmMs) * time.Millisecond,
+		invite:               *invite,
+		controllers:          make(map[string]pairedController),
+		deviceName:           "Mock Porch Cam",
+		manufacturer:         "Google",
+		model:                "Pixel 6",
+		mode:                 "record",
+		motionSensitivity:    "medium",
+		storageCapBytes:      64_000_000_000,
+		ringBufferMaxAgeMs:   604_800_000,
+		videoResolution:      "1280x720",
+		calSweepDurMs:        6000,
+		activeCameraID:       "0",
+		controlKeys:          map[string]any{},
+		liveArmDelay:         time.Duration(*liveArmMs) * time.Millisecond,
+		overheated:           *overheated,
+		thermalCriticalLevel: "severe",
+		thermalSafeLevel:     "moderate",
 	}
 	s.seedSegments(*numSegments)
 
@@ -261,10 +270,23 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	mode := s.mode
+	criticalLevel, safeLevel := s.thermalCriticalLevel, s.thermalSafeLevel
 	s.mu.Unlock()
 	recStatus := "recording"
 	if mode != "record" {
 		recStatus = "stopped"
+	}
+	// Static, like thermal below: the mock has no thermal model, just the two states.
+	thermalShutdown := map[string]any{
+		"active": false, "source": "thermalStatus", "level": "light",
+		"criticalLevel": criticalLevel, "safeLevel": safeLevel, "batteryTempC": nil, "criticalTempC": 45, "safeTempC": 40,
+	}
+	if s.overheated {
+		recStatus = "overheated"
+		thermalShutdown["active"] = true
+		thermalShutdown["reason"] = "thermalStatus"
+		thermalShutdown["level"] = "severe"
+		thermalShutdown["sinceMs"] = time.Now().Add(-7 * time.Minute).UnixMilli()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode":             mode,
@@ -287,7 +309,8 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"level":     "light",
 			"headroom":  0.42,
 		},
-		"serverTimeMs": time.Now().UnixMilli(),
+		"thermalShutdown": thermalShutdown,
+		"serverTimeMs":    time.Now().UnixMilli(),
 	})
 }
 
@@ -357,10 +380,12 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		var patch struct {
-			DeviceName         *string `json:"deviceName"`
-			MotionSensitivity  *string `json:"motionSensitivity"`
-			StorageCapBytes    *int64  `json:"storageCapBytes"`
-			RingBufferMaxAgeMs *int64  `json:"ringBufferMaxAgeMs"`
+			DeviceName           *string `json:"deviceName"`
+			MotionSensitivity    *string `json:"motionSensitivity"`
+			StorageCapBytes      *int64  `json:"storageCapBytes"`
+			RingBufferMaxAgeMs   *int64  `json:"ringBufferMaxAgeMs"`
+			ThermalCriticalLevel *string `json:"thermalCriticalLevel"`
+			ThermalSafeLevel     *string `json:"thermalSafeLevel"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad config body"})
@@ -378,13 +403,23 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if patch.RingBufferMaxAgeMs != nil {
 			s.ringBufferMaxAgeMs = *patch.RingBufferMaxAgeMs
 		}
+		if patch.ThermalCriticalLevel != nil {
+			s.thermalCriticalLevel = *patch.ThermalCriticalLevel
+		}
+		if patch.ThermalSafeLevel != nil {
+			s.thermalSafeLevel = *patch.ThermalSafeLevel
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"deviceName":         s.deviceName,
-		"motionSensitivity":  s.motionSensitivity,
-		"storageCapBytes":    s.storageCapBytes,
-		"ringBufferMaxAgeMs": s.ringBufferMaxAgeMs,
+		"deviceName":           s.deviceName,
+		"motionSensitivity":    s.motionSensitivity,
+		"storageCapBytes":      s.storageCapBytes,
+		"ringBufferMaxAgeMs":   s.ringBufferMaxAgeMs,
+		"thermalCriticalLevel": s.thermalCriticalLevel,
+		"thermalSafeLevel":     s.thermalSafeLevel,
+		"thermalCriticalTempC": 45,
+		"thermalSafeTempC":     40,
 	})
 }
 

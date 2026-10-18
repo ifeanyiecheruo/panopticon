@@ -109,6 +109,10 @@ class CalibrationRunner(
         synchronized(lock) {
             active?.takeIf { it.status == "running" }?.let { return StartOutcome.AlreadyRunning(it.runId) }
 
+            if (appState.overheated) {
+                return StartOutcome.CameraBusy("phone is overheated; calibration is unavailable until it cools")
+            }
+
             when (appState.mode.value) {
                 AppMode.RECORD -> return StartOutcome.CameraBusy(
                     "stop recording on the phone before calibrating (POST /api/mode standby)",
@@ -158,6 +162,17 @@ class CalibrationRunner(
             run.status = "cancelled"
             run.job?.cancel()
             return true
+        }
+    }
+
+    /** Cancel whatever sweep is running, if any - the thermal guard's stop. */
+    fun cancelActive() {
+        synchronized(lock) {
+            val run = active ?: return
+            if (run.status != "running") return
+            Log.w(TAG, "cancelling calibration ${run.runId}: phone overheated")
+            run.status = "cancelled"
+            run.job?.cancel()
         }
     }
 

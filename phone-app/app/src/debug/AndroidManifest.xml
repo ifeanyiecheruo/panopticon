@@ -23,5 +23,8 @@
         <receiver
             android:name=".debug.DebugMotionBenchReceiver"
             android:exported="true" />
+        <receiver
+            android:name=".debug.DebugThermalReceiver"
+            android:exported="true" />
     </application>
 </manifest>

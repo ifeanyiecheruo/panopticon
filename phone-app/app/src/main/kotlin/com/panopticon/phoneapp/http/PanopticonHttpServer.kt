@@ -142,7 +142,7 @@ class PanopticonHttpServer(
                 liveProvider()?.currentTexCrop()
             }
             healthRoutes(cameraHealth)
-            liveRoutes(liveProvider)
+            liveRoutes(liveProvider, overheated = { appState.overheated })
         }
     }
 }

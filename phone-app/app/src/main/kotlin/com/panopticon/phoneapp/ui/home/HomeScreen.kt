@@ -26,6 +26,7 @@ fun HomeScreen(app: PanopticonApplication) {
     val recordingStatus by app.appState.recordingStatus.collectAsStateWithLifecycle()
     val cameraHealthy by app.appState.cameraHealthy.collectAsStateWithLifecycle()
     val motionActive by app.appState.motionActive.collectAsStateWithLifecycle()
+    val thermal by app.appState.thermalShutdown.collectAsStateWithLifecycle()
     val config = app.appConfig.get()
     val usedBytes = app.segmentStore.totalBytes()
     val capBytes = config.storageCapBytes
@@ -50,6 +51,7 @@ fun HomeScreen(app: PanopticonApplication) {
 
         InfoCard(title = "Recording status") {
             val (label, color) = when {
+                thermal.active -> "OVERHEATED" to PanopticonColors.warn
                 !cameraHealthy -> "UNAVAILABLE" to PanopticonColors.warn
                 recordingStatus == RecordingStatus.RECORDING -> "REC" to PanopticonColors.rec
                 recordingStatus == RecordingStatus.UNAVAILABLE -> "UNAVAILABLE" to PanopticonColors.warn
@@ -59,6 +61,9 @@ fun HomeScreen(app: PanopticonApplication) {
             Text(text = label, color = color, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Text(
                 text = when {
+                    thermal.active ->
+                        "Too hot - camera shut down (${thermal.readingText()}). " +
+                            "Resumes automatically ${thermal.resumeText()}."
                     recordingStatus == RecordingStatus.RECORDING ->
                         "Motion gate open - writing rotating ~10s clips."
                     recordingStatus == RecordingStatus.STOPPED ->
