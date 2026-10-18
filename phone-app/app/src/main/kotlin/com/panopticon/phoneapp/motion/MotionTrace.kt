@@ -10,10 +10,11 @@ package com.panopticon.phoneapp.motion
 object MotionTrace {
     fun interface Sink {
         /**
-         * Called on the GL thread for every analysed frame, so it must not block: copy what it
-         * needs and return. [rgba] is reused by the caller after this returns.
+         * Called on the motion-analysis thread for every analysed frame, so it must not block:
+         * copy what it needs and return. [luma] (one byte per pixel, row-major, GL bottom-up
+         * rows, unrotated) is reused by the caller after this returns.
          */
-        fun onFrame(rgba: ByteArray, width: Int, height: Int, nowMs: Long, verdict: MotionAnalyzer.Verdict)
+        fun onFrame(luma: ByteArray, width: Int, height: Int, nowMs: Long, verdict: MotionAnalyzer.Verdict)
     }
 
     @Volatile var sink: Sink? = null

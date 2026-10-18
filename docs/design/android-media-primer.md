@@ -131,7 +131,7 @@ full-screen quad with the camera texture on it, maybe twice — but the vocabula
 | **shader** | a small GPU program. A **vertex shader** positions the quad's corners; a **fragment shader** computes each output pixel (here: sample the external texture). Written in GLSL. |
 | **uniform** | a read-only input to a shader, set from the CPU once per draw call, the same for every vertex/pixel in that call (versus *attributes*, which vary per vertex). Panopticon's shaders take uniforms like `uSTMatrix` (the `SurfaceTexture` transform), `uTexCrop` (a centre-crop factor that fixes the >1080p aspect mismatch), and an MVP/vertex matrix. When a doc says "a `uTexCrop` shader uniform centre-crops to the output aspect", it means: a constant the CPU hands the shader each frame that scales the sampled texture region. |
 | **FBO** (framebuffer object) | an off-screen render target backed by a texture. Panopticon renders a small downscaled copy of the frame to an FBO so it can read those pixels back cheaply. |
-| **`glReadPixels`** | copy pixels from the bound framebuffer back to CPU memory. Slow — bytes cross the GPU/CPU boundary — so it is done on the *small* analysis FBO, never the full frame. The frame-difference motion detector runs on this read-back ([`components/phone-recording-pipeline.md`](components/phone-recording-pipeline.md)). |
+| **`glReadPixels`** | copy pixels from the bound framebuffer back to CPU memory. Slow — bytes cross the GPU/CPU boundary, and a read into CPU memory waits for the GPU to finish everything queued — so it is done on the *small* analysis FBO (packed luma), never the full frame, and on GLES 3 into a pixel-pack buffer that is mapped a frame later instead of waiting. The motion detector runs on this read-back ([`components/phone-recording-pipeline.md`](components/phone-recording-pipeline.md)). |
 
 **The fan-out**, then, is: one camera frame in the external texture, drawn twice on the GL
 thread — once scaled down into an FBO (→ `glReadPixels` → motion), once at full size into the
@@ -295,7 +295,7 @@ flowchart TB
         GL["GL thread\nsample external-OES texture\napply uSTMatrix + uTexCrop"]
         FBO["downscaled FBO"]
         RP["glReadPixels"]
-        MD["MotionDetector\n(frame difference)"]
+        MD["MotionDetector\n(tracked displacement)"]
         ENC1["MediaCodec H.264 encoder\n(input = EGL window surface,\nruns continuously)"]
         RING["pre-roll ring\n(encoded AUs, in RAM)"]
         MUX["MediaMuxer (MP4)\nmotion-gated · rotates at keyframe"]

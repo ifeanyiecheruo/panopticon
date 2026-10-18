@@ -14,7 +14,7 @@ Where a decision has since been implemented, superseded, or partly deferred, the
 | [0002](0002-http-api-surface-and-auth.md) | Phone HTTP API — surface and auth model |
 | [0003](0003-pairing-and-unpairing.md) | Pairing and unpairing |
 | [0004](0004-recording-pipeline.md) | Recording pipeline architecture |
-| [0005](0005-motion-detection.md) | Motion detection scope |
+| [0005](0005-motion-detection.md) | Motion detection scope (algorithm superseded by 0013) |
 | [0006](0006-segments-clips-and-tombstones.md) | Segments, clips, and the tombstone model |
 | [0007](0007-live-preview-plain-hls.md) | Live preview — plain HLS, then LL-HLS |
 | [0008](0008-camera-control-and-multi-camera.md) | Camera selection and manual controls |
@@ -22,6 +22,7 @@ Where a decision has since been implemented, superseded, or partly deferred, the
 | [0010](0010-mode-state-machine.md) | Phone mode state machine |
 | [0011](0011-controller-runtime-and-state.md) | Controller runtime and local state |
 | [0012](0012-ux-shape.md) | UX shape — phone and controller |
+| [0013](0013-motion-detection-tracked-displacement.md) | Motion detection by tracked displacement (supersedes 0005's algorithm) |
 
 ## Adding a decision
 

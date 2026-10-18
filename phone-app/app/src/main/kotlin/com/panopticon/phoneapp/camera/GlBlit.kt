@@ -46,9 +46,74 @@ internal object GlBlit {
         void main() { gl_FragColor = texture2D(sTex, vTex); }
     """
 
-    fun buildProgram(): Int {
-        val vs = compile(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)
-        val fs = compile(GLES20.GL_FRAGMENT_SHADER, FRAGMENT_SHADER)
+    /**
+     * Motion analysis input: the same view as [VERTEX_SHADER] samples, as luma, packed four
+     * pixels per RGBA texel. Drawn into a (width/4) x height target, a plain RGBA `glReadPixels`
+     * of it is exactly a width x height one-byte-per-pixel luma image - a quarter of the bytes
+     * an RGBA readback moves, and no per-pixel conversion on the CPU.
+     *
+     * Each analysis pixel averages a 3x3 grid of bilinear taps across its footprint, rather than
+     * the single tap a plain downscaling blit takes. A 160-wide image of a 4K buffer has ~24
+     * source pixels per analysis pixel, and one tap aliases fine texture into shimmer, which a
+     * structure-matching detector would read as structure that moved.
+     *
+     * `uStep` is one analysis pixel in display-space texcoords (1/width, 1/height); the vertex
+     * stage carries it through the crop and the transform matrix, so the taps follow whatever
+     * rotation or axis swap the camera's matrix applies.
+     */
+    private const val LUMA_VERTEX_SHADER = """
+        uniform mat4 uSTMatrix;
+        uniform vec4 uTexRect;
+        uniform vec2 uStep;
+        attribute vec4 aPos;
+        attribute vec4 aTex;
+        varying vec2 vTex;
+        varying vec2 vStepX;
+        varying vec2 vStepY;
+        void main() {
+            gl_Position = aPos;
+            vec2 c = uTexRect.xy + aTex.xy * uTexRect.zw;
+            vTex = (uSTMatrix * vec4(c, aTex.zw)).xy;
+            vStepX = (uSTMatrix * vec4(uTexRect.z * uStep.x, 0.0, 0.0, 0.0)).xy;
+            vStepY = (uSTMatrix * vec4(0.0, uTexRect.w * uStep.y, 0.0, 0.0)).xy;
+        }
+    """
+    private const val LUMA_FRAGMENT_SHADER = """
+        #extension GL_OES_EGL_image_external : require
+        #ifdef GL_FRAGMENT_PRECISION_HIGH
+        precision highp float;
+        #else
+        precision mediump float;
+        #endif
+        varying vec2 vTex;
+        varying vec2 vStepX;
+        varying vec2 vStepY;
+        uniform samplerExternalOES sTex;
+        const vec3 W = vec3(0.299, 0.587, 0.114);
+        float lumaAt(vec2 c) {
+            float s = 0.0;
+            for (int a = -1; a <= 1; a++) {
+                for (int b = -1; b <= 1; b++) {
+                    s += dot(texture2D(sTex, c + (float(a) * vStepX + float(b) * vStepY) / 3.0).rgb, W);
+                }
+            }
+            return s / 9.0;
+        }
+        void main() {
+            // This fragment's centre sits between its 2nd and 3rd analysis pixels.
+            gl_FragColor = vec4(
+                lumaAt(vTex - 1.5 * vStepX), lumaAt(vTex - 0.5 * vStepX),
+                lumaAt(vTex + 0.5 * vStepX), lumaAt(vTex + 1.5 * vStepX));
+        }
+    """
+
+    fun buildLumaProgram(): Int = link(LUMA_VERTEX_SHADER, LUMA_FRAGMENT_SHADER)
+
+    fun buildProgram(): Int = link(VERTEX_SHADER, FRAGMENT_SHADER)
+
+    private fun link(vertex: String, fragment: String): Int {
+        val vs = compile(GLES20.GL_VERTEX_SHADER, vertex)
+        val fs = compile(GLES20.GL_FRAGMENT_SHADER, fragment)
         val p = GLES20.glCreateProgram()
         GLES20.glAttachShader(p, vs); GLES20.glAttachShader(p, fs); GLES20.glLinkProgram(p)
         val st = IntArray(1); GLES20.glGetProgramiv(p, GLES20.GL_LINK_STATUS, st, 0)

@@ -20,5 +20,8 @@
         <receiver
             android:name=".debug.DebugMotionTraceReceiver"
             android:exported="true" />
+        <receiver
+            android:name=".debug.DebugMotionBenchReceiver"
+            android:exported="true" />
     </application>
 </manifest>

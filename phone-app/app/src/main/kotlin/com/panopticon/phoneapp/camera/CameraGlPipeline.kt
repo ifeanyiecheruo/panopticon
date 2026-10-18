@@ -87,16 +87,13 @@ private const val THERMAL_SAMPLE_MS = 10_000L
 /**
  * Analyse one frame in every N for motion.
  *
- * `1` is the original behaviour: every frame, and a synchronous `glReadPixels` flush on every
- * frame with it. `0` disables motion detection altogether - **diagnostic only**, since nothing
- * will ever record; it exists so the readback can be removed from the frame loop to prove
- * whether it, rather than `eglSwapBuffers` backpressure from the encoder, is what starves the
- * camera's buffer queue.
- *
- * At 30fps, 3 gives motion detection a 100ms cadence, which is far inside what a fixed camera
- * needs, and cuts the number of pipeline flushes by two thirds.
+ * 2 is ~15fps at the camera's 30fps: the rate the detector's tracking is tuned for (its search
+ * ranges are pixels per analysed frame, see MotionDetector). `0` disables motion detection
+ * altogether - **diagnostic only**, since nothing will ever record; it exists so the readback can
+ * be removed from the frame loop to prove whether it, rather than `eglSwapBuffers` backpressure
+ * from the encoder, is what starves the camera's buffer queue.
  */
-private const val ANALYSIS_FRAME_INTERVAL = 1
+private const val ANALYSIS_FRAME_INTERVAL = 2
 
 /** Below this much free space a new segment isn't even attempted (see CameraGlPipeline.newMuxer):
  *  one 10s segment at 4K is ~40MB, so this is a few segments' worth. */
@@ -106,8 +103,8 @@ private const val MIN_FREE_TO_OPEN_BYTES = 200L * 1024 * 1024
  * Camera2 + **GPU texture fan-out** recording pipeline. Motion-gated, gapless, with pre-roll.
  *
  * One camera stream feeds a `SurfaceTexture`; a GL thread samples that external-OES texture once
- * per frame and does two things: renders a small downscaled copy to an FBO and `glReadPixels` it
- * for frame-difference motion detection ([MotionDetector]), and renders the full frame to an EGL
+ * per frame and does two things: renders a small luma copy for motion detection ([MotionReadback],
+ * [com.panopticon.phoneapp.motion.MotionDetector]), and renders the full frame to an EGL
  * window surface on a `MediaCodec` H.264 encoder's input surface. The **encoder runs
  * continuously** while the pipeline is up - it is never stopped.
  *
@@ -214,8 +211,8 @@ class CameraGlPipeline(
     private var uStMatrixLoc = 0
     private var uTexRectLoc = 0
     private var oesTexId = 0
-    private var fbo = 0
-    private var fboTex = 0
+    /** Whether [eglContext] is GLES 3 - what lets [motionReadback] read back asynchronously. */
+    private var glEs3 = false
     private val quad = ByteBuffer.allocateDirect(64).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
         put(floatArrayOf(-1f, -1f, 0f, 0f, 1f, -1f, 1f, 0f, -1f, 1f, 0f, 1f, 1f, 1f, 1f, 1f)); position(0)
     }
@@ -223,8 +220,7 @@ class CameraGlPipeline(
     // See LivePipeline's identical field - texCrop is computed before we've seen a real
     // transform matrix, then corrected once we have one in case this camera swaps axes.
     @Volatile private var texCropFinalized = false
-    private val readback = ByteBuffer.allocateDirect(READBACK_W * READBACK_H * 4).order(ByteOrder.nativeOrder())
-    private val rgbaPlane = ByteArray(READBACK_W * READBACK_H * 4)
+    private val motionReadback = MotionReadback(READBACK_W, READBACK_H, ::analyseFrame)
 
     // Motion detection, and the one channel the camera half of this class uses to talk to it.
     // Everything below that reconfigures, re-requests or restarts the camera brackets itself in
@@ -234,6 +230,13 @@ class CameraGlPipeline(
     private val analyzer = MotionAnalyzer(sensitivity = { appConfig.get().motionSensitivity })
     private val motionGate: MotionGate = analyzer
     @Volatile private var lastMotionReported = false
+    /**
+     * Bumped by [teardown]. Analysis runs on its own thread and can finish a frame from a run
+     * that has already been torn down; this keeps that late verdict from re-arming [motionEver]
+     * for the next run. Read and written under [motionLock].
+     */
+    private var analysisGeneration = 0
+    private val motionLock = Any()
 
     /** Re-pointed at the real camera's record once [openCameraIfNeeded] resolves an id; until
      *  then a placeholder, so nothing on a failure path has to null-check a counter. */
@@ -321,6 +324,7 @@ class CameraGlPipeline(
         stop()
         callbackThread.quitSafely()
         workExecutor.shutdown()
+        motionReadback.shutdown()
     }
 
     // ---- supervisor ----
@@ -497,6 +501,9 @@ class CameraGlPipeline(
         health.gauge("motion.framesSuppressed", analyzer.framesSuppressed)
         health.gauge("motion.disturbances", analyzer.disturbances)
         health.gauge("motion.disturbancesExpired", analyzer.disturbancesExpired)
+        health.gauge("motion.analysisMeanMs", "%.2f".format(Locale.US, motionReadback.meanMs))
+        health.gauge("motion.analysisMaxMs", "%.2f".format(Locale.US, motionReadback.takeMaxMs()))
+        health.gauge("motion.framesDropped", motionReadback.dropped.get())
         health.gauge("zoom.readable", zoomFeedback.readable)
         health.gauge("zoom.unreadable", zoomFeedback.unreadable)
         health.gauge("zoom.requestedRatio", requestedSplit?.hwRatio ?: 1f)
@@ -580,19 +587,28 @@ class CameraGlPipeline(
         check(eglDisplay != EGL14.EGL_NO_DISPLAY) { "no EGL display" }
         val ver = IntArray(2)
         check(EGL14.eglInitialize(eglDisplay, ver, 0, ver, 1)) { "eglInitialize failed" }
-        val attribs = intArrayOf(
-            EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
-            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            EGL_RECORDABLE_ANDROID, 1, EGL14.EGL_NONE,
-        )
-        val configs = arrayOfNulls<EGLConfig>(1)
-        val n = IntArray(1)
-        check(EGL14.eglChooseConfig(eglDisplay, attribs, 0, configs, 0, 1, n, 0) && n[0] > 0) { "eglChooseConfig failed" }
-        eglConfig = configs[0]
-        eglContext = EGL14.eglCreateContext(
-            eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT,
-            intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0,
-        )
+        // GLES 3 when the device has it (both test phones do), for MotionReadback's asynchronous
+        // readback; GLES 2 otherwise. Every shader here is GLSL ES 1.00, which both accept.
+        glEs3 = false
+        for (es3 in booleanArrayOf(true, false)) {
+            val attribs = intArrayOf(
+                EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
+                EGL14.EGL_RENDERABLE_TYPE, if (es3) EGLExt.EGL_OPENGL_ES3_BIT_KHR else EGL14.EGL_OPENGL_ES2_BIT,
+                EGL_RECORDABLE_ANDROID, 1, EGL14.EGL_NONE,
+            )
+            val configs = arrayOfNulls<EGLConfig>(1)
+            val n = IntArray(1)
+            if (!EGL14.eglChooseConfig(eglDisplay, attribs, 0, configs, 0, 1, n, 0) || n[0] == 0) continue
+            val ctx = EGL14.eglCreateContext(
+                eglDisplay, configs[0], EGL14.EGL_NO_CONTEXT,
+                intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, if (es3) 3 else 2, EGL14.EGL_NONE), 0,
+            )
+            if (ctx == EGL14.EGL_NO_CONTEXT) continue
+            eglConfig = configs[0]
+            eglContext = ctx
+            glEs3 = es3
+            break
+        }
         check(eglContext != EGL14.EGL_NO_CONTEXT) { "eglCreateContext failed" }
         encoderWindowSurface = EGL14.eglCreateWindowSurface(
             eglDisplay, eglConfig, encoderInputSurface, intArrayOf(EGL14.EGL_NONE), 0,
@@ -614,16 +630,8 @@ class CameraGlPipeline(
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-        val fb = IntArray(1); GLES20.glGenFramebuffers(1, fb, 0); fbo = fb[0]
-        val ft = IntArray(1); GLES20.glGenTextures(1, ft, 0); fboTex = ft[0]
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, fboTex)
-        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, READBACK_W, READBACK_H, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
-        GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, fboTex, 0)
-        check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE) { "FBO incomplete" }
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        motionReadback.setup(glEs3)
+        health.gauge("motion.readback", if (motionReadback.async) "async" else "sync")
     }
 
     // ---- per-frame (GL thread) ----
@@ -653,10 +661,6 @@ class CameraGlPipeline(
         framesThisRun.incrementAndGet()
         runFirstFrameMs.compareAndSet(0L, now)
 
-        GLES20.glUseProgram(program)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexId)
-        GLES20.glUniformMatrix4fv(uStMatrixLoc, 1, false, stMatrix, 0)
         // One rect does both jobs: the fixed output-aspect trim, and whatever zoom the camera
         // hardware isn't doing off-centre. Un-zoomed it is exactly the centred trim this drew
         // before zoom existed.
@@ -668,32 +672,23 @@ class CameraGlPipeline(
         // sensor timestamp, not assumed from the last request - so the view is placed inside what
         // the buffer actually holds.
         val u = ZoomGeometry.texRectUniform(zoomView(), texCropX, texCropY, deliveredCrop(tsNanos))
+
+        // analysis: luma of the same view -> MotionReadback -> analysis thread -> MotionDetector.
+        // Skipped entirely on frames we are not analysing. On GLES 3 the readback is asynchronous
+        // (see MotionReadback), so this no longer stalls the GL thread on a pipeline flush.
+        if (analysisFrameInterval > 0 && analysisFrameCounter++ % analysisFrameInterval == 0L) {
+            motionReadback.capture(oesTexId, stMatrix, u, now)
+        }
+
+        GLES20.glUseProgram(program)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexId)
+        GLES20.glUniformMatrix4fv(uStMatrixLoc, 1, false, stMatrix, 0)
         GLES20.glUniform4f(uTexRectLoc, u[0], u[1], u[2], u[3])
         quad.position(0); GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
         GLES20.glEnableVertexAttribArray(aPosLoc)
         quad.position(2); GLES20.glVertexAttribPointer(aTexLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
         GLES20.glEnableVertexAttribArray(aTexLoc)
-
-        // analysis: downscale -> FBO -> readback -> MotionDetector.
-        //
-        // Skipped entirely on frames we are not analysing, because the readback is the expensive
-        // half and the FBO draw exists only to feed it. `glReadPixels` is synchronous: it does not
-        // return until the GPU has drained everything queued, which at 4K includes the previous
-        // frame's full-size draw. The 76KB it moves is nothing; the flush is the cost. While the
-        // GL thread sits in it, nothing calls updateTexImage, and the camera's buffer queue is
-        // what runs dry - see docs/quirks/camera2-recording-pipeline.md.
-        //
-        // Analysing every Nth frame cuts how often that happens, in proportion. It does not
-        // remove the stall (an async PBO readback would); it trades detection latency, which a
-        // fixed security camera has to spare, against a starvation window it does not.
-        if (analysisFrameInterval > 0 && analysisFrameCounter++ % analysisFrameInterval == 0L) {
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
-            GLES20.glViewport(0, 0, READBACK_W, READBACK_H)
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-            readback.position(0)
-            GLES20.glReadPixels(0, 0, READBACK_W, READBACK_H, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, readback)
-            detectMotion(now)
-        }
 
         // record: full frame, rotated per rotationDegrees -> encoder input surface
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -722,23 +717,25 @@ class CameraGlPipeline(
         }
     }
 
-    private fun detectMotion(now: Long) {
-        // All three colour channels: a change of colour with no change of brightness is still
-        // something happening in the scene - see MotionDetector.
-        readback.position(0)
-        readback.get(rgbaPlane)
+    /** Motion-analysis thread (see [MotionReadback]). [now] is when the frame was captured. */
+    private fun analyseFrame(luma: ByteArray, width: Int, height: Int, now: Long) {
+        val generation = synchronized(motionLock) { analysisGeneration }
         // The analyzer, not the detector: it drops the frames our own reconfigures produced, and
         // re-bases the reference frame across them, before any of this asks "did something move?"
-        val verdict = analyzer.accept(rgbaPlane, READBACK_W, READBACK_H, READBACK_W * 4, now, pixelStride = 4)
-        MotionTrace.sink?.onFrame(rgbaPlane, READBACK_W, READBACK_H, now, verdict)
+        val verdict = analyzer.accept(luma, width, height, width, now)
+        MotionTrace.sink?.onFrame(luma, width, height, now, verdict)
         val motion = verdict.motion
-        if (motion) {
-            lastMotionMs.set(now)
-            motionEver.set(true)
-        }
-        if (motion != lastMotionReported) {
-            lastMotionReported = motion
-            onMotionChanged(motion)
+        synchronized(motionLock) {
+            // A frame from a run that has since been torn down says nothing about this one.
+            if (generation != analysisGeneration) return
+            if (motion) {
+                lastMotionMs.set(now)
+                motionEver.set(true)
+            }
+            if (motion != lastMotionReported) {
+                lastMotionReported = motion
+                onMotionChanged(motion)
+            }
         }
     }
 
@@ -1237,6 +1234,7 @@ class CameraGlPipeline(
             encoder = null
             runCatching { encoderInputSurface?.release() }
             encoderInputSurface = null
+            motionReadback.releaseGl()
             runCatching { EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT) }
             runCatching { EGL14.eglDestroySurface(eglDisplay, encoderWindowSurface) }
             runCatching { EGL14.eglDestroyContext(eglDisplay, eglContext) }
@@ -1257,7 +1255,6 @@ class CameraGlPipeline(
         segAnchorPtsUs = -1L; segStartPtsUs = -1L; segLastPtsUs = -1L
         recStartPtsUs = -1L; recStartElapsedMs = 0L; recStartEpochMs = 0L
         pendingRoll = false
-        lastMotionReported = false
         // Re-arm rather than resume. These two are what the drain thread gates writing on, and
         // they used to survive a teardown - so a pipeline that stalled within [trailerMs] of the
         // last motion came back up, found `motionEver` still true and `lastMotionMs` still
@@ -1266,8 +1263,12 @@ class CameraGlPipeline(
         // hold perfectly and a restart still produced a clip (confirmed on a 0.7s clip whose only
         // event was the zoom snap itself). Motion seen by the *previous* camera session says
         // nothing about this one: different session, seconds later, exposure and zoom re-settling.
-        motionEver.set(false)
-        lastMotionMs.set(0)
+        synchronized(motionLock) {
+            analysisGeneration++
+            lastMotionReported = false
+            motionEver.set(false)
+            lastMotionMs.set(0)
+        }
         // Per-run witnesses, so the next run's forensics describe the next run.
         lastFrameMs.set(0); lastCaptureResultMs.set(0); runFirstFrameMs.set(0)
         framesThisRun.set(0); captureResultsThisRun.set(0); encodedThisRun.set(0)

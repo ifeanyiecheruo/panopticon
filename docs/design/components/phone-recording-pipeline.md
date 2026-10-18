@@ -76,7 +76,8 @@ authoritative index of what's on disk.
 | Entity | Type | Responsibility |
 |---|---|---|
 | `CameraGlPipeline` | pipeline (record mode) | Camera2 → one `SurfaceTexture` → GL thread renders each frame twice: a downscaled FBO copy for `glReadPixels`, and the full frame to an EGL window surface on `MediaCodec.createInputSurface()`. Continuous H.264 encoder; a drain thread keeps an in-RAM pre-roll ring of encoded access units. |
-| `MotionDetector` | analyser | Per-channel difference on a 32×24 grid of cell means off the GL readback, against a ~1s-old reference; verdict gates the muxer. Thresholds chosen by `motionSensitivity`. |
+| `MotionReadback` | GL → analysis thread | Renders the analysis view as packed 160×120 luma, reads it back asynchronously (GLES 3 pixel-pack buffers), hands it to its own analysis thread, dropping rather than waiting. |
+| `MotionDetector` | analyser | Tracked displacement: noise model → active blocks → census-code block matching (forward-backward checked) → blobs → tracker; only a confirmed track (sustained, sized, coherent if small) is motion. Verdict gates the muxer; `motionSensitivity` picks object-level criteria. See [`0013`](../decisions/0013-motion-detection-tracked-displacement.md). |
 | `RecordingPhaseController` | state machine | idle(armed) → recording → trailer-tail → idle; drives muxer open/close. |
 | motion-gated `MediaMuxer` | writer | On motion, opens at the next keyframe primed from the ring back to ~`preRollMs` (default 3s); rotates by swapping muxers at a keyframe, PTS rebased per segment, `createdAtMs` chained. |
 | `SegmentStore` | index | Parsed index held in memory as the authoritative copy; reads hit it directly; mutations update the map and schedule **one coalesced background flush**; `deleteAll(filenames)` = N removals + one flush; `reconcile()` on launch. Backed by `SharedPreferences` (`panopticon_clips` / `clips_index_json`) + a `clips/` directory — names unchanged for historical reasons. |
@@ -125,8 +126,9 @@ Segment entry: `{filename, createdAtMs, durationMs, endMs, sizeBytes, width, hei
 - **Continuous encoder + motion-gated muxer + pre-roll ring** —
   [`0004`](../decisions/0004-recording-pipeline.md): keeps rotation gapless and lets a
   segment start *before* motion.
-- **Frame-difference motion, un-tuned** — [`0005`](../decisions/0005-motion-detection.md);
-  on-device tuning is [`../../status/motion-detection-tuning.md`](../../status/motion-detection-tuning.md).
+- **Motion by tracked displacement** — [`0013`](../decisions/0013-motion-detection-tracked-displacement.md)
+  (superseding [`0005`](../decisions/0005-motion-detection.md)'s frame difference); tuning status
+  is [`../../status/motion-detection-tuning.md`](../../status/motion-detection-tuning.md).
 - **`SegmentStore` in-memory + coalesced flush** — the old per-op re-parse/re-serialise ANR'd
   the BLU on delete storms; the in-memory authoritative copy fixed it. A hard kill losing an
   unflushed mutation is harmless (`reconcile()` recovers).
