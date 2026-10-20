@@ -16,7 +16,7 @@ Every file follows the same shape:
 3. **Detailed design** — 3.1 Design entities · 3.2 Dependencies · 3.3 Interfaces · 3.4 Data ·
    3.5 Processing and behaviour
 4. **Design rationale and decisions** — the governing ADRs, trade-offs, and links to quirks and
-   the [`../../status/`](../../status/) plans
+   the [`../../plan/`](../../plan/) plans
 
 System-wide terms (segment, clip, controller, mode, calibration, prototype) are defined once in
 [`../architecture.md`](../architecture.md) §1.3, and acronyms in §1.4; each component's §1.4 /

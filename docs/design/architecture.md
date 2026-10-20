@@ -23,7 +23,7 @@ This document describes the architecture of the system as built: two application
 Both applications exist as working, cross-verified vertical slices — pair → record → sync a
 clip → view it — plus feature slices layered on since (camera control, calibration, motion-gated
 recording, plain-HLS live view, the controller UX overhaul). See
-[`../status/README.md`](../status/README.md) for the current build/verify status
+[`../plan/README.md`](../plan/README.md) for the current build/verify status
 and the remaining-work plans.
 
 ### 1.3 Definitions
@@ -98,7 +98,7 @@ Every component design description in [`components/`](components/) links the acr
   media / GL / HLS APIs for a non-specialist.
 - [`http-api.md`](http-api.md) — the phone HTTP contract.
 - [`components/`](components/) — per-subsystem design descriptions.
-- [`../status/README.md`](../status/README.md) — build/verify status and remaining-work plans.
+- [`../plan/README.md`](../plan/README.md) — build/verify status and remaining-work plans.
 - [`../quirks/`](../quirks/) — reproduced device / library / OS / toolchain misbehaviour.
 - [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md) — build, run, test.
 
@@ -311,7 +311,7 @@ Calibration keyed by model:
   odd-looking code.
 - **Visual language** — the dark/teal theme shared by both UIs is an inherited **placeholder**,
   not a settled decision; a visual-language pass is deferred
-  ([`../status/visual-language-pass.md`](../status/visual-language-pass.md)).
+  ([`../plan/visual-language-pass.md`](../plan/visual-language-pass.md)).
 
 ---
 

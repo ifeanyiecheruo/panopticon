@@ -1,7 +1,7 @@
 # Design
 
 Design intent and rationale for Panopticon. Current build status and remaining-work plans are
-in [`../status/`](../status/); reproduced device/toolchain misbehaviour is in
+in [`../plan/`](../plan/); reproduced device/toolchain misbehaviour is in
 [`../quirks/`](../quirks/); build/run/test is in [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md).
 
 | | |

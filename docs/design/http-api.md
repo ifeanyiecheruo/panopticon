@@ -302,8 +302,8 @@ statement that the file is a "clip" in the grouped sense.)
 Tracked as implementation work:
 
 - Controller-side sync cadence / backoff against an unreachable phone —
-  [`../status/sync-cadence-and-backoff.md`](../status/sync-cadence-and-backoff.md).
+  [`../plan/sync-cadence-and-backoff.md`](../plan/sync-cadence-and-backoff.md).
 - A scoped GET-only `/live/*` token (currently the full bearer token, mitigated by the
-  server-side proxy) — [`../status/ll-hls-upgrade.md`](../status/ll-hls-upgrade.md).
+  server-side proxy) — [`../plan/ll-hls-upgrade.md`](../plan/ll-hls-upgrade.md).
 - Multi-phone fleet concerns beyond the single-phone API surface — covered by
   [`architecture.md`](architecture.md) §5.2 and the controller specs.

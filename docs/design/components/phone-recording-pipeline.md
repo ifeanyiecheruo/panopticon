@@ -128,7 +128,7 @@ Segment entry: `{filename, createdAtMs, durationMs, endMs, sizeBytes, width, hei
   segment start *before* motion.
 - **Motion by tracked displacement** — [`0013`](../decisions/0013-motion-detection-tracked-displacement.md)
   (superseding [`0005`](../decisions/0005-motion-detection.md)'s frame difference); tuning status
-  is [`../../status/motion-detection-tuning.md`](../../status/motion-detection-tuning.md).
+  is [`../../plan/motion-detection-tuning.md`](../../plan/motion-detection-tuning.md).
 - **`SegmentStore` in-memory + coalesced flush** — the old per-op re-parse/re-serialise ANR'd
   the BLU on delete storms; the in-memory authoritative copy fixed it. A hard kill losing an
   unflushed mutation is harmless (`reconcile()` recovers).

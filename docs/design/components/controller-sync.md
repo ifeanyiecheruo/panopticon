@@ -40,7 +40,7 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
 - [`../decisions/0006-segments-clips-and-tombstones.md`](../decisions/0006-segments-clips-and-tombstones.md),
   [`0011`](../decisions/0011-controller-runtime-and-state.md).
 - [`../http-api.md`](../http-api.md) — `/api/segments`.
-- Plan: [`../../status/sync-cadence-and-backoff.md`](../../status/sync-cadence-and-backoff.md).
+- Plan: [`../../plan/sync-cadence-and-backoff.md`](../../plan/sync-cadence-and-backoff.md).
 
 ## 2. Design overview
 
@@ -103,4 +103,4 @@ goroutine and its own timeouts.
   pass with nothing dropped. Trashed clips are never probed or dropped.
 - **Known gap:** the poll interval is fixed at process start with no backoff against a
   long-unreachable phone
-  ([`../../status/sync-cadence-and-backoff.md`](../../status/sync-cadence-and-backoff.md)).
+  ([`../../plan/sync-cadence-and-backoff.md`](../../plan/sync-cadence-and-backoff.md)).

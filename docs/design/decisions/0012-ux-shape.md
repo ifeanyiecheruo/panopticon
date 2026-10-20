@@ -2,7 +2,7 @@
 
 **Status:** Accepted. Phone UI: Home/Connect/Gallery/Calibrate built; Preview/Controllers/
 Configuration screens deferred. Controller UI: all five screens built. Visual-language pass
-deferred ([`../../status/visual-language-pass.md`](../../status/visual-language-pass.md)).
+deferred ([`../../plan/visual-language-pass.md`](../../plan/visual-language-pass.md)).
 Component specs: [`phone-ui.md`](../components/phone-ui.md),
 [`controller-ui.md`](../components/controller-ui.md).
 
@@ -52,7 +52,7 @@ Jetpack Compose for the real UI; the prototype's code is not reused, only its
 - **Bulk arm / bulk stand-down** are one-click fleet-wide, defined as full sequences: arm
   cancels whatever each phone is doing, returns it home, then records; stand-down returns home,
   then standby. (Deferred —
-  [`../../status/fleet-bulk-actions.md`](../../status/fleet-bulk-actions.md).)
+  [`../../plan/fleet-bulk-actions.md`](../../plan/fleet-bulk-actions.md).)
 - **Add phone** — paste view (two fields, address + code, full-URL autofill into either) is the
   default; a text link switches to a webcam QR viewfinder (deferred). Asymmetric
   primary/secondary framing, not two equal tabs. The controller never asks the user to name the

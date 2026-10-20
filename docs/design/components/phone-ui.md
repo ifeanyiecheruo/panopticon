@@ -43,8 +43,8 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
   [`../ux-mocks/phone-ux-mock.html`](../ux-mocks/phone-ux-mock.html),
   [`../storyboards/`](../storyboards/).
 - Plans for the missing screens:
-  [`../../status/phone-camera-control-ui.md`](../../status/phone-camera-control-ui.md),
-  [`../../status/phone-remaining-screens.md`](../../status/phone-remaining-screens.md).
+  [`../../plan/phone-camera-control-ui.md`](../../plan/phone-camera-control-ui.md),
+  [`../../plan/phone-remaining-screens.md`](../../plan/phone-remaining-screens.md).
 
 ## 2. Design overview
 
@@ -96,7 +96,7 @@ sweep) call those components directly.
 - **Not built (deferred):** Preview screen (live view + camera controls), Controllers screen,
   Configuration screen, QR-code invite display. The Preview screen's ruler and drag-scroller are
   the load-bearing patterns to port —
-  [`../../status/phone-camera-control-ui.md`](../../status/phone-camera-control-ui.md),
-  [`../../status/phone-remaining-screens.md`](../../status/phone-remaining-screens.md).
+  [`../../plan/phone-camera-control-ui.md`](../../plan/phone-camera-control-ui.md),
+  [`../../plan/phone-remaining-screens.md`](../../plan/phone-remaining-screens.md).
 - **Placeholder theme** — the visual-language pass is deferred
-  ([`../../status/visual-language-pass.md`](../../status/visual-language-pass.md)).
+  ([`../../plan/visual-language-pass.md`](../../plan/visual-language-pass.md)).

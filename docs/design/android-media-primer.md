@@ -240,7 +240,7 @@ Terms:
 |---|---|
 | **live edge** | the newest segment. A player normally starts a few segments *behind* the edge for buffer safety; `#EXT-X-START:TIME-OFFSET=-4` asks for ~4 s behind. |
 | **DVR window** | how far back a viewer can seek — here ~16 s, the depth of the sliding window. |
-| **LL-HLS** (Low-Latency HLS) | an extension that adds sub-segment "parts" and blocking playlist reloads to cut latency to ~1–2 s. Panopticon **does not** use it — plain whole-segment HLS only ([`decisions/0007-live-preview-plain-hls.md`](decisions/0007-live-preview-plain-hls.md)); an upgrade is a deferred plan ([`status/ll-hls-upgrade.md`](../status/ll-hls-upgrade.md)). |
+| **LL-HLS** (Low-Latency HLS) | an extension that adds sub-segment "parts" and blocking playlist reloads to cut latency to ~1–2 s. Panopticon **does not** use it — plain whole-segment HLS only ([`decisions/0007-live-preview-plain-hls.md`](decisions/0007-live-preview-plain-hls.md)); an upgrade is a deferred plan ([`plan/ll-hls-upgrade.md`](../plan/ll-hls-upgrade.md)). |
 | **segment 404 / stall spiral** | if the player falls so far behind that it requests a segment the window has already evicted, it 404s, stalls, and (with some players) ratchets *further* behind — a self-reinforcing failure. A deeper window plus a client watchdog is the guard ([`quirks/live-hls.md`](../quirks/live-hls.md)). |
 
 ### hls.js

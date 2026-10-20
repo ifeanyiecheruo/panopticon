@@ -61,7 +61,7 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
 - [`../../quirks/live-hls.md`](../../quirks/live-hls.md),
   [`../../quirks/mpeg-ts.md`](../../quirks/mpeg-ts.md).
 - [`../http-api.md`](../http-api.md) — the `/api/live/*` + `/live/*` routes.
-- LL-HLS upgrade plan: [`../../status/ll-hls-upgrade.md`](../../status/ll-hls-upgrade.md).
+- LL-HLS upgrade plan: [`../../plan/ll-hls-upgrade.md`](../../plan/ll-hls-upgrade.md).
 
 ## 2. Design overview
 
@@ -118,7 +118,7 @@ broadcasting lifecycle.
 - **Plain HLS first, LL-HLS once that latency was judged worth cutting** —
   [`0007`](../decisions/0007-live-preview-plain-hls.md): shipped the smallest thing that held up
   first (a 16-deep window + a client stall watchdog), then ported the prototype's LL-HLS
-  machinery and hls.js workarounds ([`../../status/ll-hls-upgrade.md`](../../status/ll-hls-upgrade.md),
+  machinery and hls.js workarounds ([`../../plan/ll-hls-upgrade.md`](../../plan/ll-hls-upgrade.md),
   [`../../quirks/live-hls.md`](../../quirks/live-hls.md)) once that plan was executed — keeping
   this project's own ~1s/16-deep segment tuning rather than reverting to the prototype's
   2s/6-deep one.
@@ -130,4 +130,4 @@ broadcasting lifecycle.
 - **Armed-idle + arming contract** — a cold front camera takes several seconds; the `503`
   hint + controller retry lets it connect instead of erroring.
 - **Deferred:** adaptive bitrate, the scoped `/live/*` token —
-  [`../../status/ll-hls-upgrade.md`](../../status/ll-hls-upgrade.md).
+  [`../../plan/ll-hls-upgrade.md`](../../plan/ll-hls-upgrade.md).

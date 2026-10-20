@@ -1,7 +1,7 @@
 # 0003 — Pairing and unpairing
 
 **Status:** Accepted. Pairing + Unpair + Force unpair implemented (controller); QR display/scan
-deferred ([`../../status/qr-pairing.md`](../../status/qr-pairing.md)).
+deferred ([`../../plan/qr-pairing.md`](../../plan/qr-pairing.md)).
 
 ## Context
 
