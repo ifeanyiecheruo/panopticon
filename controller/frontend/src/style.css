@@ -518,3 +518,14 @@ a{color:var(--accent);}
 .cfg-row input:focus, .cfg-row select:focus{outline:none; border-color:var(--accent-dim);}
 .cfg-actions{display:flex; align-items:center; gap:8px; margin-top:12px; padding-top:10px; border-top:1px solid var(--border-soft);}
 
+
+/* ---- Stills while recording (StillPreview.tsx) — same box as the live <video>, so the shared
+   overlays' 0..1 coordinates land on the same frame. ---- */
+.still-image{user-select:none; -webkit-user-drag:none;}
+.live-video-wrap.stale .still-image{opacity:.55; transition:opacity .4s ease;}
+.still-problem{
+  position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:3; max-width:80%;
+  padding:6px 10px; border-radius:8px; background:rgba(8,18,16,.7); color:var(--text-dim);
+  font-size:11px; text-align:center; pointer-events:none;
+}
+.cam-badge.rec{color:#fff; background:var(--rec);}

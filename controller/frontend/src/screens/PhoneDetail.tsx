@@ -17,6 +17,7 @@ import { PhoneCommandBar } from '../components/PhoneCommandBar';
 import { ConfigForm } from '../components/ConfigForm';
 import { StatusPanel } from '../components/StatusPanel';
 import { useLivePreview } from '../components/LivePreview';
+import { useStillPreview } from '../components/StillPreview';
 
 interface PhoneDetailProps {
   onPhoneChanged?: () => void;
@@ -59,6 +60,13 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
   useEffect(() => {
     loadDetail();
   }, [loadDetail]);
+
+  // While recording, the camera view is stills instead of video. Polled only while this screen is
+  // open on a reachable recording phone - the phone renders one only when asked. A 409 means the
+  // phone left record mode on its own (its own UI, another controller): re-read the detail so the
+  // view falls back to the live controls.
+  const phoneRecording = detail?.status?.mode === 'record';
+  const still = useStillPreview(phoneId, phoneRecording && !!detail?.phone.reachable, loadDetail);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
@@ -183,7 +191,6 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
   const p = detail.phone;
   const cal = detail.calibration;
   const running = runId !== null;
-  const phoneRecording = detail.status?.mode === 'record';
 
   return (
     <div className="phone-detail">
@@ -269,7 +276,7 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
         </div>
       )}
 
-      <CameraControls phoneId={phoneId} phoneRecording={phoneRecording} ctl={live} />
+      <CameraControls phoneId={phoneId} phoneRecording={phoneRecording} ctl={live} still={still} />
 
       <div className="section-title">Configuration</div>
       <ConfigForm

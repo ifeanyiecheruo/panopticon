@@ -136,6 +136,7 @@ class PanopticonService : Service() {
                     onModeChanged = ::handleModeChanged,
                     onCameraConfigChanged = ::handleCameraConfigChanged,
                     liveProvider = { app.livePipeline },
+                    recordProvider = { app.cameraGlPipeline },
                 )
                 server.start()
                 httpServer = server

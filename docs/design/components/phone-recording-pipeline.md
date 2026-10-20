@@ -14,9 +14,10 @@ Describe the component that records motion-triggered video to the phone's ring b
 
 ### 1.2 Scope
 
-Covers `camera/CameraGlPipeline.kt`, `motion/MotionDetector.kt`,
-`motion/RecordingPhaseController.kt`, `clips/SegmentStore.kt`, `clips/SegmentEntry.kt`, and
-`src/debug/GlSoakTest.kt`. The `live` pipeline is a separate component (see §1.6).
+Covers `camera/CameraGlPipeline.kt`, `camera/SnapshotReadback.kt`, `http/routes/SnapshotRoutes.kt`,
+`motion/MotionDetector.kt`, `motion/RecordingPhaseController.kt`, `clips/SegmentStore.kt`,
+`clips/SegmentEntry.kt`, and `src/debug/GlSoakTest.kt`. The `live` pipeline is a separate
+component (see §1.6).
 
 ### 1.3 Context
 
@@ -76,6 +77,7 @@ authoritative index of what's on disk.
 | Entity | Type | Responsibility |
 |---|---|---|
 | `CameraGlPipeline` | pipeline (record mode) | Camera2 → one `SurfaceTexture` → GL thread renders each frame twice: a downscaled FBO copy for `glReadPixels`, and the full frame to an EGL window surface on `MediaCodec.createInputSurface()`. Continuous H.264 encoder; a drain thread keeps an in-RAM pre-roll ring of encoded access units. |
+| `SnapshotReadback` | GL → JPEG thread | On-demand stills for a controller watching a recording ([`0015`](../decisions/0015-recording-stills.md)). Idle until `GET /api/camera/snapshot` asks; then the next frame is drawn once more, with the encoder's view rect and rotated quad, into a ≤960px FBO, read back synchronously, and JPEG-encoded off the GL thread. Concurrent requests share one grab; a still under 1s old is reused. Torn down with the GL objects, failing any waiter. |
 | `MotionReadback` | GL → analysis thread | Renders the analysis view as packed 160×120 luma, reads it back asynchronously (GLES 3 pixel-pack buffers), hands it to its own analysis thread, dropping rather than waiting. |
 | `MotionDetector` | analyser | Tracked displacement: noise model → active blocks → census-code block matching (forward-backward checked) → blobs → tracker; only a confirmed track (sustained, sized, coherent if small) is motion. Verdict gates the muxer; `motionSensitivity` picks object-level criteria. See [`0013`](../decisions/0013-motion-detection-tracked-displacement.md). |
 | `RecordingPhaseController` | state machine | idle(armed) → recording → trailer-tail → idle; drives muxer open/close. |
@@ -90,8 +92,8 @@ authoritative index of what's on disk.
 
 ### 3.3 Interfaces
 
-- **Provided:** to `PanopticonHttpServer` — the segment list/serve/delete surface and recording
-  status for `/api/status`.
+- **Provided:** to `PanopticonHttpServer` — the segment list/serve/delete surface, recording
+  status for `/api/status`, and `GET /api/camera/snapshot` stills.
 - **Required:** Camera2 / media stack; `DeviceConfig`; camera-control state.
 
 ### 3.4 Data
@@ -123,6 +125,9 @@ Segment entry: `{filename, createdAtMs, durationMs, endMs, sizeBytes, width, hei
 - **Single camera stream + GPU fan-out** — [`0004`](../decisions/0004-recording-pipeline.md):
   weak HALs (BLU G5's Unisoc SC9863A) reject a two-stream `[analysis + video]` config; the
   design evolved MediaRecorder → MediaCodec+MediaMuxer → this.
+- **Stills, not a second stream, for viewing a recording** —
+  [`0015`](../decisions/0015-recording-stills.md): one extra draw and readback of a frame already
+  being rendered, only when a controller asks, instead of a second encoder running all day.
 - **Continuous encoder + motion-gated muxer + pre-roll ring** —
   [`0004`](../decisions/0004-recording-pipeline.md): keeps rotation gapless and lets a
   segment start *before* motion.

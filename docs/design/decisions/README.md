@@ -24,6 +24,7 @@ Where a decision has since been implemented, superseded, or partly deferred, the
 | [0012](0012-ux-shape.md) | UX shape — phone and controller |
 | [0013](0013-motion-detection-tracked-displacement.md) | Motion detection by tracked displacement (supersedes 0005's algorithm) |
 | [0014](0014-thermal-safety-shutdown.md) | Thermal safety shutdown |
+| [0015](0015-recording-stills.md) | Stills while recording, and one camera view |
 
 ## Adding a decision
 
