@@ -2,7 +2,7 @@
 
 **Status:** Accepted · implemented (phone-app), 2026-10-17. Supersedes the detection algorithm
 in [`0005`](0005-motion-detection.md). 0005's "motion stays out of the live API" still stands.
-Follow-up: [`../../status/motion-detection-tuning.md`](../../status/motion-detection-tuning.md).
+Follow-up: [`../../plan/motion-detection-tuning.md`](../../plan/motion-detection-tuning.md).
 
 ## Context
 

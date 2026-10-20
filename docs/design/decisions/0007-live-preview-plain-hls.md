@@ -1,7 +1,7 @@
 # 0007 — Live preview: plain HLS
 
 **Status:** Accepted · implemented (both sides), then superseded by LL-HLS (see "LL-HLS" below;
-[`../../status/ll-hls-upgrade.md`](../../status/ll-hls-upgrade.md) is now executed). Scoped token
+[`../../plan/ll-hls-upgrade.md`](../../plan/ll-hls-upgrade.md) is now executed). Scoped token
 and adaptive bitrate remain deferred.
 Component specs: [`phone-live-pipeline.md`](../components/phone-live-pipeline.md),
 [`controller-live-and-camera.md`](../components/controller-live-and-camera.md).
@@ -25,7 +25,7 @@ network error) — the minimal subset of the prototype's workarounds that plain 
 
 ### LL-HLS
 
-Adopted per [`../../status/ll-hls-upgrade.md`](../../status/ll-hls-upgrade.md), once plain HLS's
+Adopted per [`../../plan/ll-hls-upgrade.md`](../../plan/ll-hls-upgrade.md), once plain HLS's
 ~4–6s glass-to-glass latency was judged worth cutting. Keeps this project's own ~1s segment /
 16-deep window tuning (not the prototype's 2s/6-deep one — that combination was specifically
 hardened against the 404 → stall → latency-ratchet spiral above) and layers ~333ms `EXT-X-PART`

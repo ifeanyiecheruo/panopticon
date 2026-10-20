@@ -43,7 +43,7 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
 - [`../decisions/0002-http-api-surface-and-auth.md`](../decisions/0002-http-api-surface-and-auth.md),
   [`0003`](../decisions/0003-pairing-and-unpairing.md).
 - [`../http-api.md`](../http-api.md) — `POST`/`DELETE /api/pair`, `GET /api/segments`.
-- QR pairing plan: [`../../status/qr-pairing.md`](../../status/qr-pairing.md).
+- QR pairing plan: [`../../plan/qr-pairing.md`](../../plan/qr-pairing.md).
 - Consumer of the calibration client:
   [`controller-calibration-store.md`](controller-calibration-store.md).
 
@@ -96,7 +96,7 @@ sentinel errors.
   [`0002`](../decisions/0002-http-api-surface-and-auth.md).
 - **Invite needs address + code; identity is a public key, never an IP** —
   [`0003`](../decisions/0003-pairing-and-unpairing.md). QR (which carries both) is
-  [`../../status/qr-pairing.md`](../../status/qr-pairing.md).
+  [`../../plan/qr-pairing.md`](../../plan/qr-pairing.md).
 - **Unpair vs Force unpair as two distinct actions** —
   [`0003`](../decisions/0003-pairing-and-unpairing.md): safe Unpair must keep local
   state consistent with the fact that the phone still holds a live token if the revoke didn't

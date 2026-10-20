@@ -9,7 +9,7 @@ controller/       Desktop app (Go / Wails + Preact/TS frontend) — the client m
 tools/dbstore/    sqlc + goose codegen CLI (shared infra)
 tools/go-deps/    *.gen.json → Make .stamp plumbing (shared infra)
 tools/mock-phone/ throwaway HTTP server standing in for a phone-app, for controller dev/tests
-docs/             architecture, decisions, specs, status & plans, quirks — see docs/README.md
+docs/             architecture, decisions, specs, plans & status, quirks — see docs/README.md
 Makefile          single entry point for build / install / run / test / generate
 go.work           ties controller/ and tools/*'s separate Go modules together (required)
 ```
@@ -160,5 +160,5 @@ See [`docs/README.md`](docs/README.md) for the full map. In short:
 | new cross-cutting design decision | [`docs/design/decisions/`](docs/design/decisions/) |
 | a subsystem changes shape | its [`docs/design/components/`](docs/design/components/) file |
 | the wire contract changes | [`docs/design/http-api.md`](docs/design/http-api.md) (authoritative — change it first) |
-| deferred work gets built | fold the plan into the relevant component doc / ADR, reduce [`docs/status/`](docs/status/)'s plan to a "done" line |
+| deferred work gets built | fold the plan into the relevant component doc / ADR, delete its plan from [`docs/plan/`](docs/plan/) |
 | a new reproduced device/toolchain quirk | [`docs/quirks/`](docs/quirks/), by domain |

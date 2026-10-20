@@ -111,6 +111,15 @@ live preview also governs recording.
   the camera for all of it (measured: 1x–7x at `glResidual` 1.00 on the Pixel 6); a selection
   hugging an edge gets none, because no centred field of view containing it is zoomed, and GL
   does the work instead. The hardware is never asked to crop past the selection.
+- Known zoom follow-ups:
+  - **Off-centre hardware crop** for cameras whose calibration reports `positionHonored` (the
+    Pixel 6 back camera does). Needs a sensor-coordinate mapping that gets the axis transpose
+    (`CameraFraming.axesSwapped`) right.
+  - **A few frames of stale framing when the hardware zoom changes** — the shader places the
+    view inside the *new* delivered crop as soon as the split is recomputed, but the HAL takes a
+    few frames to act. The fix is to drive the shader from the zoom reported in `CaptureResult`.
+  - **A pinned physical sub-camera borrows its logical parent's table** — safe but approximate;
+    real optical zoom wants the logical camera ("Wide (auto)"), not `0:2`.
 - `rotationDegrees` (0/90/180/270) and `videoResolution` are accepted + persisted even in
   `standby`, applied when a pipeline next starts.
 - On the Pixel 6: physical sub-camera `0:3`, manual exposure (~900× luma swing), manual WB gains

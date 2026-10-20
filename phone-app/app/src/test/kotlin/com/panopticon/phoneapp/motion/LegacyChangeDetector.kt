@@ -12,7 +12,7 @@ package com.panopticon.phoneapp.motion
  *
  * Three choices here were measured against real Pixel 6 footage (a night-time scene across the
  * street, where a window's blinds being drawn went undetected even on "high" - see
- * docs/status/motion-detection-tuning.md):
+ * docs/plan/motion-detection-tuning.md):
  *
  * - **Every colour channel, not just luma.** The blinds changed the window's colour (a blue
  *   screen glow gone) with almost no change in brightness: -4 on green against -12 on blue. A

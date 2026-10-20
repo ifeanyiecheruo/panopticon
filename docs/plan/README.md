@@ -1,6 +1,6 @@
-# Status and remaining work
+# Plans
 
-The current build/verify status, and a plan per remaining work item. The design context those
+A plan per remaining work item, and the current build/verify status. The design context those
 plans build on is in [`../design/`](../design/).
 
 ## Status
@@ -22,6 +22,7 @@ arming, unpair / force-unpair.
 | Segment/clip model + tombstones | done, including the eviction probe that drops a purged clip's tombstone once the phone has evicted it; integration-tested |
 | Calibration (empirical zoom probe, model-keyed controller store) | done, verified on Pixel 6 (lit scene) + BLU G5 |
 | Camera selection + manual controls (both sides) | done, verified on Pixel 6; no phone-side Compose UI |
+| Zoom: viewer-space rect + slider, calibration-driven hardware/GL split | done, verified on Pixel 6; follow-ups in [`../design/components/phone-camera-control.md`](../design/components/phone-camera-control.md) |
 | Power state: plugged vs charging (both sides) | done: `/api/status` `plugged`/`powerSource`/`batteryCurrentMa` (1-minute average); plug + bolt / warning plug + arrow on the battery glyph |
 | Live view (LL-HLS, both sides) | plain HLS done, verified end to end; LL-HLS implemented, build/unit-verified — on-device soak still pending ([`ll-hls-upgrade.md`](ll-hls-upgrade.md)) |
 | Controller master-detail Fleet / Gallery / Trash / Add-phone | done |
@@ -58,5 +59,4 @@ phone + controller work; the rest are single-side.
 
 Each plan is: **Goal · Context · Approach · Affected files · Testing · Acceptance · Not in
 scope**. Keep them to a page. When a plan is delivered, fold its substance into the relevant
-component spec / ADR and cut the plan down to a one-line "done in `<commit>`" entry (or delete
-it and note it under Status above).
+component spec / ADR, delete the plan, and note it under Status above.

@@ -55,7 +55,7 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
 - [`../../quirks/live-hls.md`](../../quirks/live-hls.md) — the hls.js workarounds.
 - [`../http-api.md`](../http-api.md) — `/api/live/*`, `/api/cameras*`, `/api/camera/*`.
 - [`controller-calibration-store.md`](controller-calibration-store.md) — `EffectiveRect`.
-- LL-HLS upgrade: [`../../status/ll-hls-upgrade.md`](../../status/ll-hls-upgrade.md).
+- LL-HLS upgrade: [`../../plan/ll-hls-upgrade.md`](../../plan/ll-hls-upgrade.md).
 
 ## 2. Design overview
 
@@ -136,4 +136,4 @@ drawn, in viewer coordinates; the phone resolves them.
   the zoom ruler reflects the ratio a *rect* selection produced. Skipped mid-drag, where a late
   response would fight the user's hand.
 - **Deferred:** adaptive bitrate, the scoped `/live/*` token —
-  [`../../status/ll-hls-upgrade.md`](../../status/ll-hls-upgrade.md).
+  [`../../plan/ll-hls-upgrade.md`](../../plan/ll-hls-upgrade.md).

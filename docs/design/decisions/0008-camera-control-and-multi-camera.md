@@ -1,7 +1,7 @@
 # 0008 — Camera selection and manual controls
 
 **Status:** Accepted · implemented and verified on the Pixel 6 (both sides). No phone-side
-Compose UI ([`../../status/phone-camera-control-ui.md`](../../status/phone-camera-control-ui.md)).
+Compose UI ([`../../plan/phone-camera-control-ui.md`](../../plan/phone-camera-control-ui.md)).
 Component specs: [`phone-camera-control.md`](../components/phone-camera-control.md),
 [`controller-live-and-camera.md`](../components/controller-live-and-camera.md).
 

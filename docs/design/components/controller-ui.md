@@ -47,7 +47,7 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
 - [`../decisions/0012-ux-shape.md`](../decisions/0012-ux-shape.md),
   [`0011`](../decisions/0011-controller-runtime-and-state.md).
 - Mock: [`../ux-mocks/controller-ux-mock.html`](../ux-mocks/controller-ux-mock.html).
-- Plans: [`../../status/`](../../status/) (bulk actions, QR, status polling, visual-language
+- Plans: [`../../plan/`](../../plan/) (bulk actions, QR, status polling, visual-language
   pass, custom scrubber).
 
 ## 2. Design overview
@@ -117,5 +117,5 @@ components.
   [`0001`](../decisions/0001-repository-and-build.md).
 - **Not built (deferred):** QR webcam viewfinder; the mock's custom scrubber (native
   `<video controls>` used instead); bulk arm / bulk stand-down; a continuously-updating status
-  poll. Tracked in [`../../status/`](../../status/).
-- **Placeholder theme** — [`../../status/visual-language-pass.md`](../../status/visual-language-pass.md).
+  poll. Tracked in [`../../plan/`](../../plan/).
+- **Placeholder theme** — [`../../plan/visual-language-pass.md`](../../plan/visual-language-pass.md).
