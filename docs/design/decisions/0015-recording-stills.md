@@ -1,7 +1,7 @@
 # 0015 — Stills while recording, and one camera view
 
-**Status:** Accepted · implemented (phone-app, controller), 2026-10-20. Build- and unit-tested;
-not yet run against a real phone.
+**Status:** Accepted · implemented (phone-app, controller), 2026-10-20. Build- and unit-tested,
+and in manual use on device.
 Component specs: [`phone-recording-pipeline.md`](../components/phone-recording-pipeline.md),
 [`controller-live-and-camera.md`](../components/controller-live-and-camera.md).
 
@@ -78,6 +78,3 @@ one. Publishing first left a frame in which the view had jumped and the gate was
   user accepts by zooming while recording.
 - Stills cost nothing when nobody is looking, and about one frame readback plus one small JPEG
   encode per second per phone when someone is.
-- Not yet verified on a device: still orientation and colour on both test phones, the GL-thread
-  cost of the synchronous readback on the BLU G5, and that a mid-recording zoom on the Pixel 6
-  does not produce a clip.
