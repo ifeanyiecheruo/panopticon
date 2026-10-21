@@ -39,6 +39,7 @@ import com.panopticon.phoneapp.motion.MotionTrace
 import com.panopticon.phoneapp.state.AppConfig
 import com.panopticon.phoneapp.state.ThermalReader
 import com.panopticon.phoneapp.state.ThermalStatus
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -221,6 +222,8 @@ class CameraGlPipeline(
     // transform matrix, then corrected once we have one in case this camera swaps axes.
     @Volatile private var texCropFinalized = false
     private val motionReadback = MotionReadback(READBACK_W, READBACK_H, ::analyseFrame)
+    /** Stills for a controller watching while this records - pull-only, see [requestSnapshot]. */
+    private val snapshots = SnapshotReadback()
 
     // Motion detection, and the one channel the camera half of this class uses to talk to it.
     // Everything below that reconfigures, re-requests or restarts the camera brackets itself in
@@ -325,7 +328,22 @@ class CameraGlPipeline(
         callbackThread.quitSafely()
         workExecutor.shutdown()
         motionReadback.shutdown()
+        snapshots.shutdown()
     }
+
+    /**
+     * A JPEG of the recorded view no older than [maxAgeMs] - see [SnapshotReadback]. Null when the
+     * pipeline is not running. The caller bounds the wait: while the camera is restarting no
+     * frame arrives to complete it.
+     */
+    internal fun requestSnapshot(maxAgeMs: Long): CompletableDeferred<SnapshotReadback.Snapshot>? =
+        if (running) snapshots.request(maxAgeMs) else null
+
+    /** The output-aspect trim this run renders with, once the first frame has fixed it; for
+     *  mapping a rect drawn over a still back to the sensor, as [LivePipeline.currentTexCrop]
+     *  does for the live view. */
+    fun currentTexCrop(): Pair<Float, Float>? =
+        if (texCropFinalized) texCropX to texCropY else null
 
     // ---- supervisor ----
 
@@ -534,6 +552,7 @@ class CameraGlPipeline(
                 health.gauge("run.measuredFps", "%.2f".format(measuredFps()))
                 health.gauge("run.swaps", swapsThisRun.get())
                 health.gauge("run.swapFailures", swapFailuresThisRun.get())
+                health.gauge("snapshot.produced", snapshots.produced.get())
             }
             if (out == 0L && now - upAt > FIRST_OUTPUT_TIMEOUT_MS) {
                 throw IllegalStateException("encoder produced no output ${FIRST_OUTPUT_TIMEOUT_MS}ms after start")
@@ -678,6 +697,13 @@ class CameraGlPipeline(
         // (see MotionReadback), so this no longer stalls the GL thread on a pipeline flush.
         if (analysisFrameInterval > 0 && analysisFrameCounter++ % analysisFrameInterval == 0L) {
             motionReadback.capture(oesTexId, stMatrix, u, now)
+        }
+        // A still, only if a controller asked for one since the last frame. Same view rect and
+        // rotated quad as the encoder draw below, so it is the recorded frame, scaled down.
+        outputQuad?.let {
+            snapshots.captureIfRequested(
+                oesTexId, stMatrix, u, it, outputSize.width, outputSize.height, System.currentTimeMillis(),
+            )
         }
 
         GLES20.glUseProgram(program)
@@ -993,11 +1019,15 @@ class CameraGlPipeline(
      * [buildRecordRequest] when the session next configures.
      */
     fun applyControls(spec: CameraControlSpec) {
-        controls = spec
         // Exposure, focus and white balance all visibly change the picture, and a metering-region
         // change makes the HAL re-converge - all of it indistinguishable from motion. Ended when
         // the first result built from the new request comes back.
+        //
+        // Begun *before* the new spec is published: the GL thread reads [controls] every frame,
+        // and a zoom that is all GL crop moves the picture on the very next one. Publishing first
+        // left a frame in which the view had jumped and the gate was still open.
         motionGate.beginDisturbance(CameraDisturbance.CONTROLS)
+        controls = spec
         health.event("applyControls")
         // A zoom change moves work between the camera and GL, so the split is redone before the
         // request is rebuilt below. The shader does *not* pick the new crop up on its next frame:
@@ -1235,6 +1265,7 @@ class CameraGlPipeline(
             runCatching { encoderInputSurface?.release() }
             encoderInputSurface = null
             motionReadback.releaseGl()
+            snapshots.releaseGl()
             runCatching { EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT) }
             runCatching { EGL14.eglDestroySurface(eglDisplay, encoderWindowSurface) }
             runCatching { EGL14.eglDestroyContext(eglDisplay, eglContext) }

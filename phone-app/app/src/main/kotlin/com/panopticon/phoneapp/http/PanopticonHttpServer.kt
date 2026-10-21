@@ -6,6 +6,7 @@ import com.panopticon.phoneapp.CameraConfigChange
 import com.panopticon.phoneapp.calibration.CalibrationRunner
 import com.panopticon.phoneapp.camera.CameraCatalog
 import com.panopticon.phoneapp.camera.CameraHealthRegistry
+import com.panopticon.phoneapp.camera.CameraGlPipeline
 import com.panopticon.phoneapp.camera.LivePipeline
 import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.http.routes.calibrationRoutes
@@ -16,6 +17,7 @@ import com.panopticon.phoneapp.http.routes.healthRoutes
 import com.panopticon.phoneapp.http.routes.liveRoutes
 import com.panopticon.phoneapp.http.routes.modeRoutes
 import com.panopticon.phoneapp.http.routes.pairingRoutes
+import com.panopticon.phoneapp.http.routes.snapshotRoutes
 import com.panopticon.phoneapp.pairing.ControllerRegistry
 import com.panopticon.phoneapp.pairing.InviteManager
 import com.panopticon.phoneapp.state.BatteryCurrentSampler
@@ -62,6 +64,7 @@ class PanopticonHttpServer(
     private val onModeChanged: (AppMode) -> Unit,
     private val onCameraConfigChanged: (CameraConfigChange) -> Unit,
     private val liveProvider: () -> LivePipeline?,
+    private val recordProvider: () -> CameraGlPipeline?,
 ) {
     private var engine: ApplicationEngine? = null
 
@@ -138,11 +141,14 @@ class PanopticonHttpServer(
             modeRoutes(appState, onModeChanged)
             segmentRoutes(segmentStore)
             calibrationRoutes(calibrationRunner)
+            // Rects are drawn over whichever view the controller has: the live video in LIVE,
+            // a still in RECORD. Both render with their own pipeline's trim.
             cameraRoutes(androidContext, cameraCatalog, appConfig, appState, onCameraConfigChanged) {
-                liveProvider()?.currentTexCrop()
+                liveProvider()?.currentTexCrop() ?: recordProvider()?.currentTexCrop()
             }
             healthRoutes(cameraHealth)
             liveRoutes(liveProvider, overheated = { appState.overheated })
+            snapshotRoutes(recordProvider, appState)
         }
     }
 }

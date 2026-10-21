@@ -51,7 +51,8 @@ Design rationale is in the decision records, not here:
 [0007](decisions/0007-live-preview-plain-hls.md) (live),
 [0008](decisions/0008-camera-control-and-multi-camera.md) (camera control),
 [0009](decisions/0009-calibration-model.md) (calibration),
-[0010](decisions/0010-mode-state-machine.md) (mode).
+[0010](decisions/0010-mode-state-machine.md) (mode),
+[0015](decisions/0015-recording-stills.md) (stills while recording).
 Related quirks: [`../quirks/live-hls.md`](../quirks/live-hls.md),
 [`../quirks/manual-camera-controls.md`](../quirks/manual-camera-controls.md),
 [`../quirks/calibration-zoom.md`](../quirks/calibration-zoom.md).
@@ -131,8 +132,8 @@ auto). `POST` replaces the `keys` object wholesale — send the full desired set
 #### Coordinate spaces, and why some keys are request-only
 
 Every rect the controller sends is in **viewer space**: `0..1` over the frame the user is
-actually looking at in the live view — already rotated by `rotationDegrees`, already cropped by
-whatever zoom is in effect. The controller never converts to sensor coordinates and never needs
+actually looking at — the live view, or a still while recording (both render the same view) —
+already rotated by `rotationDegrees`, already cropped by whatever zoom is in effect. The controller never converts to sensor coordinates and never needs
 to know the sensor's geometry; the phone owns every transform
 (`camera/ViewportRect.kt`, `camera/ZoomSolver.kt`).
 
@@ -181,7 +182,7 @@ came from. An uncalibrated phone simply gets `hwZoomRatio: 1` and does it all in
 |---|---|---|---|---|---|
 | GET | `/api/camera/capabilities` | `cameraId=1` *(optional, defaults to active)* | — | `{ "cameraId": "0", "zoomRatioRange": {"lo":0.67,"hi":7.0}, "zoomViaRatioApi": true, "aeCompensationRange": {"lo":-24,"hi":24}, "aeCompensationStepMilliEv": 166, "exposureTimeRangeNs": {"lo":26503,"hi":8310343667}, "sensitivityRange": {"lo":44,"hi":11377}, "minFocusDistanceDiopters": 9.52, "hasManualSensor": true, "hasManualFocus": true, "hasManualWhiteBalance": true, "wbGainRange": {"lo":1.0,"hi":8.0}, "awbModes": [0,1,2,3,4,5,6,7,8], "videoStabilizationModes": [0,1,2], "opticalStabilizationModes": [0,1], "maxAeRegions": 3, "maxAfRegions": 1, "outputResolutions": ["1920x1080","1280x720","854x480"], "physicalCameraIds": ["2","3"], "croppingType": "CENTER_ONLY", "activeArrayWidth": 4080, "activeArrayHeight": 3072 }` | Declared per-key ranges for a camera; pure `CameraCharacteristics` read, works in any mode. Optional `cameraId` previews another camera without switching. `404` unknown `cameraId`. |
 | GET | `/api/camera/state` | — | — | `{ "cameraId": "0", "rotationDegrees": 0, "videoResolution": "3840x2160", "recordingResolution": "1024x576", "manualControlEnabled": false, "keys": { "zoomRatio": null, "...": null } }` | Current manual-control state (from `DeviceConfig`), including `rotationDegrees` (0/90/180/270), `videoResolution` (the viewing/broadcast size, one of `capabilities.outputResolutions`) and `recordingResolution` (**derived, read-only** — see below). |
-| POST | `/api/camera/state` | — | `{ "manualControlEnabled": true, "rotationDegrees": 90, "videoResolution": "1920x1080", "keys": { "zoomRatio": 2.0, "aeExposureCompensation": -2 } }` | *(resulting state, same shape as GET)* | Validate-then-apply against the **active** camera's capabilities: `400 {"error": "...", "key": "zoomRatio"}` on the first offending key, applies nothing. Any subset of `manualControlEnabled` / `rotationDegrees` / `videoResolution` / `keys` may be sent; omitted fields are left unchanged. `rotationDegrees` must be one of 0/90/180/270; `videoResolution` must be one of the camera's `outputResolutions`. `recordingResolution` is derived and **cannot be set**. A `videoResolution` change rebuilds the running pipeline. **`409 {"error": "frozen while recording", "key": "..."}`** for `videoResolution` or any zoom key while the mode is `record` — see below. Accepted + persisted even in `standby` (applied when a pipeline next starts). |
+| POST | `/api/camera/state` | — | `{ "manualControlEnabled": true, "rotationDegrees": 90, "videoResolution": "1920x1080", "keys": { "zoomRatio": 2.0, "aeExposureCompensation": -2 } }` | *(resulting state, same shape as GET)* | Validate-then-apply against the **active** camera's capabilities: `400 {"error": "...", "key": "zoomRatio"}` on the first offending key, applies nothing. Any subset of `manualControlEnabled` / `rotationDegrees` / `videoResolution` / `keys` may be sent; omitted fields are left unchanged. `rotationDegrees` must be one of 0/90/180/270; `videoResolution` must be one of the camera's `outputResolutions`. `recordingResolution` is derived and **cannot be set**. A `videoResolution` change rebuilds the running pipeline. **`409 {"error": "frozen while recording", "key": "videoResolution"}`** for a `videoResolution` change while the mode is `record` — see below. Accepted + persisted even in `standby` (applied when a pipeline next starts). |
 
 
 ### Viewing vs recording resolution
@@ -198,19 +199,16 @@ is fixed, so full size costs encoder work, not storage.
 
 ### What is frozen while recording
 
-`videoResolution` and the zoom keys (`zoomRatio`, `zoomSelectNorm`, `zoomViewNorm`) are rejected
-with `409` while the mode is `record`. Resolution fixes the recording size when the pipeline
-starts, and a hardware zoom change reconfigures the camera and reframes the shot; honouring either
-mid-recording would mean a real hole in the footage, and segments of two sizes or framings inside
-one clip.
+Only `videoResolution`: a change is rejected with `409` while the mode is `record`. It fixes the
+encoder's size when the pipeline starts, so honouring it mid-recording would mean a rebuild, a
+real hole in the footage, and segments of two sizes inside one clip. To change it,
+`POST /api/mode {"mode":"standby"}`, change it, then go back to `record`.
 
-Everything else stays live. Exposure, focus and white balance do not change how many real pixels
-the frame carries and apply through the light repeating-request path, so a badly-exposed camera
-can still be corrected without stopping the recording.
-
-To re-frame: `POST /api/mode {"mode":"standby"}`, adjust, then back to `record`. That is already
-the only way to see what you are aiming at — `record` → `live` is refused with `409` for the same
-reason.
+Everything else stays live, zoom included ([0015](decisions/0015-recording-stills.md)). A zoom is a
+repeating-request re-issue plus a GL crop, with no rebuild, and the motion gate treats it as the
+camera's own disturbance, so it does not start a clip; a clip already recording simply reframes.
+Exposure, focus and white balance do not change how many real pixels the frame carries and apply
+through the same light path. The shot is framed against stills (below).
 
 ### Calibration (device-wide)
 
@@ -279,6 +277,19 @@ scoped token is deferred). See [`../quirks/live-hls.md`](../quirks/live-hls.md).
 | DELETE | `/api/live/stop` | — | — | `{ "stopped": true, "viewerCount": 0 }` | Explicit stop (usually unnecessary — 15s inactivity watchdog handles it). |
 | GET | `/live/live.m3u8` | `_HLS_msn=`, `_HLS_part=` *(both optional; LL-HLS blocking reload)* | — | *(text `application/vnd.apple.mpegurl`)* | Rolling LL-HLS playlist. With `_HLS_msn` (optionally `_HLS_part`), blocks up to ~4× the part target duration until that part/segment exists instead of returning immediately. `404` before broadcasting starts, `409` when not in `live` mode. |
 | GET | `/live/live-<n>.ts` | — (a `Range: bytes=<start>-<end>` request header, not a query param, selects an in-progress part) | — | *(binary `video/mp2t`)* | A finalized segment: full body, `200`. Not yet finalized: with a `Range` header matching a byte range this segment's playlist entry advertised (`EXT-X-PART`/`EXT-X-PRELOAD-HINT`), `206` + `Content-Range` for whatever's been muxed so far, or `416` if that range isn't there yet. `404` once fully rolled out of the window. |
+
+### Stills while recording
+
+The phone can't run the live encoder alongside the recording one, so while it records, the
+controller frames the shot against JPEG stills instead
+([0015](decisions/0015-recording-stills.md)). A still is exactly what is being recorded (same
+zoom, trim and rotation) scaled to at most 960px on its longer edge. It is rendered **only when
+requested**: nothing is produced while nobody asks. A still under 1s old is shared between
+requests, so polling faster than once a second returns the same picture.
+
+| Method | URL | Query params | Example request body | Example response body | Description |
+|---|---|---|---|---|---|
+| GET | `/api/camera/snapshot` | — | — | *(binary `image/jpeg`)* | A still of the recording, from the next camera frame (or the last still, if under 1s old). `X-Captured-At-Ms` header: phone-clock epoch ms of the frame. **`409`** unless the mode is `record` (`live` has `/live/*`; `standby` has no camera open). **`503 { "error": "camera still starting", "retryAfterMs": 2000 }`** + `Retry-After` while the recording pipeline is (re)starting or not delivering frames: retry. `503 { "error": "phone is overheated; …" }` (no `retryAfterMs`) while the thermal guard has the camera shut down. |
 
 ### Segments (sync)
 

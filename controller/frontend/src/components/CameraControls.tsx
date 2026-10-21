@@ -10,6 +10,7 @@ import {
   type CameraCapabilities,
 } from '../api';
 import { LivePreviewVideo, type LiveController } from './LivePreview';
+import { StillPreviewImage, type StillController } from './StillPreview';
 import { HScroll } from './phonecam/HScroll';
 import { Ruler, type RulerSpec } from './phonecam/Ruler';
 import { modeIcon, CycleIcon, ResetIcon, type ModeIconName, type RulerIconName } from './phonecam/icons';
@@ -56,7 +57,10 @@ const AWB_LABELS: Record<number, string> = {
 interface Props {
   phoneId: string;
   phoneRecording: boolean;
+  /** The live video, in live mode. */
   ctl: LiveController;
+  /** Stills, while recording - the phone can't run the live encoder then. */
+  still: StillController;
 }
 
 const APPLY_DEBOUNCE_MS = 200;
@@ -104,7 +108,7 @@ function spec(min: number, max: number, ends: [RulerIconName, RulerIconName]): R
 
 type Mode = { id: string; label: string; icon: ModeIconName };
 
-export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
+export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
   const [cams, setCams] = useState<CameraInfo[]>([]);
   const [view, setView] = useState<CameraControlsView | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -150,7 +154,10 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
 
   const caps: CameraCapabilities | undefined = view?.capabilities;
   const activeCamId = view?.state?.cameraId || cams.find((c) => c.isActive)?.cameraId || '';
-  const playing = ctl.playing;
+  // One viewport, two feeds: stills while recording, the live video otherwise. Every control and
+  // rect picker below works over whichever is up, in the same 0..1 coordinates.
+  const viewing = phoneRecording ? still.showing : ctl.playing;
+  const nudgeStill = still.nudge;
 
   // ---- idle fade for the on-video controls ----
   // Controls stay visible the whole time the pointer is over the preview; they
@@ -164,11 +171,11 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
     idleRef.current = setTimeout(() => setIdle(true), IDLE_FADE_MS);
   }, []);
   useEffect(() => {
-    if (playing) wake();
+    if (viewing) wake();
     return () => {
       if (idleRef.current) clearTimeout(idleRef.current);
     };
-  }, [playing, openMode, wake]);
+  }, [viewing, openMode, wake]);
 
   // ---- push a control patch to the phone (debounced) ----
   const pushControls = useCallback(
@@ -186,6 +193,8 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
         } else {
           setInvalidKey(null);
           setMsg(null);
+          // A still is only refreshed every couple of seconds; show the change sooner.
+          if (phoneRecording) nudgeStill();
           // Adopt what the phone says the state now IS. It derives things the caller can't
           // predict - above all the absolute view a viewer-space zoom selection composed to, and
           // how much of the zoom the hardware took - so without this the zoom ruler would still
@@ -200,7 +209,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
       if (immediate) void send();
       else debounceRef.current = setTimeout(send, APPLY_DEBOUNCE_MS);
     },
-    [phoneId],
+    [phoneId, phoneRecording, nudgeStill],
   );
 
   /** The request-only, viewer-space fields. These are one-shot *instructions* ("the user just
@@ -244,6 +253,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
         return;
       }
       setMsg(null);
+      if (phoneRecording) nudgeStill();
       if (ctl.live || ctl.state.kind === 'error') {
         await new Promise((res) => setTimeout(res, 1200));
         await ctl.reattach();
@@ -296,6 +306,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
       }
       setMsg(null);
       await load();
+      if (phoneRecording) nudgeStill();
       // A camera switch rebuilds the phone's live pipeline; the controller's
       // player is still bound to the old broadcast (or showing the previous
       // camera's failure), so re-attach it against the new camera.
@@ -425,7 +436,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   let note: string | undefined;
   let rectTarget: RectTarget | undefined;
 
-  if (caps && playing) {
+  if (caps && viewing) {
     const C = caps;
     switch (validOpen) {
       case 'zoom': {
@@ -727,14 +738,15 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
   return (
     <>
       <div className="section-title phonecam-title">
-        <span>Live preview &amp; camera</span>
+        <span>Camera</span>
         {(caps?.outputResolutions?.length ?? 0) > 1 && (
           <select
             className="res-select"
             value={resolution}
-            disabled={switchBusy}
+            // Fixed while recording: changing it rebuilds the encoder, a gap in the footage.
+            disabled={switchBusy || phoneRecording}
             onChange={(e) => applyResolution((e.target as HTMLSelectElement).value)}
-            title="Record / broadcast resolution"
+            title={phoneRecording ? 'Stop recording to change resolution' : 'Record / broadcast resolution'}
           >
             {caps!.outputResolutions.map((r) => (
               <option key={r} value={r}>
@@ -751,20 +763,18 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
           onMouseMove={wake}
           onMouseLeave={scheduleFade}
         >
-          <LivePreviewVideo
-            ctl={ctl}
-            idleHint={
-              phoneRecording
-                ? 'Phone is recording — stop recording to watch live.'
-                : 'Press “Watch live” in the command bar to start the stream.'
-            }
-          />
+          {phoneRecording ? (
+            <StillPreviewImage still={still} />
+          ) : (
+            <LivePreviewVideo ctl={ctl} idleHint="Press “Watch live” in the command bar to start the stream." />
+          )}
           {/* Camera name + switcher stay reachable even when the stream errors,
               so a bad camera can always be cycled back out of. */}
-          {ctl.state.kind !== 'idle' && (
+          {(phoneRecording ? still.state.kind !== 'idle' : ctl.state.kind !== 'idle') && (
             <>
               <div className="cam-badges">
                 <span className={`cam-badge ${manualOn ? 'manual' : ''}`}>{manualOn ? 'MANUAL' : 'AUTO'}</span>
+                {phoneRecording && <span className="cam-badge rec">REC · STILL</span>}
                 <span className="cam-badge dim">{activeCamLabel}</span>
               </div>
               {cams.length > 1 && (
@@ -774,7 +784,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
               )}
             </>
           )}
-          {playing && (
+          {viewing && (
             <>
               {rectTarget && renderRectPicker(rectTarget)}
               {rulers.length > 0 && (
@@ -820,7 +830,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
           </div>
         )}
 
-        {playing && caps && (
+        {viewing && caps && (
           <>
             <div className="adjust-row">
               <button
@@ -867,15 +877,20 @@ export function CameraControls({ phoneId, phoneRecording, ctl }: Props) {
           </>
         )}
 
-        {playing && (
+        {viewing && (
           <div className="calib-sub phonecam-hint">
             {rectTarget
               ? validOpen === 'zoom'
-                ? 'Drag the ruler to zoom, or drag a box on the preview to zoom into it — the dashed box is what you will see (applied on release, Esc cancels). The preview runs a few seconds behind.'
+                ? 'Drag the ruler to zoom, or drag a box on the preview to zoom into it — the dashed box is what you will see (applied on release, Esc cancels). ' +
+                  (phoneRecording
+                    ? 'The picture is a still, refreshed every couple of seconds; a change shows on the next one.'
+                    : 'The preview runs a few seconds behind.')
                 : validOpen === 'focus'
                   ? 'Drag the ruler for manual focus, or drag a box on the preview to focus on that area (applied on release, Esc cancels).'
                   : 'Drag the ruler for exposure, or drag a box on the preview to spot-meter that area (applied on release, Esc cancels).'
-              : 'Drag the ruler over the live preview. Values apply to recording too.'}
+              : phoneRecording
+                ? 'Drag the ruler over the preview; it applies to the recording straight away.'
+                : 'Drag the ruler over the live preview. Values apply to recording too.'}
             {validOpen === 'zoom' && glResidual > 1.5 && (
               <div style={{ marginTop: '4px' }}>
                 {`Zoom is being finished in software (${glResidual.toFixed(1)}× of it), ` +

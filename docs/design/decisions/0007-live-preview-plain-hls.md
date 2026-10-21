@@ -54,7 +54,8 @@ one stream, no GL thread. The BLU G5 two-stream rejection is a non-issue here by
 ### RECORD and LIVE are mutually exclusive
 
 Deliberate — low-end phones don't multi-task encoders well. `live` from `record` is a `409` (go
-via `standby`; see [`0010`](0010-mode-state-machine.md)).
+via `standby`; see [`0010`](0010-mode-state-machine.md)). A recording phone is viewed through
+on-demand stills from the recording pipeline instead ([`0015`](0015-recording-stills.md)).
 
 ### Armed-idle vs broadcasting, with a cold-camera arming contract
 

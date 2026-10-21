@@ -95,6 +95,8 @@ func main() {
 	// Live HLS preview is proxied phone->controller->webview so the bearer
 	// token stays server-side (see liveproxy.go).
 	liveHandler := liveProxyHandler(store)
+	// ...and so are a recording phone's stills (see stillproxy.go).
+	stillHandler := stillProxyHandler(store)
 	middleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(r.URL.Path, "/archive/") {
@@ -103,6 +105,10 @@ func main() {
 			}
 			if strings.HasPrefix(r.URL.Path, "/live/") {
 				liveHandler.ServeHTTP(w, r)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/still/") {
+				stillHandler.ServeHTTP(w, r)
 				return
 			}
 			next.ServeHTTP(w, r)

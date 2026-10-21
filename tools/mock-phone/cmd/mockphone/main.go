@@ -9,7 +9,8 @@
 // POST /api/calibration/start, GET /api/calibration/status,
 // DELETE /api/calibration/:runId, GET /api/calibration/result,
 // GET /api/cameras, POST /api/cameras/active, GET /api/camera/capabilities,
-// GET/POST /api/camera/state, POST /api/live/start, DELETE /api/live/stop,
+// GET/POST /api/camera/state, GET /api/camera/snapshot (a test pattern - see
+// snapshot.go), POST /api/live/start, DELETE /api/live/stop,
 // GET /live/live.m3u8 + GET /live/live-<n>.ts (a real HLS stream of a small
 // physics sim, muxed by ffmpeg — see live.go).
 //
@@ -141,6 +142,7 @@ func main() {
 	mux.HandleFunc("/api/cameras/active", s.withAuth(s.handleCamerasActive))
 	mux.HandleFunc("/api/camera/capabilities", s.withAuth(s.handleCameraCapabilities))
 	mux.HandleFunc("/api/camera/state", s.withAuth(s.handleCameraState))
+	mux.HandleFunc("/api/camera/snapshot", s.withAuth(s.handleCameraSnapshot))
 	mux.HandleFunc("/api/live/start", s.withAuth(s.handleLiveStart))
 	mux.HandleFunc("/api/live/stop", s.withAuth(s.handleLiveStop))
 	mux.HandleFunc("/live/", s.withAuth(s.handleLiveMedia))
@@ -542,6 +544,16 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 		if body.VideoResolution != nil && !mockOutputResolutions[*body.VideoResolution] {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": "must be one of 1920x1080 / 1280x720 / 854x480", "key": "videoResolution",
+			})
+			return
+		}
+		// Resolution is the one thing frozen while recording - it rebuilds the encoder.
+		s.mu.Lock()
+		frozen := s.mode == "record" && body.VideoResolution != nil && *body.VideoResolution != s.videoResolution
+		s.mu.Unlock()
+		if frozen {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": "frozen while recording: POST /api/mode {\"mode\":\"standby\"} first", "key": "videoResolution",
 			})
 			return
 		}
