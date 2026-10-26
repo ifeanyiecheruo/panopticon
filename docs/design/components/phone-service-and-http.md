@@ -105,6 +105,10 @@ of every route but `POST /api/pair`, and keeps the pairing/invite state the gate
 - **Foreground service** — API-gated `startForeground` overload: 2-arg below API 29, 3-arg with
   `foregroundServiceType` on API 29+ (calling the 3-arg form unconditionally is a
   `NoSuchMethodError` on API 28 — see [`../../quirks/android-service.md`](../../quirks/android-service.md)).
+- **Wake and Wi-Fi locks** — held for the service's whole lifetime: a partial wake lock so the
+  encoder doesn't stall when the CPU suspends, and a `WIFI_MODE_FULL_HIGH_PERF` Wi-Fi lock so the
+  phone stays reachable with the screen off (the BLU G5 drops off Wi-Fi while dozing without it —
+  see [`../../quirks/android-service.md`](../../quirks/android-service.md)).
 - **Thermal shutdown** — while `ThermalGuard` is tripped, the service holds no camera pipeline
   and runs no calibration. Mode requests are recorded and applied on resume (`live` is a `503`).
   `/api/status` reports `status:"overheated"` plus a `thermalShutdown` object. The HTTP server,
