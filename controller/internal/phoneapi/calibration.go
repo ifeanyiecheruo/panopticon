@@ -101,6 +101,10 @@ type CalibrationCameraResult struct {
 	QualityCollapseRatio     *float64                   `json:"qualityCollapseRatio"`
 	PerResolution       map[string]ResolutionZoomMap    `json:"perResolution"`
 	Steps               map[string]CalibrationStepResult `json:"steps"`
+	// The run that completed this camera, and when; nil from phones that predate per-camera
+	// stamps (see CalibrationResult.CameraRun).
+	RunID   *string `json:"runId,omitempty"`
+	RunAtMs *int64  `json:"runAtMs,omitempty"`
 }
 
 type ResultDeviceIdentity struct {
@@ -116,6 +120,28 @@ type CalibrationResult struct {
 	RunAtMs        int64                             `json:"runAtMs"`
 	DeviceIdentity ResultDeviceIdentity              `json:"deviceIdentity"`
 	Cameras        map[string]CalibrationCameraResult `json:"cameras"`
+	// Complete is false for a sweep that stopped part-way (cancelled, thermal stop) and can
+	// be resumed: steps it never reached are simply absent. Nil from phones that predate the
+	// field, which only ever persisted complete results.
+	Complete *bool `json:"complete,omitempty"`
+}
+
+// IsComplete reports whether every camera in this result finished its sweep: true for
+// GET /api/calibration/result without a runId, false for an in-progress sweep's document.
+func (r CalibrationResult) IsComplete() bool { return r.Complete == nil || *r.Complete }
+
+// CameraRun is the run that completed cam and when. Cameras in one result can come from
+// different runs; phones that predate per-camera stamps leave them off, and the result's
+// own runId/runAtMs apply.
+func (r CalibrationResult) CameraRun(cam CalibrationCameraResult) (string, int64) {
+	runID, runAtMs := r.RunID, r.RunAtMs
+	if cam.RunID != nil {
+		runID = *cam.RunID
+	}
+	if cam.RunAtMs != nil {
+		runAtMs = *cam.RunAtMs
+	}
+	return runID, runAtMs
 }
 
 // ChecksTotal / ChecksPassed sum the per-step counts across every camera —
@@ -257,6 +283,19 @@ func (c *Client) CancelCalibration(ctx context.Context, runID string) error {
 	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
 	defer cancel()
 	return c.doJSON(ctx, http.MethodDelete, "/api/calibration/"+url.PathEscape(runID), nil, nil, nil)
+}
+
+// EraseCalibration issues DELETE /api/calibration: the phone drops its completed and
+// in-progress calibration. A 409 (a sweep is running) comes back as ErrCalibrationRunning.
+func (c *Client) EraseCalibration(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	defer cancel()
+	err := c.doJSON(ctx, http.MethodDelete, "/api/calibration", nil, nil, nil)
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
+		return ErrCalibrationRunning
+	}
+	return err
 }
 
 // SetMode issues POST /api/mode ("record" | "standby" | "live"). Used by tests,

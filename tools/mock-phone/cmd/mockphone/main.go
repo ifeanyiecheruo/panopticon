@@ -7,7 +7,7 @@
 // GET /api/config, GET /api/build-info, GET /api/segments, GET
 // /api/segments/:filename/file, GET /api/segments/:filename/thumbnail,
 // POST /api/calibration/start, GET /api/calibration/status,
-// DELETE /api/calibration/:runId, GET /api/calibration/result,
+// DELETE /api/calibration/:runId, DELETE /api/calibration, GET /api/calibration/result,
 // GET /api/cameras, POST /api/cameras/active, GET /api/camera/capabilities,
 // GET/POST /api/camera/state, GET /api/camera/snapshot (a test pattern - see
 // snapshot.go), POST /api/live/start, DELETE /api/live/stop,
@@ -79,6 +79,7 @@ type server struct {
 	calRunID      string
 	calStartedAt  time.Time
 	calSweepDurMs int64
+	calErased     bool // DELETE /api/calibration: /result 404s until the next sweep
 
 	// Camera selection + manual controls: a fixed two-camera device; state is
 	// echoed straight back so the controller's client + bindings can be
@@ -137,6 +138,7 @@ func main() {
 	mux.HandleFunc("/api/calibration/start", s.withAuth(s.handleCalibrationStart))
 	mux.HandleFunc("/api/calibration/status", s.withAuth(s.handleCalibrationStatus))
 	mux.HandleFunc("/api/calibration/result", s.withAuth(s.handleCalibrationResult))
+	mux.HandleFunc("/api/calibration", s.withAuth(s.handleCalibrationErase)) // DELETE /api/calibration
 	mux.HandleFunc("/api/calibration/", s.withAuth(s.handleCalibrationCancel)) // DELETE /api/calibration/:runId
 	mux.HandleFunc("/api/cameras", s.withAuth(s.handleCameras))
 	mux.HandleFunc("/api/cameras/active", s.withAuth(s.handleCamerasActive))
@@ -744,6 +746,7 @@ func (s *server) handleCalibrationStart(w http.ResponseWriter, r *http.Request) 
 	}
 	s.calRunID = "cal-" + randHex(4)
 	s.calStartedAt = time.Now()
+	s.calErased = false
 	writeJSON(w, http.StatusOK, map[string]any{
 		"runId":       s.calRunID,
 		"status":      "running",
@@ -803,10 +806,29 @@ func (s *server) handleCalibrationCancel(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]bool{"cancelled": true})
 }
 
+func (s *server) handleCalibrationErase(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.calRunID != "" && time.Since(s.calStartedAt).Milliseconds() < s.calSweepDurMs {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "calibration is running; cancel it first"})
+		return
+	}
+	s.calErased = true
+	writeJSON(w, http.StatusOK, map[string]bool{"erased": true})
+}
+
 func (s *server) handleCalibrationResult(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	runAt := s.calStartedAt
+	runAt, erased := s.calStartedAt, s.calErased
 	s.mu.Unlock()
+	if erased {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no completed calibration result"})
+		return
+	}
 	if runAt.IsZero() {
 		runAt = time.Now().Add(-time.Hour) // pretend this mock phone was calibrated an hour ago
 	}

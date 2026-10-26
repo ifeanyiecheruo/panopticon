@@ -1,6 +1,7 @@
 package com.panopticon.phoneapp.http.routes
 
 import com.panopticon.phoneapp.calibration.CalibrationCancelled
+import com.panopticon.phoneapp.calibration.CalibrationErased
 import com.panopticon.phoneapp.calibration.CalibrationRunner
 import com.panopticon.phoneapp.http.ErrorBody
 import io.ktor.http.HttpStatusCode
@@ -13,10 +14,10 @@ import io.ktor.server.routing.post
 
 /**
  * Device-wide calibration routes (docs/design/http-api.md "Calibration"). One sweep
- * at a time, keyed by `runId`; the last completed result is persisted so
+ * at a time, keyed by `runId`; each camera's last completed calibration is persisted so
  * `GET /api/calibration/result` (no `runId`) answers straight from disk
  * without re-running anything - that's what lets a controller ingest it
- * opportunistically right after pairing.
+ * opportunistically right after pairing. `DELETE /api/calibration` erases it all.
  */
 fun Route.calibrationRoutes(runner: CalibrationRunner) {
     // Authenticated by the global installAuth() intercept.
@@ -44,6 +45,15 @@ fun Route.calibrationRoutes(runner: CalibrationRunner) {
             }
         }
 
+        delete("/api/calibration") {
+            when (val outcome = runner.erase()) {
+                is CalibrationRunner.EraseOutcome.Erased ->
+                    call.respond(CalibrationErased(true))
+                is CalibrationRunner.EraseOutcome.Running ->
+                    call.respond(HttpStatusCode.Conflict, ErrorBody("calibration is running (runId=${outcome.runId}); cancel it first"))
+            }
+        }
+
         delete("/api/calibration/{runId}") {
             val runId = call.parameters["runId"]
                 ?: return@delete call.respond(HttpStatusCode.BadRequest, ErrorBody("missing runId"))
@@ -57,7 +67,7 @@ fun Route.calibrationRoutes(runner: CalibrationRunner) {
         get("/api/calibration/result") {
             val runId = call.request.queryParameters["runId"]
             when (val outcome = runner.result(runId)) {
-                is CalibrationRunner.ResultOutcome.Completed ->
+                is CalibrationRunner.ResultOutcome.Found ->
                     call.respond(outcome.result)
                 is CalibrationRunner.ResultOutcome.NotCompleted ->
                     call.respond(HttpStatusCode.Conflict, ErrorBody("run not completed yet"))

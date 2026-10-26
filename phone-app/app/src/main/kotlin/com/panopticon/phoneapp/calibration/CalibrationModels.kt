@@ -23,6 +23,8 @@ data class CalibrationStartResponse(
     val status: String,
     val startedAtMs: Long,
     val cameraIds: List<String>,
+    /** The partial run this one picks up from (see [resumableFrom]); null for a fresh sweep. */
+    val resumedFromRunId: String? = null,
 )
 
 @Serializable
@@ -32,7 +34,7 @@ data class ProgressWithinStep(val index: Int, val total: Int)
 @Serializable
 data class CalibrationStatus(
     val runId: String,
-    val status: String, // running | completed | cancelled | error
+    val status: String, // running | completed | partial | error
     val currentCameraId: String? = null,
     val camerasCompleted: Int,
     val camerasTotal: Int,
@@ -45,6 +47,9 @@ data class CalibrationStatus(
 
 @Serializable
 data class CalibrationCancelled(val cancelled: Boolean)
+
+@Serializable
+data class CalibrationErased(val erased: Boolean)
 
 // ---- Result ----
 
@@ -131,6 +136,11 @@ data class CameraCalibration(
     val qualityCollapseRatio: Float? = null,
     val perResolution: Map<String, ResolutionZoomMap> = emptyMap(),
     val steps: Map<String, CalibrationStep> = emptyMap(),
+    /** The run that completed this camera, and when. Cameras in one result can come from
+     *  different runs (see [withCameraPromoted]); null on results persisted before that, where
+     *  the result's own `runId` / `runAtMs` apply. */
+    val runId: String? = null,
+    val runAtMs: Long? = null,
 )
 
 @Serializable
@@ -154,4 +164,64 @@ data class CalibrationResult(
     val runAtMs: Long,
     val deviceIdentity: ResultDeviceIdentity,
     val cameras: Map<String, CameraCalibration>,
+    /**
+     * False for an in-progress sweep (see [CalibrationStore]): it is persisted after every
+     * (camera, resolution) step, so a cancel, a thermal stop or a crash leaves exactly the steps
+     * that finished, and anything not yet measured is simply absent. True for the completed
+     * result, which holds only cameras whose sweep finished. Defaults true because a result
+     * persisted before this field existed was only ever written on completion.
+     */
+    val complete: Boolean = true,
 )
+
+/** What `GET /api/calibration/status` calls a persisted result once no sweep is running. */
+fun CalibrationResult.runStatus(): String = if (complete) "completed" else "partial"
+
+/**
+ * [completed] with [camera] as [cameraId]'s calibration, stamped with the run that finished it,
+ * or null when [completed] already holds exactly that data (a resumed run re-finishing a camera
+ * it had promoted before being stopped). Every other camera keeps the run that completed it.
+ */
+fun withCameraPromoted(
+    completed: CalibrationResult?,
+    runId: String,
+    runAtMs: Long,
+    deviceIdentity: ResultDeviceIdentity,
+    cameraId: String,
+    camera: CameraCalibration,
+): CalibrationResult? {
+    val existing = completed?.cameras?.get(cameraId)
+    if (existing != null && existing.perResolution == camera.perResolution) return null
+    // Cameras written before per-camera stamps existed carry the result's own.
+    val stamped = completed?.cameras.orEmpty().mapValues { (_, c) ->
+        if (c.runId != null) c else c.copy(runId = completed?.runId, runAtMs = completed?.runAtMs)
+    }
+    return CalibrationResult(
+        runId = runId,
+        runAtMs = runAtMs,
+        deviceIdentity = deviceIdentity,
+        cameras = stamped + (cameraId to camera.copy(runId = runId, runAtMs = runAtMs)),
+        complete = true,
+    )
+}
+
+/**
+ * The calibration the camera pipelines zoom by: each camera's completed calibration, and for a
+ * camera that has never completed one, whatever steps the [inProgress] sweep has finished for it -
+ * partial data still gives those resolutions real hardware zoom. A camera with completed data
+ * keeps using it until its new sweep finishes.
+ */
+fun zoomView(completed: CalibrationResult?, inProgress: CalibrationResult?): CalibrationResult? {
+    if (inProgress == null) return completed
+    if (completed == null) return inProgress
+    return completed.copy(cameras = inProgress.cameras + completed.cameras)
+}
+
+/**
+ * The persisted result a new sweep picks up from, skipping every step it already holds, or null
+ * to start fresh. Only a partial result written by this same app version resumes: starting over a
+ * complete one is a deliberate re-run, and samples from another version's sweep may not be
+ * comparable with this one's.
+ */
+fun resumableFrom(persisted: CalibrationResult?, appVersionName: String): CalibrationResult? =
+    persisted?.takeIf { !it.complete && it.deviceIdentity.appVersionName == appVersionName }

@@ -20,6 +20,7 @@ export {
   StartCalibration,
   GetCalibrationProgress,
   CancelCalibration,
+  EraseCalibration,
   SetConfig,
   SetRecording,
   StartLivePreview,
@@ -48,6 +49,7 @@ export type ConfigResult = main.ConfigResult;
 export type CalibrationView = calibration.View;
 export type CalibrationStartResult = main.CalibrationStartResult;
 export type CalibrationProgressResult = main.CalibrationProgressResult;
+export type EraseCalibrationResult = main.EraseCalibrationResult;
 export type LivePreviewResult = main.LivePreviewResult;
 export type CalibrationProgress = phoneapi.CalibrationProgress;
 export type UnpairResult = main.UnpairResult;

@@ -436,7 +436,7 @@ class LivePipeline(
         // at construction. An uncalibrated phone yields an empty table, which simply means the
         // camera is asked for nothing and GL does all the zooming.
         zoomLut = ZoomCalibrationLut.build(
-            CalibrationStore(context).load(), id, recordingSize.width, recordingSize.height,
+            CalibrationStore(context).loadForZoom(), id, recordingSize.width, recordingSize.height,
         )
         requestedSplit = null
         zoomFeedback.clear()

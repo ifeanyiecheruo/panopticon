@@ -4,11 +4,12 @@
 
 package queries
 
-type Calibration struct {
+type CameraCalibration struct {
 	ManufacturerModel string
+	CameraID          string
 	SourcePhoneID     string
 	CalibratedAtMs    int64
-	ResultJson        string
+	CameraJson        string
 }
 
 type Clip struct {

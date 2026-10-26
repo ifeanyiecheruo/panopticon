@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"panopticon-controller/internal/dbstore"
+	"panopticon-controller/internal/phoneapi"
 )
 
 // A synthetic two-resolution zoom map for camera "0": crop shrinks linearly
@@ -41,8 +41,12 @@ const syntheticZoomResult = `{
   }
 }`
 
-func entry(json string) dbstore.Calibration {
-	return dbstore.Calibration{ManufacturerModel: "Google|Pixel 6", ResultJSON: json}
+func entry(json string) phoneapi.CalibrationResult {
+	result, err := phoneapi.ParseResultSummary(json)
+	if err != nil {
+		panic(err)
+	}
+	return result
 }
 
 func almost(a, b float64) bool { return math.Abs(a-b) < 1e-6 }

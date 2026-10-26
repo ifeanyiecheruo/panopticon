@@ -11,8 +11,8 @@ first, and used to predict the crop a phone's HAL will actually honour for a zoo
 ### 1.2 Scope
 
 Covers `internal/calibration/` (`calibration.go`, `EffectiveRect`),
-`internal/phoneapi/calibration.go`, `internal/dbstore/calibration.go`, and the `calibration`
-table in `internal/dbstore/schemas/db/001_initial.sql`.
+`internal/phoneapi/calibration.go`, `internal/dbstore/calibration.go`, and the
+`camera_calibration` table in `internal/dbstore/schemas/db/004_camera_calibration.sql`.
 
 ### 1.3 Context
 
@@ -25,7 +25,7 @@ adjuster ranges and the predicted-crop overlay, and by Phone detail for its Cali
 | Term | Meaning |
 |---|---|
 | model key | `manufacturer + model` — the store's key, not a phone id |
-| opportunistic ingest | pulling `GET /api/calibration/result` (no `runId`) and storing it if nothing fresher is held for that model |
+| opportunistic ingest | pulling `GET /api/calibration/result` (no `runId`) and storing each camera nothing fresher is held for |
 | `Lookup` | the Phone-detail read view of a model's calibration summary |
 | `EffectiveRect` | requested zoom + centre → the crop the HAL will actually honour |
 | reuse-don't-repeat | a phone whose model is already calibrated is never prompted to sweep |
@@ -48,8 +48,8 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
 
 ## 2. Design overview
 
-An ingest side (`IngestOpportunistic` / `StoreResult`) that writes the `calibration` table keyed
-by model, and a read side (`Lookup` for the UI summary, `EffectiveRect` for the predicted-crop
+An ingest side (`IngestOpportunistic` / `StoreRun`) that writes the `camera_calibration` table,
+one row per model and camera, and a read side (`Lookup` for the UI summary, `EffectiveRect` for the predicted-crop
 overlay). Nothing is ever pushed back to a phone.
 
 ## 3. Detailed design
@@ -59,8 +59,9 @@ overlay). Nothing is ever pushed back to a phone.
 | Entity | Type | Responsibility |
 |---|---|---|
 | `ModelKey` | key | `manufacturer + model`. |
-| `IngestOpportunistic` | ingest | Pull `GET /api/calibration/result` (no `runId`); store only if we don't already hold something fresher for that model. Called right after a pair, and optionally on opening Phone detail. |
-| `StoreResult` | ingest | Unconditional overwrite — for a manual re-run; last run wins, no merge. |
+| `IngestOpportunistic` | ingest | Pull `GET /api/calibration/result` (no `runId`); store each camera we don't already hold something fresher for. Called right after a pair, and optionally on opening Phone detail. A partial result (`complete: false`) is never stored. |
+| `StoreRun` | ingest | After a manual run: the cameras that run finished overwrite unconditionally (last run wins); the phone's other cameras follow the freshness rule. `App.GetCalibrationProgress` calls it each time another camera finishes and once when the sweep stops. |
+| `Load` | read | Assembles a model's stored cameras into one result for `Lookup` and `EffectiveRect`. |
 | `Lookup` | read view | The Phone-detail summary: per camera optical/digital ranges, crossover, position-honoured, quality-collapse. No entry → "Calibration needed"; an entry from another phone shows which (e.g. "14/14 checks completed · via Porch Cam"). |
 | `EffectiveRect` | predictor | Maps a requested zoom + centre for a camera/resolution to the crop the HAL will honour (nearest-resolution + interpolation over the stored `ZoomSample`s). Bound as `App.ComputeEffectiveRect`; drawn as the dashed predicted-crop overlay under the zoom-rect picker. |
 
@@ -77,15 +78,16 @@ overlay). Nothing is ever pushed back to a phone.
 
 ### 3.4 Data
 
-- `calibration` table: `manufacturer+model` → last result JSON + source phone id + timestamp.
-  One row per model, not per phone.
+- `camera_calibration` table: `(manufacturer+model, cameraId)` → that camera's result JSON +
+  source phone id + timestamp. One row per model and camera, not per phone.
+  `App.EraseCalibration` deletes the rows a phone supplied after the phone erases its own.
 
 ### 3.5 Processing and behaviour
 
 - The first phone of a given model to complete calibration effectively does the work for every
   other phone of that model.
-- A manual re-run always overwrites, regardless of cache state (firmware can change measured
-  capabilities).
+- A manual re-run always overwrites the cameras it finishes, regardless of cache state (firmware
+  can change measured capabilities).
 - Nothing is pushed back down to a phone — cached data is used only for the controller's own
   purposes.
 
