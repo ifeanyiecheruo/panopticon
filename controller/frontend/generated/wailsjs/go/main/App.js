@@ -22,6 +22,10 @@ export function EmptyTrash() {
   return window['go']['main']['App']['EmptyTrash']();
 }
 
+export function EraseCalibration(arg1) {
+  return window['go']['main']['App']['EraseCalibration'](arg1);
+}
+
 export function ForceUnpairPhone(arg1) {
   return window['go']['main']['App']['ForceUnpairPhone'](arg1);
 }

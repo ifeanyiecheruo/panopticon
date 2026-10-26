@@ -150,6 +150,16 @@ func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePho
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(body))
 	}))
+	mux.HandleFunc("/api/calibration", authed(fp, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		fp.mu.Lock()
+		fp.calibrationResult = ""
+		fp.mu.Unlock()
+		writeJSON(w, map[string]bool{"erased": true})
+	}))
 	mux.HandleFunc("/api/mode", authed(fp, func(w http.ResponseWriter, r *http.Request) {
 		fp.mu.Lock()
 		defer fp.mu.Unlock()

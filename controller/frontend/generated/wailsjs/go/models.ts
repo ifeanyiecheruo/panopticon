@@ -489,6 +489,22 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class EraseCalibrationResult {
+	    ok: boolean;
+	    outcome: string;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EraseCalibrationResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.outcome = source["outcome"];
+	        this.message = source["message"];
+	    }
+	}
 	export class LivePreviewResult {
 	    ok: boolean;
 	    outcome: string;

@@ -93,9 +93,6 @@ class CalibrationRunner(
     @Volatile
     private var active: ActiveRun? = null
 
-    @Volatile
-    private var lastCompletedRunId: String? = store.load()?.runId
-
     // ---- Public API (called from CalibrationRoutes) ----
 
     sealed interface StartOutcome {
@@ -134,6 +131,18 @@ class CalibrationRunner(
                 cameraIds = cameraIds,
                 startedAtMs = System.currentTimeMillis(),
             )
+            // An in-progress sweep seeds the run: every step it holds is skipped, so a
+            // cancelled sweep picks up where it stopped instead of starting over.
+            val resumeFrom = resumableFrom(store.loadInProgress(), BuildConfig.VERSION_NAME)
+            resumeFrom?.let {
+                run.cameras.putAll(it.cameras)
+                Log.i(TAG, "calibration ${run.runId} resumes ${it.runId} (${it.cameras.size} camera(s) started)")
+            }
+            // The run is in progress from now on, on disk too: a resumed run takes the
+            // in-progress result over under its own runId, and a fresh one starts an empty
+            // one (replacing any it did not resume, i.e. another app version's). Stopped
+            // before its first step, it is still a partial run the next start resumes.
+            saveInProgress(run)
             active = run
             run.job = scope.launch { sweep(run) }
             return StartOutcome.Started(
@@ -142,6 +151,7 @@ class CalibrationRunner(
                     status = "running",
                     startedAtMs = run.startedAtMs,
                     cameraIds = cameraIds,
+                    resumedFromRunId = resumeFrom?.runId,
                 ),
             )
         }
@@ -149,18 +159,16 @@ class CalibrationRunner(
 
     fun status(runId: String?): CalibrationStatus? {
         val run = active
-        if (runId == null) return run?.snapshot() ?: lastCompletedSnapshot()
+        if (runId == null) return run?.snapshot() ?: persistedSnapshot(store.loadInProgress() ?: store.loadCompleted())
         if (run != null && run.runId == runId) return run.snapshot()
-        if (runId == lastCompletedRunId) return lastCompletedSnapshot()
-        return null
+        return persistedSnapshot(listOfNotNull(store.loadInProgress(), store.loadCompleted()).firstOrNull { it.runId == runId })
     }
 
     fun cancel(runId: String): Boolean {
         synchronized(lock) {
             val run = active ?: return false
             if (run.runId != runId || run.status != "running") return false
-            run.status = "cancelled"
-            run.job?.cancel()
+            requestCancel(run)
             return true
         }
     }
@@ -171,24 +179,56 @@ class CalibrationRunner(
             val run = active ?: return
             if (run.status != "running") return
             Log.w(TAG, "cancelling calibration ${run.runId}: phone overheated")
-            run.status = "cancelled"
-            run.job?.cancel()
+            requestCancel(run)
         }
     }
 
+    /**
+     * Stops [run]. A stopped run is always "partial": its in-progress result (written when it
+     * started, then after every step) stays on disk for the next start to resume, even when it
+     * holds no step yet. Set straight away, so a poller that stops at the first non-running
+     * status never sees anything else while the sweep unwinds. Caller holds [lock].
+     */
+    private fun requestCancel(run: ActiveRun) {
+        run.cancelRequested = true
+        run.status = "partial"
+        run.job?.cancel()
+    }
+
     sealed interface ResultOutcome {
-        data class Completed(val result: CalibrationResult) : ResultOutcome
+        data class Found(val result: CalibrationResult) : ResultOutcome
         object NotCompleted : ResultOutcome
         object Unknown : ResultOutcome
     }
 
+    /**
+     * Without [runId], the completed result - only cameras whose sweep finished. With one, that
+     * run's document: the completed result if it last wrote it, or the in-progress sweep's
+     * partial result (`complete: false`).
+     */
     fun result(runId: String?): ResultOutcome {
-        val persisted = store.load()
-        if (runId == null) return persisted?.let { ResultOutcome.Completed(it) } ?: ResultOutcome.Unknown
-        if (persisted != null && persisted.runId == runId) return ResultOutcome.Completed(persisted)
+        val completed = store.loadCompleted()
+        if (runId == null) return completed?.let { ResultOutcome.Found(it) } ?: ResultOutcome.Unknown
+        if (completed != null && completed.runId == runId) return ResultOutcome.Found(completed)
+        store.loadInProgress()?.takeIf { it.runId == runId }?.let { return ResultOutcome.Found(it) }
         val run = active
         if (run != null && run.runId == runId) return ResultOutcome.NotCompleted
         return ResultOutcome.Unknown
+    }
+
+    sealed interface EraseOutcome {
+        object Erased : EraseOutcome
+        data class Running(val runId: String) : EraseOutcome
+    }
+
+    /** Erases the completed and in-progress calibration. Refused while a sweep is running. */
+    fun erase(): EraseOutcome {
+        synchronized(lock) {
+            active?.takeIf { it.status == "running" }?.let { return EraseOutcome.Running(it.runId) }
+            store.erase()
+            active = null // its status would describe data that is gone
+            return EraseOutcome.Erased
+        }
     }
 
     // ---- The sweep ----
@@ -210,40 +250,66 @@ class CalibrationRunner(
                 val cam = try {
                     probeCamera(cameraId, run)
                 } catch (e: Exception) {
-                    if (run.status == "cancelled") throw e
+                    if (run.cancelRequested) throw e
                     Log.e(TAG, "camera $cameraId probe failed", e)
                     null
                 }
-                if (cam != null) run.cameras[cameraId] = cam
+                if (cam != null) {
+                    // This camera's sweep is done: it replaces the camera's old completed
+                    // calibration now, while the other cameras keep serving theirs. Before
+                    // camerasCompleted moves, so a poller that sees it move can fetch it.
+                    synchronized(lock) {
+                        run.cameras[cameraId] = cam
+                        if (cam.perResolution.isNotEmpty()) {
+                            store.promoteCamera(run.runId, System.currentTimeMillis(), deviceIdentity(), cameraId, cam)
+                        }
+                    }
+                }
                 run.camerasCompleted = camIndex + 1
             }
 
             synchronized(lock) {
-                val result = CalibrationResult(
-                    runId = run.runId,
-                    runAtMs = System.currentTimeMillis(),
-                    deviceIdentity = ResultDeviceIdentity(
-                        manufacturer = Build.MANUFACTURER,
-                        model = Build.MODEL,
-                        device = Build.DEVICE,
-                        appVersionName = BuildConfig.VERSION_NAME,
-                    ),
-                    cameras = run.cameras.toMap(),
-                )
-                store.save(result)
-                run.status = "completed"
-                lastCompletedRunId = run.runId
-                Log.i(TAG, "calibration ${run.runId} completed (${result.cameras.size} cameras)")
+                if (run.status == "running") {
+                    store.clearInProgress()
+                    run.status = "completed"
+                    Log.i(TAG, "calibration ${run.runId} completed (${run.cameras.size} cameras)")
+                    return
+                }
             }
+            logStopped(run) // cancelled after its last step, before it could complete
         } catch (e: Exception) {
-            if (run.status == "cancelled") {
-                Log.i(TAG, "calibration ${run.runId} cancelled; ${run.cameras.size} camera(s) kept partial results")
+            if (run.cancelRequested) {
+                logStopped(run)
             } else {
                 run.status = "error"
                 Log.e(TAG, "calibration ${run.runId} failed", e)
             }
         }
     }
+
+    private fun logStopped(run: ActiveRun) {
+        Log.i(TAG, "calibration ${run.runId} stopped; ${run.cameras.size} camera(s) kept partial results")
+    }
+
+    /** Writes [run]'s cameras as the in-progress result. Caller holds [lock]. */
+    private fun saveInProgress(run: ActiveRun) {
+        store.saveInProgress(
+            CalibrationResult(
+                runId = run.runId,
+                runAtMs = System.currentTimeMillis(),
+                deviceIdentity = deviceIdentity(),
+                cameras = run.cameras.toMap(),
+                complete = false,
+            ),
+        )
+    }
+
+    private fun deviceIdentity() = ResultDeviceIdentity(
+        manufacturer = Build.MANUFACTURER,
+        model = Build.MODEL,
+        device = Build.DEVICE,
+        appVersionName = BuildConfig.VERSION_NAME,
+    )
 
     private suspend fun probeCamera(cameraId: String, run: ActiveRun): CameraCalibration {
         val chars = cameraManager.getCameraCharacteristics(cameraId)
@@ -276,16 +342,25 @@ class CalibrationRunner(
         // HALs (reproduced on the BLU G5, API 28 - see docs/quirks/calibration-zoom.md); a fresh
         // device per resolution is slower but every resolution actually gets
         // probed.
-        val perResolution = LinkedHashMap<String, ResolutionZoomMap>()
+        //
+        // Seeded from a resumed partial result: a resolution it already holds is a
+        // finished step and is skipped. One that produced no samples was never
+        // stored, so a resume retries it.
+        val perResolution = LinkedHashMap(run.cameras[cameraId]?.perResolution ?: emptyMap())
         for ((resIndex, size) in sizes.withIndex()) {
-            run.currentStep = "${size.width}x${size.height}"
+            val key = "${size.width}x${size.height}"
+            run.currentStep = key
             run.stepsCompleted = resIndex
+            if (key in perResolution) {
+                run.stepsCompleted = resIndex + 1
+                continue
+            }
 
             val lost = AtomicBoolean(false)
             val device = try {
                 openCameraDeviceWithRetry(cameraId, lost)
             } catch (e: Exception) {
-                if (run.status == "cancelled") throw e
+                if (run.cancelRequested) throw e
                 Log.w(TAG, "camera $cameraId won't open for ${size.width}x${size.height}", e)
                 null
             }
@@ -293,10 +368,17 @@ class CalibrationRunner(
                 try {
                     val zoomMap = probeResolution(device, size, activeRect, ratios, positionProbeRatios, lost, run)
                     if (zoomMap.samples.isNotEmpty()) {
-                        perResolution["${size.width}x${size.height}"] = zoomMap
+                        perResolution[key] = zoomMap
+                        // Persist the step as it lands: a cancel, thermal stop or crash
+                        // from here on keeps it, and a resume won't redo it.
+                        val summary = summariseCamera(identity, perResolution.toMap(), ratios)
+                        synchronized(lock) {
+                            run.cameras[cameraId] = summary
+                            saveInProgress(run)
+                        }
                     }
                 } catch (e: Exception) {
-                    if (run.status == "cancelled") throw e
+                    if (run.cancelRequested) throw e
                     Log.w(TAG, "camera $cameraId resolution ${size.width}x${size.height} failed", e)
                 } finally {
                     runCatching { device.close() }
@@ -306,7 +388,7 @@ class CalibrationRunner(
             run.stepsCompleted = resIndex + 1
         }
 
-        return summariseCamera(identity, perResolution, ratios)
+        return summariseCamera(identity, perResolution.toMap(), ratios)
     }
 
     private suspend fun probeResolution(
@@ -723,11 +805,11 @@ class CalibrationRunner(
 
     // ---- Snapshots / misc ----
 
-    private fun lastCompletedSnapshot(): CalibrationStatus? {
-        val result = store.load() ?: return null
+    private fun persistedSnapshot(result: CalibrationResult?): CalibrationStatus? {
+        result ?: return null
         return CalibrationStatus(
             runId = result.runId,
-            status = "completed",
+            status = result.runStatus(),
             camerasCompleted = result.cameras.size,
             camerasTotal = result.cameras.size,
             stepsCompleted = 0,
@@ -750,6 +832,8 @@ class CalibrationRunner(
     ) {
         @Volatile var job: Job? = null
         @Volatile var status: String = "running"
+        /** Set by a cancel (status is then already "partial"); tells a cancel apart from a failure. */
+        @Volatile var cancelRequested: Boolean = false
         @Volatile var currentCameraId: String? = null
         @Volatile var currentStep: String? = null
         @Volatile var camerasCompleted: Int = 0

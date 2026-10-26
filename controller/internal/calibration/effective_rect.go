@@ -6,7 +6,6 @@ import (
 	"math"
 	"sort"
 
-	"panopticon-controller/internal/dbstore"
 	"panopticon-controller/internal/phoneapi"
 )
 
@@ -27,17 +26,12 @@ type EffectiveRectResult struct {
 // bracketing ratio samples. No UI consumes this yet - it's the data-side of
 // the deferred zoom-rect picker, unit-tested against a synthetic map.
 func EffectiveRect(
-	entry dbstore.Calibration,
+	result phoneapi.CalibrationResult,
 	cameraID string,
 	width, height int,
 	requestedZoom float64,
 	centerX, centerY float64,
 ) (EffectiveRectResult, error) {
-	result, err := phoneapi.ParseResultSummary(entry.ResultJSON)
-	if err != nil {
-		return EffectiveRectResult{}, fmt.Errorf("parse stored calibration: %w", err)
-	}
-
 	cam, ok := result.Cameras[cameraID]
 	if !ok {
 		if cameraID == "" {

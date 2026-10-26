@@ -293,7 +293,7 @@ private fun cameraStateResponse(
     val zoomView = spec.keys.zoomViewNorm.takeIf { spec.manualControlEnabled } ?: ZoomGeometry.FULL
     val (w, h) = parseSize(videoResolution)
     val lut = runCatching {
-        ZoomCalibrationLut.build(CalibrationStore(androidContext).load(), id, w, h)
+        ZoomCalibrationLut.build(CalibrationStore(androidContext).loadForZoom(), id, w, h)
     }.getOrNull() ?: ZoomCalibrationLut.Lut.NONE
     val split = ZoomGeometry.split(
         viewSensor = ZoomGeometry.viewToSensor(zoomView, texCropX, texCropY),

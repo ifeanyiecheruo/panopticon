@@ -9,45 +9,74 @@ import (
 	"context"
 )
 
-const getCalibration = `-- name: GetCalibration :one
-SELECT manufacturer_model, source_phone_id, calibrated_at_ms, result_json
-FROM calibration WHERE manufacturer_model = ?
+const deleteCameraCalibrationsFromPhone = `-- name: DeleteCameraCalibrationsFromPhone :exec
+DELETE FROM camera_calibration WHERE source_phone_id = ?
 `
 
-func (q *Queries) GetCalibration(ctx context.Context, manufacturerModel string) (Calibration, error) {
-	row := q.db.QueryRowContext(ctx, getCalibration, manufacturerModel)
-	var i Calibration
-	err := row.Scan(
-		&i.ManufacturerModel,
-		&i.SourcePhoneID,
-		&i.CalibratedAtMs,
-		&i.ResultJson,
-	)
-	return i, err
+func (q *Queries) DeleteCameraCalibrationsFromPhone(ctx context.Context, sourcePhoneID string) error {
+	_, err := q.db.ExecContext(ctx, deleteCameraCalibrationsFromPhone, sourcePhoneID)
+	return err
 }
 
-const upsertCalibration = `-- name: UpsertCalibration :exec
-INSERT INTO calibration (manufacturer_model, source_phone_id, calibrated_at_ms, result_json)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(manufacturer_model) DO UPDATE SET
+const listCameraCalibrations = `-- name: ListCameraCalibrations :many
+SELECT manufacturer_model, camera_id, source_phone_id, calibrated_at_ms, camera_json
+FROM camera_calibration WHERE manufacturer_model = ?
+ORDER BY camera_id
+`
+
+func (q *Queries) ListCameraCalibrations(ctx context.Context, manufacturerModel string) ([]CameraCalibration, error) {
+	rows, err := q.db.QueryContext(ctx, listCameraCalibrations, manufacturerModel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CameraCalibration{}
+	for rows.Next() {
+		var i CameraCalibration
+		if err := rows.Scan(
+			&i.ManufacturerModel,
+			&i.CameraID,
+			&i.SourcePhoneID,
+			&i.CalibratedAtMs,
+			&i.CameraJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const upsertCameraCalibration = `-- name: UpsertCameraCalibration :exec
+INSERT INTO camera_calibration (manufacturer_model, camera_id, source_phone_id, calibrated_at_ms, camera_json)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(manufacturer_model, camera_id) DO UPDATE SET
     source_phone_id  = excluded.source_phone_id,
     calibrated_at_ms = excluded.calibrated_at_ms,
-    result_json      = excluded.result_json
+    camera_json      = excluded.camera_json
 `
 
-type UpsertCalibrationParams struct {
+type UpsertCameraCalibrationParams struct {
 	ManufacturerModel string
+	CameraID          string
 	SourcePhoneID     string
 	CalibratedAtMs    int64
-	ResultJson        string
+	CameraJson        string
 }
 
-func (q *Queries) UpsertCalibration(ctx context.Context, arg UpsertCalibrationParams) error {
-	_, err := q.db.ExecContext(ctx, upsertCalibration,
+func (q *Queries) UpsertCameraCalibration(ctx context.Context, arg UpsertCameraCalibrationParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCameraCalibration,
 		arg.ManufacturerModel,
+		arg.CameraID,
 		arg.SourcePhoneID,
 		arg.CalibratedAtMs,
-		arg.ResultJson,
+		arg.CameraJson,
 	)
 	return err
 }

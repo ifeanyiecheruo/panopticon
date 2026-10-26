@@ -988,7 +988,7 @@ class CameraGlPipeline(
         // camera is asked for nothing and GL does all the zooming.
         health = healthRegistry.forCamera(id, ROLE)
         zoomLut = ZoomCalibrationLut.build(
-            CalibrationStore(context).load(), id, recordingSize.width, recordingSize.height,
+            CalibrationStore(context).loadForZoom(), id, recordingSize.width, recordingSize.height,
         )
         requestedSplit = null
         health.gauge("zoomLutSamples", zoomLut.entries.size)

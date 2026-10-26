@@ -14,6 +14,8 @@ export function DeleteClipPermanently(arg1:string,arg2:string):Promise<void>;
 
 export function EmptyTrash():Promise<number>;
 
+export function EraseCalibration(arg1:string):Promise<main.EraseCalibrationResult>;
+
 export function ForceUnpairPhone(arg1:string):Promise<main.UnpairResult>;
 
 export function GetCalibrationProgress(arg1:string,arg2:string):Promise<main.CalibrationProgressResult>;

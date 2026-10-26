@@ -2,52 +2,57 @@ package dbstore
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 
 	"panopticon-controller/internal/dbstore/queries"
 )
 
-// Calibration is the controller's shared-by-manufacturer+model calibration
-// record, per docs/design/decisions/0009-calibration-model.md: one entry
-// per device model, populated by whichever phone of that model calibrates
-// first (or by a manual re-run), reused for every other phone of the same
-// model. ResultJSON is the phone's GET /api/calibration/result body stored
-// verbatim.
-type Calibration struct {
+// CameraCalibration is one camera's entry in the controller's shared-by-manufacturer+model
+// calibration, per docs/design/decisions/0009-calibration-model.md: each camera of a model is
+// stored on its own, from whichever phone of that model most recently finished calibrating it,
+// and reused for every other phone of the same model. CameraJSON is the phone's
+// GET /api/calibration/result cameras.<id> object stored verbatim.
+type CameraCalibration struct {
 	ManufacturerModel string
+	CameraID          string
 	SourcePhoneID     string
 	CalibratedAtMs    int64
-	ResultJSON        string
+	CameraJSON        string
 }
 
-// GetCalibration looks up the calibration entry for a "manufacturer|model"
-// key. Returns ErrNotFound if this model has never been calibrated.
-func (s *Store) GetCalibration(manufacturerModel string) (Calibration, error) {
-	row, err := s.q.GetCalibration(context.Background(), manufacturerModel)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Calibration{}, ErrNotFound
-	}
+// ListCameraCalibrations returns every calibrated camera of a "manufacturer|model" key, by
+// camera id. Empty if this model has never been calibrated.
+func (s *Store) ListCameraCalibrations(manufacturerModel string) ([]CameraCalibration, error) {
+	rows, err := s.q.ListCameraCalibrations(context.Background(), manufacturerModel)
 	if err != nil {
-		return Calibration{}, err
+		return nil, err
 	}
-	return Calibration{
-		ManufacturerModel: row.ManufacturerModel,
-		SourcePhoneID:     row.SourcePhoneID,
-		CalibratedAtMs:    row.CalibratedAtMs,
-		ResultJSON:        row.ResultJson,
-	}, nil
+	out := make([]CameraCalibration, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, CameraCalibration{
+			ManufacturerModel: row.ManufacturerModel,
+			CameraID:          row.CameraID,
+			SourcePhoneID:     row.SourcePhoneID,
+			CalibratedAtMs:    row.CalibratedAtMs,
+			CameraJSON:        row.CameraJson,
+		})
+	}
+	return out, nil
 }
 
-// UpsertCalibration writes (replacing any existing entry) the calibration
-// record for a model. Used by a manual re-run, which per the data model is
-// unconditional last-write-wins with no merge. The opportunistic
-// ingest-on-pair path guards on freshness itself (see internal/calibration).
-func (s *Store) UpsertCalibration(c Calibration) error {
-	return s.q.UpsertCalibration(context.Background(), queries.UpsertCalibrationParams{
+// UpsertCameraCalibration writes (replacing any existing entry) one camera's calibration. It
+// is unconditional; callers decide freshness themselves (see internal/calibration).
+func (s *Store) UpsertCameraCalibration(c CameraCalibration) error {
+	return s.q.UpsertCameraCalibration(context.Background(), queries.UpsertCameraCalibrationParams{
 		ManufacturerModel: c.ManufacturerModel,
+		CameraID:          c.CameraID,
 		SourcePhoneID:     c.SourcePhoneID,
 		CalibratedAtMs:    c.CalibratedAtMs,
-		ResultJson:        c.ResultJSON,
+		CameraJson:        c.CameraJSON,
 	})
+}
+
+// DeleteCameraCalibrationsFromPhone drops every camera calibration that phone supplied - what
+// erasing a phone's calibration removes here. Cameras other phones of the model supplied stay.
+func (s *Store) DeleteCameraCalibrationsFromPhone(phoneID string) error {
+	return s.q.DeleteCameraCalibrationsFromPhone(context.Background(), phoneID)
 }

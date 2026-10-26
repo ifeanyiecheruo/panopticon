@@ -7,6 +7,7 @@ package calibration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -57,16 +58,39 @@ type View struct {
 	Cameras         []CameraZoomSummary `json:"cameras"`
 }
 
+// Load assembles a model's stored cameras into one result, for the code that reads calibration
+// data (EffectiveRect, Lookup). Returns dbstore.ErrNotFound if no camera of the model is stored.
+// A camera row whose JSON can't be parsed is left out.
+func Load(store *dbstore.Store, key string) (phoneapi.CalibrationResult, []dbstore.CameraCalibration, error) {
+	rows, err := store.ListCameraCalibrations(key)
+	if err != nil {
+		return phoneapi.CalibrationResult{}, nil, err
+	}
+	if len(rows) == 0 {
+		return phoneapi.CalibrationResult{}, nil, dbstore.ErrNotFound
+	}
+	result := phoneapi.CalibrationResult{Cameras: map[string]phoneapi.CalibrationCameraResult{}}
+	for _, row := range rows {
+		var cam phoneapi.CalibrationCameraResult
+		if err := json.Unmarshal([]byte(row.CameraJSON), &cam); err == nil {
+			result.Cameras[row.CameraID] = cam
+		}
+		result.RunAtMs = max(result.RunAtMs, row.CalibratedAtMs)
+	}
+	return result, rows, nil
+}
+
 // Lookup returns the stored calibration view for a phone's model, or a
 // Present:false view (the "Calibration needed" state) if this model has no
-// entry yet.
+// camera stored yet. The source fields describe the most recently calibrated
+// camera; ViaOtherPhone means none of the model's cameras came from this phone.
 func Lookup(store *dbstore.Store, phone dbstore.Phone) (View, error) {
 	key := ModelKey(phone.Manufacturer, phone.Model)
 	v := View{ModelKey: key}
 	if key == "" {
 		return v, nil
 	}
-	entry, err := store.GetCalibration(key)
+	summary, rows, err := Load(store, key)
 	if errors.Is(err, dbstore.ErrNotFound) {
 		return v, nil
 	}
@@ -74,22 +98,26 @@ func Lookup(store *dbstore.Store, phone dbstore.Phone) (View, error) {
 		return v, err
 	}
 
-	summary, perr := phoneapi.ParseResultSummary(entry.ResultJSON)
+	// A stored camera we can't parse still counts as "present" (so we don't
+	// re-prompt a sweep), we just can't show its detail.
 	v.Present = true
 	v.ChecksTotal = summary.ChecksTotal()
 	v.ChecksPassed = summary.ChecksPassed()
-	v.CalibratedAtMs = entry.CalibratedAtMs
-	v.SourcePhoneID = entry.SourcePhoneID
-	v.ViaOtherPhone = entry.SourcePhoneID != "" && entry.SourcePhoneID != phone.ID
+	newest := rows[0]
+	fromThisPhone := false
+	for _, row := range rows {
+		if row.CalibratedAtMs > newest.CalibratedAtMs {
+			newest = row
+		}
+		fromThisPhone = fromThisPhone || row.SourcePhoneID == phone.ID
+	}
+	v.CalibratedAtMs = newest.CalibratedAtMs
+	v.SourcePhoneID = newest.SourcePhoneID
+	v.ViaOtherPhone = !fromThisPhone
 	if v.ViaOtherPhone {
-		if src, err := store.GetPhone(entry.SourcePhoneID); err == nil {
+		if src, err := store.GetPhone(newest.SourcePhoneID); err == nil {
 			v.SourcePhoneName = src.Name
 		}
-	}
-	if perr != nil {
-		// A stored blob we can't parse still counts as "present" (so we don't
-		// re-prompt a sweep), we just can't show detail.
-		return v, nil
 	}
 	for id, cam := range summary.Cameras {
 		v.Cameras = append(v.Cameras, CameraZoomSummary{
@@ -108,18 +136,16 @@ func Lookup(store *dbstore.Store, phone dbstore.Phone) (View, error) {
 	return v, nil
 }
 
-// IngestOpportunistic pulls the phone's last persisted calibration result and
-// stores it under the model key — but only if we don't already hold a
-// newer-or-equal entry for that model. This is the "populated opportunistically
-// ... right after pairing (and optionally re-checked when opening Phone
-// detail)" path; it never clobbers fresher data. Returns (ingested, error);
+// IngestOpportunistic pulls the phone's completed calibration and stores each
+// camera under the model key — but only a camera we don't already hold a
+// newer-or-equal entry for. This is the "populated opportunistically ...
+// right after pairing (and optionally re-checked when opening Phone detail)"
+// path; it never clobbers fresher data. Returns (ingested anything, error);
 // a phone with no result yet is (false, nil), not an error.
 func IngestOpportunistic(ctx context.Context, store *dbstore.Store, phone dbstore.Phone) (bool, error) {
-	key := ModelKey(phone.Manufacturer, phone.Model)
-	if key == "" {
+	if ModelKey(phone.Manufacturer, phone.Model) == "" {
 		return false, nil
 	}
-
 	client := phoneapi.New(phone.BaseURL, phone.Token)
 	result, raw, err := client.CalibrationResultRaw(ctx)
 	if err != nil {
@@ -128,38 +154,64 @@ func IngestOpportunistic(ctx context.Context, store *dbstore.Store, phone dbstor
 		}
 		return false, err
 	}
-
-	existing, err := store.GetCalibration(key)
-	if err == nil && existing.CalibratedAtMs >= result.RunAtMs {
-		return false, nil // we already hold something at least as fresh
-	}
-	if err != nil && !errors.Is(err, dbstore.ErrNotFound) {
-		return false, err
-	}
-
-	if err := store.UpsertCalibration(dbstore.Calibration{
-		ManufacturerModel: key,
-		SourcePhoneID:     phone.ID,
-		CalibratedAtMs:    result.RunAtMs,
-		ResultJSON:        string(raw),
-	}); err != nil {
-		return false, fmt.Errorf("store calibration: %w", err)
-	}
-	return true, nil
+	n, err := storeCameras(store, phone, result, raw, "")
+	return n > 0, err
 }
 
-// StoreResult writes a result under the model key unconditionally
-// (last-write-wins) — used by a manual re-run, which per the data model
-// always overwrites regardless of cache state.
-func StoreResult(store *dbstore.Store, phone dbstore.Phone, result phoneapi.CalibrationResult, raw []byte) error {
-	key := ModelKey(phone.Manufacturer, phone.Model)
-	if key == "" {
-		return errors.New("phone has no manufacturer/model to key calibration by")
+// StoreRun stores the phone's completed calibration after a sweep the user ran
+// (runID). Cameras that run finished overwrite unconditionally — a manual
+// re-run always wins, per the data model. Cameras it didn't finish are still
+// in the phone's completed result from earlier runs; those follow the
+// freshness rule, like an opportunistic ingest. Returns how many cameras it
+// stored.
+func StoreRun(store *dbstore.Store, phone dbstore.Phone, result phoneapi.CalibrationResult, raw []byte, runID string) (int, error) {
+	if ModelKey(phone.Manufacturer, phone.Model) == "" {
+		return 0, errors.New("phone has no manufacturer/model to key calibration by")
 	}
-	return store.UpsertCalibration(dbstore.Calibration{
-		ManufacturerModel: key,
-		SourcePhoneID:     phone.ID,
-		CalibratedAtMs:    result.RunAtMs,
-		ResultJSON:        string(raw),
-	})
+	return storeCameras(store, phone, result, raw, runID)
+}
+
+// storeCameras writes each camera of a phone's completed result as its own
+// row: unconditionally if forceRunID finished it, otherwise only if it is
+// fresher than the row already held. A partial result (an in-progress sweep)
+// is never stored.
+func storeCameras(store *dbstore.Store, phone dbstore.Phone, result phoneapi.CalibrationResult, raw []byte, forceRunID string) (int, error) {
+	if !result.IsComplete() {
+		return 0, nil
+	}
+	key := ModelKey(phone.Manufacturer, phone.Model)
+	var verbatim struct {
+		Cameras map[string]json.RawMessage `json:"cameras"`
+	}
+	if err := json.Unmarshal(raw, &verbatim); err != nil {
+		return 0, fmt.Errorf("decode calibration cameras: %w", err)
+	}
+	existing, err := store.ListCameraCalibrations(key)
+	if err != nil {
+		return 0, err
+	}
+	heldAt := map[string]int64{}
+	for _, row := range existing {
+		heldAt[row.CameraID] = row.CalibratedAtMs
+	}
+
+	stored := 0
+	for id, cam := range result.Cameras {
+		runID, runAtMs := result.CameraRun(cam)
+		held, ok := heldAt[id]
+		if !(forceRunID != "" && runID == forceRunID) && ok && held >= runAtMs {
+			continue // we already hold this camera at least as fresh
+		}
+		if err := store.UpsertCameraCalibration(dbstore.CameraCalibration{
+			ManufacturerModel: key,
+			CameraID:          id,
+			SourcePhoneID:     phone.ID,
+			CalibratedAtMs:    runAtMs,
+			CameraJSON:        string(verbatim.Cameras[id]),
+		}); err != nil {
+			return stored, fmt.Errorf("store calibration for camera %s: %w", id, err)
+		}
+		stored++
+	}
+	return stored, nil
 }

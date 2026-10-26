@@ -34,10 +34,16 @@ type App struct {
 	// phoneID; guarded by liveMu.
 	liveMu        sync.Mutex
 	livePriorMode map[string]string
+
+	// calibCamerasSeen is, per calibration runID, the camerasCompleted count the last
+	// GetCalibrationProgress poll stored at - so a sweep's cameras are pulled in as each one
+	// finishes, without re-fetching the result on every poll. Guarded by calibMu.
+	calibMu          sync.Mutex
+	calibCamerasSeen map[string]int
 }
 
 func NewApp(store *dbstore.Store, dirs appdirs.Dirs, syncMgr *syncer.Manager) *App {
-	return &App{store: store, dirs: dirs, syncMgr: syncMgr, livePriorMode: map[string]string{}}
+	return &App{store: store, dirs: dirs, syncMgr: syncMgr, livePriorMode: map[string]string{}, calibCamerasSeen: map[string]int{}}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -439,15 +445,16 @@ type CalibrationProgressResult struct {
 	OK       bool                          `json:"ok"`
 	Error    string                        `json:"error,omitempty"`
 	Progress *phoneapi.CalibrationProgress `json:"progress,omitempty"`
-	// Stored is set true on the poll where a just-completed sweep's result was
+	// Stored is set true on a poll where cameras the sweep finished were
 	// ingested into the model-keyed calibration store.
 	Stored bool `json:"stored"`
 }
 
-// GetCalibrationProgress polls one phone's sweep. When it reports "completed"
-// this also pulls the full result and writes it under the phone's
-// manufacturer+model key (a manual re-run always overwrites, per the data
-// model).
+// GetCalibrationProgress polls one phone's sweep. Each time another camera
+// finishes - and once more when the sweep stops, however it stops - this pulls
+// the phone's completed result and stores its cameras under the phone's
+// manufacturer+model key; the cameras this run finished overwrite
+// unconditionally (a manual re-run always wins, per the data model).
 func (a *App) GetCalibrationProgress(phoneID, runID string) CalibrationProgressResult {
 	phone, err := a.store.GetPhone(phoneID)
 	if err != nil {
@@ -460,17 +467,40 @@ func (a *App) GetCalibrationProgress(phoneID, runID string) CalibrationProgressR
 	}
 
 	res := CalibrationProgressResult{OK: true, Progress: &prog}
-	if prog.Status == "completed" {
-		result, raw, rerr := client.CalibrationResultRaw(a.ctxOrBackground())
-		if rerr != nil {
-			log.Printf("calibration progress: fetch completed result for %s: %v", phoneID, rerr)
-		} else if err := calibration.StoreResult(a.store, phone, result, raw); err != nil {
-			log.Printf("calibration progress: store result for %s: %v", phoneID, err)
-		} else {
-			res.Stored = true
-		}
+	if !a.calibrationCamerasToStore(prog) {
+		return res
 	}
+	result, raw, rerr := client.CalibrationResultRaw(a.ctxOrBackground())
+	if errors.Is(rerr, phoneapi.ErrNoCalibrationResult) {
+		return res // stopped before finishing any camera
+	}
+	if rerr != nil {
+		log.Printf("calibration progress: fetch completed result for %s: %v", phoneID, rerr)
+		return res
+	}
+	n, err := calibration.StoreRun(a.store, phone, result, raw, prog.RunID)
+	if err != nil {
+		log.Printf("calibration progress: store result for %s: %v", phoneID, err)
+	}
+	res.Stored = n > 0
 	return res
+}
+
+// calibrationCamerasToStore reports whether a poll should pull the phone's
+// completed result: a camera finished since the last pull, or the sweep has
+// stopped. Forgets the run once it has stopped.
+func (a *App) calibrationCamerasToStore(prog phoneapi.CalibrationProgress) bool {
+	a.calibMu.Lock()
+	defer a.calibMu.Unlock()
+	if prog.Status != "running" {
+		delete(a.calibCamerasSeen, prog.RunID)
+		return true
+	}
+	if prog.CamerasCompleted > a.calibCamerasSeen[prog.RunID] {
+		a.calibCamerasSeen[prog.RunID] = prog.CamerasCompleted
+		return true
+	}
+	return false
 }
 
 // CancelCalibration cooperatively stops an in-progress sweep on one phone.
@@ -481,6 +511,37 @@ func (a *App) CancelCalibration(phoneID, runID string) error {
 	}
 	client := phoneapi.New(phone.BaseURL, phone.Token)
 	return client.CancelCalibration(a.ctxOrBackground(), runID)
+}
+
+type EraseCalibrationResult struct {
+	OK      bool   `json:"ok"`
+	Outcome string `json:"outcome"` // "ok" | "running" | "unreachable" | "other"
+	Message string `json:"message,omitempty"`
+}
+
+// EraseCalibration erases one phone's calibration: the phone drops its completed
+// and in-progress calibration, then the controller drops every camera that phone
+// supplied to its model's stored calibration. Cameras other phones of the same
+// model supplied stay. The controller's copy is only touched once the phone has
+// erased its own, so the two never disagree about what this phone calibrated.
+func (a *App) EraseCalibration(phoneID string) EraseCalibrationResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return EraseCalibrationResult{Outcome: "other", Message: err.Error()}
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+	switch err := client.EraseCalibration(a.ctxOrBackground()); {
+	case errors.Is(err, phoneapi.ErrCalibrationRunning):
+		return EraseCalibrationResult{Outcome: "running", Message: "A calibration sweep is running on this phone. Cancel it before erasing."}
+	case errors.Is(err, phoneapi.ErrUnreachable):
+		return EraseCalibrationResult{Outcome: "unreachable", Message: "Could not reach the phone."}
+	case err != nil:
+		return EraseCalibrationResult{Outcome: "other", Message: err.Error()}
+	}
+	if err := a.store.DeleteCameraCalibrationsFromPhone(phoneID); err != nil {
+		return EraseCalibrationResult{Outcome: "other", Message: err.Error()}
+	}
+	return EraseCalibrationResult{OK: true, Outcome: "ok"}
 }
 
 // ---- Camera selection + manual controls (driven from Phone detail) ----
@@ -612,11 +673,11 @@ func (a *App) ComputeEffectiveRect(
 		return calibration.EffectiveRectResult{}, err
 	}
 	key := calibration.ModelKey(phone.Manufacturer, phone.Model)
-	entry, err := a.store.GetCalibration(key)
+	result, _, err := calibration.Load(a.store, key)
 	if err != nil {
 		return calibration.EffectiveRectResult{}, fmt.Errorf("no calibration for this model: %w", err)
 	}
-	return calibration.EffectiveRect(entry, cameraID, width, height, zoom, centerX, centerY)
+	return calibration.EffectiveRect(result, cameraID, width, height, zoom, centerX, centerY)
 }
 
 // ---- Gallery / Trash ----

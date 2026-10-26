@@ -34,18 +34,28 @@ Needs exclusive camera access. `record` is sticky — `409` if the phone is reco
 including after an app restart. This is what lets the controller pull results without asking the
 phone to re-run.
 
+Calibration is partitioned **per camera**. The completed result holds each camera's most recent
+finished calibration, and a camera is replaced only when a newer sweep finishes it, so a re-run
+that is stopped part-way leaves every camera serving its old data. The unfinished sweep is kept
+separately, saved after every (camera, resolution) step, and the next start resumes it; the
+controller never ingests it. `DELETE /api/calibration` erases both.
+
 ### The controller treats calibration as a shared resource keyed by `manufacturer + model`
 
-- Its own store: `manufacturer+model → { cameras, calibratedAtMs, sourcePhoneId }`, separate
-  from any phone's DB row.
+- Its own store, one row per camera: `(manufacturer+model, cameraId) → { camera, calibratedAtMs,
+  sourcePhoneId }`, separate from any phone's DB row. A camera is stored as soon as its sweep
+  finishes, even while the phone's other cameras are unfinished, and phones of one model each
+  contribute the cameras they calibrated most recently.
 - **Populated opportunistically** — right after pairing (and optionally on opening Phone
   detail), the controller calls `GET /api/calibration/result` and ingests under that phone's
   `manufacturer+model` key.
 - **Reuse, don't repeat** — if the controller already holds data for a phone's model (from *any*
   phone), that phone is treated as already calibrated and never prompted to sweep. The first
   phone of a model to calibrate does the work for all of them.
-- **Manual re-run always available** (firmware can change measured capabilities); it
-  unconditionally overwrites the `manufacturer+model` entry — last run wins, no merge.
+- **Manual re-run always available** (firmware can change measured capabilities); the cameras
+  it finishes unconditionally overwrite theirs — last run wins.
+- **Erasing a phone's calibration** also drops the cameras that phone supplied here; cameras
+  other phones of the model supplied stay.
 - **Nothing is pushed back to a phone.** The controller uses cached data for its own purposes
   (accurate adjuster ranges, the `EffectiveRect` predicted-crop overlay).
 

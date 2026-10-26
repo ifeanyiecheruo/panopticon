@@ -77,11 +77,11 @@ per-camera summaries and written to disk.
 
 | Entity | Type | Responsibility |
 |---|---|---|
-| `CalibrationRunner` | sweep engine | Opens a **fresh `CameraDevice` per resolution** (some HALs disconnect the device on plain session recycling). Reads the effective crop from a one-shot capture; tracks the active physical camera; measures brightness-normalised median-of-frames sharpness; for an off-centre crop, checks the `SCALER_CROP_REGION` metadata round-trip **and** `frameShifted`. Cancellable; completed cameras keep partial results. |
+| `CalibrationRunner` | sweep engine | Opens a **fresh `CameraDevice` per resolution** (some HALs disconnect the device on plain session recycling). Reads the effective crop from a one-shot capture; tracks the active physical camera; measures brightness-normalised median-of-frames sharpness; for an off-centre crop, checks the `SCALER_CROP_REGION` metadata round-trip **and** `frameShifted`. Persists the in-progress sweep after every (camera, resolution) step, so a cancel, thermal stop or crash keeps every finished step (`complete: false`), and the next start resumes it (same app version) by skipping the steps it holds. When a camera's sweep finishes, that camera is promoted into the completed result. |
 | `ZoomMath` | pure helpers | `sharpness` (variance-of-Laplacian / mean-luma²), `medianSharpness`, `deriveQualityCollapse` (sustained-drop rule), `frameShifted` (grid-subsampled mean-abs-diff). Framework-free, unit-tested. |
 | `ZoomApiCompat` | `@RequiresApi` objects | `ZoomRatioApi30`, `ActivePhysicalIdApi29`, `LogicalCameraApi28` — each API-gated key isolated so ART only verifies it behind the SDK check. |
 | `CalibrationModels` | data | `deviceIdentity`; per camera `opticalRange` / `digitalRange` / `crossoverRatio` / `positionHonored` / `positionMetadataLiedRatios` / `qualityCollapseRatio` / `perResolution` + a thin `steps` summary. Shape matches [`../http-api.md`](../http-api.md). |
-| `CalibrationStore` | persistence | Last completed result written to disk; served from `GET /api/calibration/result` without a `runId`, including after an app restart. |
+| `CalibrationStore` | persistence | Two files. **Completed** (`last-result.json`): each camera's most recent finished calibration, served from `GET /api/calibration/result` without a `runId`, including after an app restart. **In-progress** (`in-progress.json`): the unfinished sweep, deleted when it completes. The camera pipelines zoom by the completed data, falling back to in-progress data only for a camera that has never finished (`zoomView`). Both are erased by `DELETE /api/calibration`. |
 | `CalibrationRoutes` | route handler | `POST /api/calibration/start` (`409` in `record`, `422` if no cameras), `GET /api/calibration/status`, `DELETE /api/calibration/:runId`, `GET /api/calibration/result`. |
 
 ### 3.2 Dependencies
@@ -97,15 +97,18 @@ per-camera summaries and written to disk.
 
 ### 3.4 Data
 
-- The persisted last-completed result (JSON on disk).
-- Transient per-run state: `runId`, progress, partial per-camera maps.
+- The completed result (JSON on disk), rewritten when a camera finishes; and the in-progress
+  sweep (`complete: false`), rewritten after every step.
+- Transient per-run state: `runId`, progress.
 
 ### 3.5 Processing and behaviour
 
 - Runs only from `standby`; a per-run ~1.2s grace covers a motion pipeline still tearing down.
 - Teardown order guards an `ImageReader.close()` / in-flight-callback SIGSEGV race (Pixel 6).
 - Long and rare: tens of minutes; meant to be run once. `MAX_RESOLUTIONS_PER_CAMERA` is a safety
-  net.
+  net. Because every finished step is kept, cancelling is cheap: a resume loses only the step
+  that was in flight. A re-run never disturbs the completed result until it finishes a camera,
+  so cancelling one leaves every camera serving its old calibration.
 - Wants a lit, textured scene; against a blank/dark scene `frameShifted` and
   `qualityCollapseRatio` go inconclusive.
 

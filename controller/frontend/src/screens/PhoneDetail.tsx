@@ -4,6 +4,7 @@ import {
   StartCalibration,
   GetCalibrationProgress,
   CancelCalibration,
+  EraseCalibration,
   SetRecording,
   UnpairPhone,
   ForceUnpairPhone,
@@ -38,6 +39,8 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
   const [progress, setProgress] = useState<CalibrationProgress | null>(null);
   const [calibMsg, setCalibMsg] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [eraseConfirm, setEraseConfirm] = useState(false);
+  const [eraseBusy, setEraseBusy] = useState(false);
 
   // Recording toggle.
   const [recordBusy, setRecordBusy] = useState(false);
@@ -92,7 +95,11 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
         setRunId(null);
         stopPolling();
         setCalibMsg(
-          res.progress.status === 'completed' ? 'Calibration complete.' : `Calibration ${res.progress.status}.`,
+          res.progress.status === 'completed'
+            ? 'Calibration complete.'
+            : res.progress.status === 'partial'
+              ? 'Calibration stopped part-way. Run it again to pick up where it left off.'
+              : `Calibration ${res.progress.status}.`,
         );
         loadDetail();
       }
@@ -120,6 +127,19 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
       await CancelCalibration(phoneId, id);
     } catch (err) {
       setCalibMsg(String(err));
+    }
+  };
+
+  const eraseCalibration = async () => {
+    setEraseBusy(true);
+    try {
+      const r = await EraseCalibration(phoneId);
+      setEraseConfirm(false);
+      setProgress(null);
+      setCalibMsg(r.ok ? 'Calibration erased.' : r.message || 'Could not erase calibration.');
+      await loadDetail();
+    } finally {
+      setEraseBusy(false);
     }
   };
 
@@ -244,7 +264,7 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
         onToggleUnpair={() => setUnpairOpen((v) => !v)}
       />
 
-      {(progress || calibMsg || running) && (
+      {(progress || calibMsg || running || cal.present) && (
         <div className="card" style={{ padding: '12px 14px' }}>
           {progress && (
             <>
@@ -272,6 +292,27 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
             <button className="btn small danger" style={{ marginTop: '8px' }} onClick={cancelCalibration}>
               Cancel
             </button>
+          )}
+          {!running && !eraseConfirm && (
+            <button className="btn small" style={{ marginTop: '8px' }} onClick={() => setEraseConfirm(true)}>
+              Erase calibration
+            </button>
+          )}
+          {!running && eraseConfirm && (
+            <div className="confirm-box" style={{ marginTop: '8px' }}>
+              <p>
+                Erase <b>{p.name}</b>'s calibration, finished and partial? The controller also drops the
+                cameras this phone calibrated; cameras other {p.model} phones calibrated stay.
+              </p>
+              <div className="confirm-actions">
+                <button className="btn danger" onClick={eraseCalibration} disabled={eraseBusy}>
+                  Erase
+                </button>
+                <button className="btn" onClick={() => setEraseConfirm(false)} disabled={eraseBusy}>
+                  Keep
+                </button>
+              </div>
+            </div>
           )}
         </div>
       )}

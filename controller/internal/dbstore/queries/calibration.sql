@@ -1,11 +1,15 @@
--- name: GetCalibration :one
-SELECT manufacturer_model, source_phone_id, calibrated_at_ms, result_json
-FROM calibration WHERE manufacturer_model = ?;
+-- name: ListCameraCalibrations :many
+SELECT manufacturer_model, camera_id, source_phone_id, calibrated_at_ms, camera_json
+FROM camera_calibration WHERE manufacturer_model = ?
+ORDER BY camera_id;
 
--- name: UpsertCalibration :exec
-INSERT INTO calibration (manufacturer_model, source_phone_id, calibrated_at_ms, result_json)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(manufacturer_model) DO UPDATE SET
+-- name: UpsertCameraCalibration :exec
+INSERT INTO camera_calibration (manufacturer_model, camera_id, source_phone_id, calibrated_at_ms, camera_json)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(manufacturer_model, camera_id) DO UPDATE SET
     source_phone_id  = excluded.source_phone_id,
     calibrated_at_ms = excluded.calibrated_at_ms,
-    result_json      = excluded.result_json;
+    camera_json      = excluded.camera_json;
+
+-- name: DeleteCameraCalibrationsFromPhone :exec
+DELETE FROM camera_calibration WHERE source_phone_id = ?;

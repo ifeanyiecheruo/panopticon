@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -16,6 +17,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -68,7 +70,29 @@ fun CalibrateScreen(app: PanopticonApplication) {
     }
 
     val running = status?.status == "running"
+    val partial = status?.status == "partial"
     val recording = mode == AppMode.RECORD
+    var confirmErase by remember { mutableStateOf(false) }
+
+    if (confirmErase) {
+        AlertDialog(
+            onDismissRequest = { confirmErase = false },
+            title = { Text("Erase calibration?") },
+            text = { Text("Removes this phone's completed and partial calibration. Zoom falls back to soft digital zoom until it is calibrated again.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmErase = false
+                        if (runner.erase() is CalibrationRunner.EraseOutcome.Erased) {
+                            status = runner.status(null)
+                            result = currentResult(runner)
+                        }
+                    },
+                ) { Text("Erase", color = PanopticonColors.rec) }
+            },
+            dismissButton = { TextButton(onClick = { confirmErase = false }) { Text("Keep") } },
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -123,7 +147,13 @@ fun CalibrateScreen(app: PanopticonApplication) {
                     contentColor = PanopticonColors.accentInk,
                 ),
             ) {
-                Text(if (result == null) "Run calibration" else "Re-run")
+                Text(
+                    when {
+                        partial -> "Resume"
+                        result == null -> "Run calibration"
+                        else -> "Re-run"
+                    },
+                )
             }
             if (running) {
                 OutlinedButton(onClick = { status?.runId?.let { runner.cancel(it) } }) {
@@ -132,6 +162,11 @@ fun CalibrateScreen(app: PanopticonApplication) {
             } else if (mode == AppMode.STANDBY) {
                 OutlinedButton(onClick = { app.requestMode(AppMode.RECORD) }) {
                     Text("Resume recording", color = PanopticonColors.text)
+                }
+            }
+            if (!running && (result != null || partial)) {
+                OutlinedButton(onClick = { confirmErase = true }) {
+                    Text("Erase", color = PanopticonColors.rec)
                 }
             }
         }
@@ -231,6 +266,6 @@ private fun CardBox(title: String, content: @Composable () -> Unit) {
 
 private fun currentResult(runner: CalibrationRunner): CalibrationResult? =
     when (val outcome = runner.result(null)) {
-        is CalibrationRunner.ResultOutcome.Completed -> outcome.result
+        is CalibrationRunner.ResultOutcome.Found -> outcome.result
         else -> null
     }
