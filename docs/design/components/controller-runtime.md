@@ -76,7 +76,8 @@ runtime.
 
 ### 3.3 Interfaces
 
-- **Provided:** the Wails binding surface to the frontend; `/live/<phoneID>/*` and `/archive/*`
+- **Provided:** the Wails binding surface to the frontend; `/live/<phoneID>/*`, `/archive/*` and
+  `/fmp4/<phoneID>/<file>` (an archived segment remuxed to fragmented MP4 per request, `internal/remux`)
   on the asset server.
 - **Required:** the `internal/*` packages in §3.2.
 
