@@ -52,6 +52,7 @@ which.
 | [`sync-cadence-and-backoff.md`](sync-cadence-and-backoff.md) | controller | small |
 | [`visual-language-pass.md`](visual-language-pass.md) | both | medium |
 | [`recording-resolution-tradeoff.md`](recording-resolution-tradeoff.md) | phone | investigate, then medium |
+| [`tray-unresponsive.md`](tray-unresponsive.md) | controller | small (soak + steps 2, 4 left) |
 
 No hard ordering. The cross-cutting ones (`ll-hls-upgrade`, `qr-pairing`) need coordinated
 phone + controller work; the rest are single-side.
