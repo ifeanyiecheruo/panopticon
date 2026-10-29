@@ -94,6 +94,17 @@ NODE_DIR := $(NVM_ROOT)/v$(NODE_VERSION)
 # are all empty), which isn't writable. Same fix as ADB: glob/derive real paths instead of trusting
 # the env vars, and point TMP/TEMP at a scratch dir under GOPATH that this Makefile controls and
 # creates. See docs/quirks/dev-tooling-windows.md.
+# The controller itself needs the per-user profile vars this make strips: it resolves its data
+# directory from %LocalAppData% (exits at startup with "%LocalAppData% is not defined" without
+# it), and WebView2 keeps its user data under the profile. run-controller passes them to the
+# controller process only. Built at recipe time with `cygpath -w` from `whoami`, so the real
+# Windows paths (backslashes and all) come out of command substitution rather than Makefile text,
+# which the recipe shell would strip the backslashes from (see the GRADLEW note above).
+CONTROLLER_ENV = USERPROFILE="$$(cygpath -w /c/Users/$$(whoami))" \
+	LOCALAPPDATA="$$(cygpath -w /c/Users/$$(whoami)/AppData/Local)" \
+	APPDATA="$$(cygpath -w /c/Users/$$(whoami)/AppData/Roaming)" \
+	TEMP="$$(cygpath -w /c/Users/$$(whoami)/AppData/Local/Temp)" \
+	TMP="$$(cygpath -w /c/Users/$$(whoami)/AppData/Local/Temp)"
 export GOPATH := $(firstword $(wildcard /c/Users/*/go))
 export TMP := $(GOPATH)/panopticon-make-tmp
 export TEMP := $(TMP)
@@ -341,7 +352,7 @@ run-controller: build-controller ## Launch the controller binary (tray icon; kee
 	@# Redirected to a log file, not inherited - otherwise this recipe (and `make` itself, and any
 	@# pipe reading its output) blocks until the controller process exits, since a background `&`
 	@# job still holds an inherited stdout/stderr pipe open.
-	"$(CONTROLLER_BIN)" > controller/run-controller.log 2>&1 &
+	$(CONTROLLER_ENV) "$(CONTROLLER_BIN)" > controller/run-controller.log 2>&1 &
 	@echo "==> Launched controller (tray icon should appear); it keeps running in the background."
 	@echo "    stdout/stderr -> controller/run-controller.log. Quit it from the tray menu when done."
 

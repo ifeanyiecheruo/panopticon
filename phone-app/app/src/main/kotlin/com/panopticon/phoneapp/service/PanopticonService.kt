@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -33,6 +34,9 @@ private const val NOTIFICATION_ID = 1001
  * protecting rather than for the app.
  */
 private const val WAKE_LOCK_TAG = "panopticon:camera-pipeline"
+
+/** Shows up in `dumpsys wifi`; named, like [WAKE_LOCK_TAG], for what it protects. */
+private const val WIFI_LOCK_TAG = "panopticon:http-server"
 
 /**
  * The process's whole reason to exist, mirroring the old prototype's architecture: an unbound,
@@ -66,6 +70,16 @@ class PanopticonService : Service() {
      */
     private var wakeLock: PowerManager.WakeLock? = null
 
+    /**
+     * Held for as long as this service lives, alongside [wakeLock]: keeping the CPU awake does not
+     * keep the Wi-Fi radio associated. With the screen off the BLU G5 (API 28) drops off Wi-Fi
+     * entirely while dozing - despite "keep Wi-Fi on during sleep" - and sometimes comes back
+     * associated but with no route, so the HTTP server is up and nothing can reach it. A Wi-Fi
+     * lock is what tells the platform this app needs the radio with the screen off.
+     * See docs/quirks/android-service.md.
+     */
+    private var wifiLock: WifiManager.WifiLock? = null
+
     override fun onCreate() {
         super.onCreate()
         app = PanopticonApplication.from(this)
@@ -73,6 +87,7 @@ class PanopticonService : Service() {
         app.onCameraConfigChanged = ::handleCameraConfigChanged
         createNotificationChannel()
         acquireWakeLock()
+        acquireWifiLock()
         // Before onStartCommand brings the camera up: the first sample is synchronous, so a phone
         // that boots (or is restarted by START_STICKY) already hot never opens the camera at all.
         thermalGuard = ThermalGuard(applicationContext, app.appConfig, app.appState, ::handleThermalChanged)
@@ -100,6 +115,33 @@ class PanopticonService : Service() {
     private fun releaseWakeLock() {
         runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
         wakeLock = null
+    }
+
+    // FULL_HIGH_PERF, not FULL_LOW_LATENCY: low-latency only takes effect while the app is in the
+    // foreground with the screen on, the opposite of when this lock matters. HIGH_PERF is
+    // deprecated from API 34, where the platform manages the radio itself; on the older devices
+    // that actually drop Wi-Fi it is the lock that keeps the radio up.
+    @Suppress("DEPRECATION")
+    private fun acquireWifiLock() {
+        if (wifiLock != null) return
+        try {
+            val wm = applicationContext.getSystemService(WifiManager::class.java)
+            // No timeout, for the same reason as the wake lock: onDestroy releases it.
+            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, WIFI_LOCK_TAG).apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            Log.i(TAG, "Wi-Fi lock held for the HTTP server")
+        } catch (e: Exception) {
+            // Most devices keep Wi-Fi up without it; the ones that don't drop off the network
+            // with the screen off. Worth a log line, not worth refusing to start over.
+            Log.e(TAG, "could not acquire Wi-Fi lock; the phone may drop off Wi-Fi with the screen off", e)
+        }
+    }
+
+    private fun releaseWifiLock() {
+        runCatching { wifiLock?.takeIf { it.isHeld }?.release() }
+        wifiLock = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -333,6 +375,7 @@ class PanopticonService : Service() {
         }
         httpServer?.stop()
         httpServer = null
+        releaseWifiLock()
         releaseWakeLock()
         super.onDestroy()
     }

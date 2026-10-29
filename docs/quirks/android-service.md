@@ -23,6 +23,22 @@ is verified, not when the guarded line runs.)
 **Where:** `phone-app/app/src/main/kotlin/com/panopticon/phoneapp/service/PanopticonService.kt`
 (`onStartCommand`).
 
+### A partial wake lock doesn't keep Wi-Fi up: the BLU G5 drops off the network while dozing
+**Assumed:** the service's partial wake lock (held for the camera pipeline) plus the system's "keep
+Wi-Fi on during sleep" setting (`wifi_sleep_policy` = 2, never) would keep the phone reachable over
+Wi-Fi with the screen off.
+**Actually:** on the BLU G5 (Android 9, API 28), with the screen off and the device dozing, Wi-Fi
+disconnected entirely (`Supplicant state: DISCONNECTED`, no IPv4 on `wlan0`) and stayed down until
+the screen was woken. After waking it re-associated with the same address but sometimes with no
+default route: the app's HTTP server was up (it answered through `adb forward`) but neither the PC
+nor the phone could ping the other. The controller logged `phone unreachable` throughout.
+Toggling Wi-Fi (`adb shell svc wifi disable` / `enable`) restored the route.
+**Workaround:** the service also holds a `WifiManager.WifiLock` for its whole lifetime, alongside
+the wake lock. `WIFI_MODE_FULL_HIGH_PERF`, not `FULL_LOW_LATENCY`, which only takes effect in the
+foreground with the screen on. HIGH_PERF is deprecated from API 34.
+**Where:** `phone-app/app/src/main/kotlin/com/panopticon/phoneapp/service/PanopticonService.kt`
+(`acquireWifiLock`).
+
 ## HTTP server
 
 ### Bind-retry-on-crash-loop - implemented, not stress-tested via an induced crash
