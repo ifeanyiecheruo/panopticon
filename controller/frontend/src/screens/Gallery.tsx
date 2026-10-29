@@ -287,7 +287,6 @@ export function Gallery({ galleryFilter, onFilterChange }: GalleryProps) {
             <>
               <ClipPlayer
                 clip={viewer}
-                controls
                 autoplay={autoplay}
                 onFinished={handleClipFinished}
                 onStarted={handleStarted}
