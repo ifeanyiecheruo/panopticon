@@ -26,6 +26,7 @@ arming, unpair / force-unpair.
 | Power state: plugged vs charging (both sides) | done: `/api/status` `plugged`/`powerSource`/`batteryCurrentMa` (1-minute average); plug + bolt / warning plug + arrow on the battery glyph |
 | Live view (LL-HLS, both sides) | plain HLS done, verified end to end; LL-HLS implemented, build/unit-verified — on-device soak still pending ([`ll-hls-upgrade.md`](ll-hls-upgrade.md)) |
 | Controller master-detail Fleet / Gallery / Trash / Add-phone | done |
+| Gapless clip playback (one MSE-fed `<video>`, per-request fMP4 remux) | done, verified in the Wails app: multi-segment and multi-clip play-through, scrubbing, fullscreen, resolution change, 8x, an hour-long run, Trash ([`../design/components/controller-ui.md`](../design/components/controller-ui.md)) |
 | Unpair / force-unpair (controller) | done, integration-tested |
 | Controller state in a fixed per-user directory | done: `%LocalAppData%\Panopticon` (etc.), `$PANOPTICON_HOME` override, `wails dev` keeps the launch dir; moves an older build's launch-dir state on first run; archive paths stored relative; unit-tested |
 
@@ -49,7 +50,6 @@ which.
 | [`phone-remaining-screens.md`](phone-remaining-screens.md) | phone | medium |
 | [`sync-cadence-and-backoff.md`](sync-cadence-and-backoff.md) | controller | small |
 | [`visual-language-pass.md`](visual-language-pass.md) | both | medium |
-| [`gallery-mse-playback.md`](gallery-mse-playback.md) | controller | medium–large |
 | [`recording-resolution-tradeoff.md`](recording-resolution-tradeoff.md) | phone | investigate, then medium |
 
 No hard ordering. The cross-cutting ones (`ll-hls-upgrade`, `qr-pairing`) need coordinated

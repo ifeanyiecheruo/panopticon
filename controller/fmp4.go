@@ -19,10 +19,10 @@ import (
 //
 // ClipPlayer feeds these to one MediaSource so a clip's segments - and a
 // play-through into the next clip - play as one stream on one <video>
-// (docs/plan/gallery-mse-playback.md). The archive keeps the phone's
-// progressive MP4 untouched: remuxing reads only the moov and copies the
-// samples through, so doing it per request is cheap (~10ms a segment) and
-// needs no second copy on disk.
+// (docs/design/components/controller-ui.md, "Clip playback"). The archive
+// keeps the phone's progressive MP4 untouched: remuxing reads only the moov
+// and copies the samples through, so doing it per request is cheap (~10ms a
+// segment) and needs no second copy on disk.
 //
 // X-Codec carries the codec string MSE's addSourceBuffer needs.
 func fmp4Handler(archiveDir string) http.Handler {

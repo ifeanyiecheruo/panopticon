@@ -4,7 +4,7 @@
 // moof+mdat fragment per GOP. That is the only shape Media Source Extensions
 // accept, and it is what lets the gallery play a clip's segments - and a
 // play-through across clips - as one stream on one <video>
-// (docs/plan/gallery-mse-playback.md).
+// (docs/design/components/controller-ui.md, "Clip playback").
 //
 // It is a remux, not a transcode: the H.264 samples are copied byte for byte,
 // only the boxes around them change. Built for what the phone records (one
