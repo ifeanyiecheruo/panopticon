@@ -100,6 +100,17 @@ components.
   `autoplay` advance. Trash: no chip row, Restore + Delete
   fabs, `Empty trash` gated behind a count-naming confirm. Shift/ctrl multi-select, arrow-key +
   Delete-key nav. Both viewers are the same `ClipPlayer`, transport controls included.
+- **Clip playback** — one `<video>`, one `MediaSource`, one `SourceBuffer` in `sequence` mode
+  (`lib/segmentFeeder.ts`). The clip's segments, then `nextClip`'s, are fetched from
+  `/fmp4/<phoneId>/<file>` (the archived segment remuxed to fragmented MP4 per request by
+  `internal/remux`; codec string in `X-Codec`) and appended back to back as one stream, so
+  segment and clip boundaries are just the next frame. Playback rolls into `nextClip` on the
+  same stream and fires `onFinished` at the crossing; picking the queued `nextClip` by hand
+  seeks to it, any other clip starts a fresh stream. All buffer work runs one operation at a
+  time in one loop; seeks and timeline changes only record a target. The buffer is always one
+  contiguous run of whole segments (a seek outside it clears it and restarts at the target),
+  read 15s ahead and evicted 10s behind. The transport bar spans the clip, not the stream;
+  fullscreen is taken on the wrapper.
 - **Add phone** — paste view (two fields, full-URL autofill into either) default; QR link
   (deferred). "Connecting…" → inline error distinguishing unreachable address vs bad invite, or
   a success card.
@@ -110,6 +121,18 @@ components.
   [`0012`](../decisions/0012-ux-shape.md): autoplay-advance needs the grid selection
   to stay visible, which a modal makes awkward; the old remount-on-nav caused a loading flash on
   every selection.
+- **One MSE-fed `<video>`, not two swapped elements** — the player used to keep a second
+  `<video>` preloaded and swap the visible one at each boundary. Everything attached to an
+  element saw the swap (native fullscreen, the seek bar), and a seek into another segment was a
+  `src` change + `load()` that raced the idle element's preload and a stray `ended`, which made
+  scrubbing unreliable. MSE accepts only fragmented MP4 and `MediaMuxer` writes progressive, so
+  the controller remuxes. It does so **per request** rather than at sync: the phone's segments
+  are one H.264 track, no B-frames, no edit list, one chunk, so a remux reads only the `moov` and
+  copies samples through (~10ms a segment). That needs no second copy on disk, no `segments`
+  migration and no backfill, and the archive, thumbnails and downloads stay as recorded. Pure
+  Go, not ffmpeg (an extra binary to ship) or a JS muxer re-running on every play. The
+  single-contiguous-run rule is what keeps it simple: there is never a gap in the buffer for
+  playback to stall on.
 - **UI reads the DB, not the phones** —
   [`0011`](../decisions/0011-controller-runtime-and-state.md): keeps the UI responsive
   during sync.
