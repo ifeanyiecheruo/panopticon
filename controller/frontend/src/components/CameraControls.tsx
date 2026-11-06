@@ -120,7 +120,8 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
   const [msg, setMsg] = useState<string | null>(null);
   const [invalidKey, setInvalidKey] = useState<string | null>(null);
 
-  const [openMode, setOpenMode] = useState('zoom');
+  /** 'auto' is the Auto button's own panel: the area-of-interest picker. */
+  const [openMode, setOpenMode] = useState('auto');
   /** How much of the current zoom the phone is finishing in software. Tracked separately from
    *  `view` because the generated Wails model is a class with methods, so it can't be spread to
    *  patch one field. Above ~1.5x it means the image is being upscaled rather than resolved. */
@@ -218,23 +219,44 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
    *  onto the current view, replaying it would zoom again every single time. */
   const SELECTION_KEYS = ['zoomSelectNorm', 'aeSelectNorm', 'afSelectNorm'] as const;
 
-  const applyKeys = (partial: Partial<ControlKeys>, commit = true) => {
+  /** `manual` is the mode the patch leaves the camera in. Touching a manual control switches to
+   *  manual; zoom keeps whichever mode is current, and the area of interest is an auto control. */
+  const applyKeys = (partial: Partial<ControlKeys>, commit = true, manual = true) => {
     const sent = { ...keys, ...partial };
     const retained = { ...sent };
     for (const k of SELECTION_KEYS) delete retained[k];
     setKeys(retained);
-    if (!manualOn) setManualOn(true);
-    pushControls(true, sent, commit);
+    if (manual !== manualOn) setManualOn(manual);
+    pushControls(manual, sent, commit);
   };
   const setKey = <K extends keyof ControlKeys>(k: K, v: ControlKeys[K], commit = false) =>
     applyKeys({ [k]: v } as Partial<ControlKeys>, commit);
 
+  // Auto keeps the zoom: it resets how the picture is exposed, focused and balanced, not what is
+  // framed. Any earlier area of interest goes with the rest.
   const goAuto = () => {
+    const kept: ControlKeys = { zoomRatio: keys.zoomRatio, zoomViewNorm: keys.zoomViewNorm };
     setManualOn(false);
-    setKeys({});
+    setKeys(kept);
     setInvalidKey(null);
-    pushControls(false, {}, true);
+    setOpenMode('auto');
+    pushControls(false, kept, true);
   };
+  // Leaving auto keeps every key; the regions only act in manual alongside manual exposure/focus,
+  // and choosing either of those clears them.
+  const leaveAuto = () => {
+    setManualOn(true);
+    setOpenMode('exposure');
+    pushControls(true, keys, true);
+  };
+  /** The Auto button toggles auto. In auto with Zoom open, it first brings the area picker back;
+   *  a press with the picker already open leaves auto. */
+  const onAutoButton = () => {
+    if (manualOn) goAuto();
+    else if (openMode !== 'auto') setOpenMode('auto');
+    else leaveAuto();
+  };
+  const hasArea = !!(keys.aeRegionNorm || keys.afRegionNorm);
 
   // Like a camera/resolution switch, a rotation change rebuilds the phone pipeline (the
   // encoder's dimensions swap for 90/270), so re-attach the live player afterwards - otherwise
@@ -336,10 +358,17 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
   // box) always lines up with the visible frame with no extra alignment step. That is also what
   // makes viewer-normalised coordinates meaningful: 0..1 over the overlay IS 0..1 over the frame
   // the phone is sending, which is the space every rect on this API travels in.
+  type SelectionKey = (typeof SELECTION_KEYS)[number];
   type RectTarget = {
-    key: 'zoomSelectNorm' | 'aeSelectNorm' | 'afSelectNorm';
+    /** Names the picker; for a single-rect target it is also the key the rect is sent as. */
+    key: SelectionKey | 'areaSelect';
+    /** Every selection key the drawn rect is sent as - two for the area of interest, which sets
+     *  the metering and focus rects together. */
+    sends: SelectionKey[];
     /** keys to clear (set undefined) when this rect is applied — the rect wins. */
     clears: (keyof ControlKeys)[];
+    /** the mode applying it leaves the camera in. */
+    manual: boolean;
     /** transient confirmation shown in the hint line after applying. */
     applied: string;
   };
@@ -370,9 +399,10 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
       // (ViewportRect / ZoomGeometry), so the region the user saw and drew is the region that
       // actually gets used. That is why these go in a *SelectNorm field: they are fresh-draw
       // instructions, not the absolute state they produce.
-      const clears: Partial<ControlKeys> = {};
-      for (const c of target.clears) clears[c] = undefined;
-      applyKeys({ [target.key]: drawn, ...clears } as Partial<ControlKeys>, true);
+      const patch: Partial<ControlKeys> = {};
+      for (const c of target.clears) patch[c] = undefined;
+      for (const k of target.sends) patch[k] = drawn;
+      applyKeys(patch, true, target.manual);
       flashNote(target.applied);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -413,7 +443,14 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
     if (canVideoStab || canOptStab) modes.push({ id: 'stabilize', label: 'Stabilize', icon: 'stabilize' });
     modes.push({ id: 'rotate', label: 'Rotation', icon: 'rotate' });
   }
-  const validOpen = modes.some((m) => m.id === openMode) ? openMode : (modes[0]?.id ?? 'exposure');
+  // Auto offers only its own area picker and Zoom; every other mode waits until auto is left.
+  const validOpen = !manualOn
+    ? openMode === 'zoom'
+      ? 'zoom'
+      : 'auto'
+    : modes.some((m) => m.id === openMode)
+      ? openMode
+      : (modes[0]?.id ?? 'exposure');
 
   // ---- descriptor for the active mode: 0+ overlay rulers, an optional dropdown ----
   type RulerDef = {
@@ -450,14 +487,38 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
             spec: spec(1, zoomHi, ['zoomOut', 'zoomIn']),
             value: keys.zoomRatio ?? 1,
             dflt: 1,
-            set: (v, c) => applyKeys({ zoomRatio: v, zoomSelectNorm: undefined }, c),
+            set: (v, c) => applyKeys({ zoomRatio: v, zoomSelectNorm: undefined }, c, manualOn),
           },
         ];
         rectTarget = {
           key: 'zoomSelectNorm',
+          sends: ['zoomSelectNorm'],
           clears: [],
+          manual: manualOn,
           applied: 'Zoomed to the selection.',
         };
+        break;
+      }
+      case 'auto': {
+        // One rect for everything auto can be pointed at: the AE metering region and the AF region
+        // (whichever this camera has). Exposure and focus stay automatic, just biased to the box.
+        const sends: SelectionKey[] = [];
+        if (canSpotMeter) sends.push('aeSelectNorm');
+        if (canFocusPoint) sends.push('afSelectNorm');
+        if (sends.length > 0) {
+          rectTarget = {
+            key: 'areaSelect',
+            sends,
+            clears: [],
+            manual: false,
+            applied: 'Area of interest set.',
+          };
+          note = hasArea
+            ? 'Exposure and focus are following the area of interest. Draw again to move it.'
+            : 'No area of interest: exposure and focus look at the whole frame.';
+        } else {
+          note = 'This camera has no metering or focus regions, so auto looks at the whole frame.';
+        }
         break;
       }
       case 'exposure': {
@@ -521,6 +582,8 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
           if (canSpotMeter) {
             rectTarget = {
               key: 'aeSelectNorm',
+              sends: ['aeSelectNorm'],
+              manual: true,
               clears: canManualExp ? ['sensorExposureTimeNs', 'sensorSensitivityIso'] : [],
               applied: 'Metering spot set.',
             };
@@ -569,6 +632,8 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
           if (canFocusPoint) {
             rectTarget = {
               key: 'afSelectNorm',
+              sends: ['afSelectNorm'],
+              manual: true,
               clears: canFocusDial ? ['lensFocusDistanceDiopters'] : [],
               applied: 'Focus point set.',
             };
@@ -834,13 +899,18 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
           <>
             <div className="adjust-row">
               <button
-                className="pcam-auto"
-                onClick={goAuto}
-                disabled={!manualOn}
-                title="Return every control to full auto"
+                className={`pcam-auto ${manualOn ? '' : 'on'} ${validOpen === 'auto' ? 'open' : ''}`}
+                onClick={onAutoButton}
+                title={
+                  manualOn
+                    ? 'Auto: every control except zoom back to auto; then drag a box to set the area of interest'
+                    : validOpen === 'auto'
+                      ? 'Leave auto for manual controls'
+                      : 'Back to the area of interest'
+                }
               >
                 <ResetIcon />
-                <span>Full auto</span>
+                <span>Auto</span>
               </button>
               <HScroll className="adjust-scroll" centerKey={validOpen}>
                 {modes.map((m) => (
@@ -848,6 +918,8 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
                     key={m.id}
                     data-key={m.id}
                     className={`adjust-btn ${validOpen === m.id ? 'open' : ''}`}
+                    disabled={!manualOn && m.id !== 'zoom'}
+                    title={!manualOn && m.id !== 'zoom' ? 'Leave auto to use this' : undefined}
                     onClick={() => setOpenMode(m.id)}
                   >
                     {modeIcon(m.icon)}
@@ -885,7 +957,9 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
                   (phoneRecording
                     ? 'The picture is a still, refreshed every couple of seconds; a change shows on the next one.'
                     : 'The preview runs a few seconds behind.')
-                : validOpen === 'focus'
+                : validOpen === 'auto'
+                  ? 'Drag a box on the preview around what matters — exposure and focus follow it and stay automatic (applied on release, Esc cancels). Press Auto again to leave auto.'
+                  : validOpen === 'focus'
                   ? 'Drag the ruler for manual focus, or drag a box on the preview to focus on that area (applied on release, Esc cancels).'
                   : 'Drag the ruler for exposure, or drag a box on the preview to spot-meter that area (applied on release, Esc cancels).'
               : phoneRecording

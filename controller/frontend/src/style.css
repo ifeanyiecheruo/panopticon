@@ -495,6 +495,9 @@ a{color:var(--accent);}
 .pcam-auto span{font-size:9.5px; white-space:nowrap;}
 .pcam-auto:not(:disabled):hover{border-color:var(--accent-dim); color:var(--text);}
 .pcam-auto:disabled{opacity:.45; cursor:default;}
+.pcam-auto.on{color:var(--accent);}
+.pcam-auto.open{border-color:var(--accent-dim); background:rgba(79,227,201,.07);}
+.adjust-btn:disabled{opacity:.35; cursor:default;}
 .adjust-scroll{margin-top:10px;}
 .adjust-btn{
   flex:0 0 66px; display:flex; flex-direction:column; align-items:center; gap:3px;

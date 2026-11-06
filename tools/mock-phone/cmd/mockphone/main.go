@@ -624,7 +624,7 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 	if keys == nil {
 		keys = map[string]any{}
 	}
-	hwZoom, glResidual := zoomSplit(keys, s.manualControlEnabled)
+	hwZoom, glResidual := zoomSplit(keys)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cameraId":             s.activeCameraID,
 		"rotationDegrees":      s.rotationDegrees,

@@ -32,10 +32,8 @@ func (s *server) handleCameraSnapshot(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	mode, overheated := s.mode, s.overheated
 	view := fullView()
-	if s.manualControlEnabled {
-		if v, ok := rectFromAny(s.controlKeys["zoomViewNorm"]); ok {
-			view = v
-		}
+	if v, ok := rectFromAny(s.controlKeys["zoomViewNorm"]); ok {
+		view = v
 	}
 	s.mu.Unlock()
 
