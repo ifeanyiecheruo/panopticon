@@ -1,6 +1,8 @@
 package com.panopticon.phoneapp.camera
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class SnapshotReadbackTest {
@@ -25,5 +27,15 @@ class SnapshotReadbackTest {
         val (w, h) = SnapshotReadback.stillSize(1280, 721, 961)
         assertEquals(0, w % 2)
         assertEquals(0, h % 2)
+    }
+
+    @Test
+    fun `snapshot quality accepts 10 to 100 and rejects the rest`() {
+        assertNull(SnapshotReadback.validateQuality(10))
+        assertNull(SnapshotReadback.validateQuality(SnapshotReadback.DEFAULT_JPEG_QUALITY))
+        assertNull(SnapshotReadback.validateQuality(100))
+        assertNotNull(SnapshotReadback.validateQuality(9))
+        assertNotNull(SnapshotReadback.validateQuality(101))
+        assertNotNull(SnapshotReadback.validateQuality(0))
     }
 }

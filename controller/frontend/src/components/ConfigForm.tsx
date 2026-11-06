@@ -17,6 +17,7 @@ interface Draft {
   motionSensitivity: string;
   storageCapGb: string;
   ringBufferDays: string;
+  snapshotQuality: string;
 }
 
 function toDraft(c: PhoneApiConfig): Draft {
@@ -25,6 +26,8 @@ function toDraft(c: PhoneApiConfig): Draft {
     motionSensitivity: c.motionSensitivity ?? 'medium',
     storageCapGb: c.storageCapBytes ? String(+(c.storageCapBytes / GB).toFixed(1)) : '',
     ringBufferDays: c.ringBufferMaxAgeMs ? String(+(c.ringBufferMaxAgeMs / DAY_MS).toFixed(2)) : '',
+    // 0 from a phone whose build predates the setting.
+    snapshotQuality: c.snapshotJpegQuality ? String(c.snapshotJpegQuality) : '',
   };
 }
 
@@ -37,7 +40,7 @@ export function ConfigForm({ phoneId, config, configError, onSaved }: Props) {
   const [msg, setMsg] = useState<string | null>(null);
 
   // Re-seed if the parent hands us a fresh config object (device switch / reload).
-  const seedKey = config ? `${config.deviceName}|${config.motionSensitivity}|${config.storageCapBytes}|${config.ringBufferMaxAgeMs}` : '';
+  const seedKey = config ? `${config.deviceName}|${config.motionSensitivity}|${config.storageCapBytes}|${config.ringBufferMaxAgeMs}|${config.snapshotJpegQuality}` : '';
   const [lastSeed, setLastSeed] = useState(seedKey);
   if (seedKey !== lastSeed) {
     setLastSeed(seedKey);
@@ -75,6 +78,10 @@ export function ConfigForm({ phoneId, config, configError, onSaved }: Props) {
     if (d.ringBufferDays !== original.ringBufferDays) {
       const days = parseFloat(d.ringBufferDays);
       if (!isNaN(days) && days > 0) patch.ringBufferMaxAgeMs = Math.round(days * DAY_MS);
+    }
+    if (d.snapshotQuality !== original.snapshotQuality) {
+      const q = parseInt(d.snapshotQuality, 10);
+      if (!isNaN(q)) patch.snapshotJpegQuality = q; // the phone rejects anything outside 10..100
     }
     try {
       const r = await SetConfig(phoneId, patch as Parameters<typeof SetConfig>[1]);
@@ -134,6 +141,19 @@ export function ConfigForm({ phoneId, config, configError, onSaved }: Props) {
           onInput={(e) => set('ringBufferDays', (e.target as HTMLInputElement).value)}
         />
       </div>
+      {original.snapshotQuality !== '' && (
+        <div className="cfg-row">
+          <label title="JPEG quality of the preview stills shown while the phone records">Still quality (10–100)</label>
+          <input
+            type="number"
+            min="10"
+            max="100"
+            step="5"
+            value={d.snapshotQuality}
+            onInput={(e) => set('snapshotQuality', (e.target as HTMLInputElement).value)}
+          />
+        </div>
+      )}
 
       <div className="cfg-actions">
         <button className="btn primary" disabled={!dirty || busy} onClick={save}>

@@ -356,6 +356,9 @@ type Config struct {
 	ThermalSafeLevel     string  `json:"thermalSafeLevel"`     // default "moderate"
 	ThermalCriticalTempC float32 `json:"thermalCriticalTempC"`
 	ThermalSafeTempC     float32 `json:"thermalSafeTempC"`
+	// JPEG quality (10..100) of the stills a recording phone serves. Zero from phones on
+	// builds that predate it.
+	SnapshotJpegQuality int `json:"snapshotJpegQuality"`
 }
 
 func (c *Client) Config(ctx context.Context) (Config, error) {
@@ -380,6 +383,8 @@ type ConfigPatch struct {
 	ThermalSafeLevel     *string  `json:"thermalSafeLevel,omitempty"`
 	ThermalCriticalTempC *float32 `json:"thermalCriticalTempC,omitempty"`
 	ThermalSafeTempC     *float32 `json:"thermalSafeTempC,omitempty"`
+	// 10..100, else the phone answers 400.
+	SnapshotJpegQuality *int `json:"snapshotJpegQuality,omitempty"`
 }
 
 // SetConfig batch-updates device config and returns the full resulting document.

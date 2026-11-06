@@ -30,7 +30,7 @@ func (s *server) handleCameraSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	mode, overheated := s.mode, s.overheated
+	mode, overheated, quality := s.mode, s.overheated, s.snapshotJpegQuality
 	view := fullView()
 	if v, ok := rectFromAny(s.controlKeys["zoomViewNorm"]); ok {
 		view = v
@@ -52,7 +52,7 @@ func (s *server) handleCameraSnapshot(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	var buf bytes.Buffer
-	_ = jpeg.Encode(&buf, renderStill(view, now), &jpeg.Options{Quality: 75})
+	_ = jpeg.Encode(&buf, renderStill(view, now), &jpeg.Options{Quality: quality})
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Captured-At-Ms", strconv.FormatInt(now.UnixMilli(), 10))

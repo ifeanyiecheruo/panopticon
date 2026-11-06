@@ -68,11 +68,12 @@ type server struct {
 	thermalSafeLevel     string
 
 	// Editable device config (GET/POST /api/config).
-	motionSensitivity  string
-	storageCapBytes    int64
-	ringBufferMaxAgeMs int64
-	rotationDegrees    int
-	videoResolution    string // "<w>x<h>" — record/broadcast size (via /api/camera/state)
+	motionSensitivity   string
+	storageCapBytes     int64
+	ringBufferMaxAgeMs  int64
+	snapshotJpegQuality int // also what the mock's stills are encoded at
+	rotationDegrees     int
+	videoResolution     string // "<w>x<h>" — record/broadcast size (via /api/camera/state)
 
 	// Calibration: a sweep is faked as a short timed "running" window, after
 	// which /status reports "completed" and /result serves a canned body.
@@ -114,6 +115,7 @@ func main() {
 		motionSensitivity:    "medium",
 		storageCapBytes:      64_000_000_000,
 		ringBufferMaxAgeMs:   604_800_000,
+		snapshotJpegQuality:  85,
 		videoResolution:      "1280x720",
 		calSweepDurMs:        6000,
 		activeCameraID:       "0",
@@ -138,7 +140,7 @@ func main() {
 	mux.HandleFunc("/api/calibration/start", s.withAuth(s.handleCalibrationStart))
 	mux.HandleFunc("/api/calibration/status", s.withAuth(s.handleCalibrationStatus))
 	mux.HandleFunc("/api/calibration/result", s.withAuth(s.handleCalibrationResult))
-	mux.HandleFunc("/api/calibration", s.withAuth(s.handleCalibrationErase)) // DELETE /api/calibration
+	mux.HandleFunc("/api/calibration", s.withAuth(s.handleCalibrationErase))   // DELETE /api/calibration
 	mux.HandleFunc("/api/calibration/", s.withAuth(s.handleCalibrationCancel)) // DELETE /api/calibration/:runId
 	mux.HandleFunc("/api/cameras", s.withAuth(s.handleCameras))
 	mux.HandleFunc("/api/cameras/active", s.withAuth(s.handleCamerasActive))
@@ -390,6 +392,7 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			RingBufferMaxAgeMs   *int64  `json:"ringBufferMaxAgeMs"`
 			ThermalCriticalLevel *string `json:"thermalCriticalLevel"`
 			ThermalSafeLevel     *string `json:"thermalSafeLevel"`
+			SnapshotJpegQuality  *int    `json:"snapshotJpegQuality"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad config body"})
@@ -413,6 +416,13 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if patch.ThermalSafeLevel != nil {
 			s.thermalSafeLevel = *patch.ThermalSafeLevel
 		}
+		if q := patch.SnapshotJpegQuality; q != nil {
+			if *q < 10 || *q > 100 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("snapshotJpegQuality must be 10..100, got %d", *q)})
+				return
+			}
+			s.snapshotJpegQuality = *q
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -424,6 +434,7 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"thermalSafeLevel":     s.thermalSafeLevel,
 		"thermalCriticalTempC": 45,
 		"thermalSafeTempC":     40,
+		"snapshotJpegQuality":  s.snapshotJpegQuality,
 	})
 }
 
