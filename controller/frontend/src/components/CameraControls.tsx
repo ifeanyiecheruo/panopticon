@@ -14,6 +14,7 @@ import { StillPreviewImage, type StillController } from './StillPreview';
 import { HScroll } from './phonecam/HScroll';
 import { Ruler, type RulerSpec } from './phonecam/Ruler';
 import { modeIcon, CycleIcon, ResetIcon, type ModeIconName, type RulerIconName } from './phonecam/icons';
+import { PlayIcon, PauseIcon } from '../lib/icons';
 
 /** Plain (method-free) shapes for the editable draft + patch payload — the
  * generated Wails model classes carry a `convertValues` method that makes an
@@ -61,6 +62,29 @@ interface Props {
   ctl: LiveController;
   /** Stills, while recording - the phone can't run the live encoder then. */
   still: StillController;
+  /** The viewport's play/pause. The caller turns it into the live stream or stills. */
+  playing: boolean;
+  onPlayingChange: (playing: boolean) => void;
+}
+
+/** The picture the viewport is showing right now - the live <video>'s current frame or the
+ *  still <img> - as a JPEG data URL, or null when there is nothing on screen yet. Both sources
+ *  are same-origin (the controller proxies them), so the canvas is never tainted. */
+function grabFrame(root: HTMLElement | null): string | null {
+  const media = root?.querySelector<HTMLVideoElement | HTMLImageElement>('.live-video:not(.frozen-frame)');
+  if (!media) return null;
+  const w = media instanceof HTMLVideoElement ? media.videoWidth : media.naturalWidth;
+  const h = media instanceof HTMLVideoElement ? media.videoHeight : media.naturalHeight;
+  if (!w || !h) return null;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d')?.drawImage(media, 0, 0, w, h);
+    return canvas.toDataURL('image/jpeg', 0.92);
+  } catch {
+    return null;
+  }
 }
 
 const APPLY_DEBOUNCE_MS = 200;
@@ -108,7 +132,7 @@ function spec(min: number, max: number, ends: [RulerIconName, RulerIconName]): R
 
 type Mode = { id: string; label: string; icon: ModeIconName };
 
-export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
+export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, onPlayingChange }: Props) {
   const [cams, setCams] = useState<CameraInfo[]>([]);
   const [view, setView] = useState<CameraControlsView | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -129,6 +153,10 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
   const [switchBusy, setSwitchBusy] = useState(false);
   const [confirmCam, setConfirmCam] = useState<string | null>(null);
   const [idle, setIdle] = useState(false);
+
+  /** The last frame that was on screen when the preview was paused; null shows a blank frame. */
+  const [frozen, setFrozen] = useState<string | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const idleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -156,8 +184,20 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
   const caps: CameraCapabilities | undefined = view?.capabilities;
   const activeCamId = view?.state?.cameraId || cams.find((c) => c.isActive)?.cameraId || '';
   // One viewport, two feeds: stills while recording, the live video otherwise. Every control and
-  // rect picker below works over whichever is up, in the same 0..1 coordinates.
-  const viewing = phoneRecording ? still.showing : ctl.playing;
+  // rect picker below works over whichever is up, in the same 0..1 coordinates. Paused, the
+  // frozen frame shows but nothing works over it - a change wouldn't show until play.
+  const viewing = playing && (phoneRecording ? still.showing : ctl.playing);
+  const feedUp = playing && (phoneRecording ? still.state.kind !== 'idle' : ctl.state.kind !== 'idle');
+
+  const togglePlaying = () => {
+    if (playing) {
+      // Freeze what was visible. Nothing on screen yet (still connecting, or an error) leaves the
+      // previous frozen frame alone rather than blanking it.
+      const frame = grabFrame(viewportRef.current);
+      if (frame) setFrozen(frame);
+    }
+    onPlayingChange(!playing);
+  };
   const nudgeStill = still.nudge;
 
   // ---- idle fade for the on-video controls ----
@@ -823,19 +863,43 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still }: Props) {
       </div>
       <div className="phonecam" onPointerDownCapture={wake}>
         <div
+          ref={viewportRef}
           className={`viewport-wrap ${idle ? 'idle' : ''}`}
           onMouseEnter={wake}
           onMouseMove={wake}
           onMouseLeave={scheduleFade}
         >
-          {phoneRecording ? (
+          {!playing ? (
+            <div class="live-preview">
+              {frozen ? (
+                <div class="live-video-wrap">
+                  <img class="live-video frozen-frame" src={frozen} alt="The preview, paused" draggable={false} />
+                </div>
+              ) : (
+                <div class="live-frame-idle" />
+              )}
+            </div>
+          ) : phoneRecording ? (
             <StillPreviewImage still={still} />
           ) : (
-            <LivePreviewVideo ctl={ctl} idleHint="Press “Watch live” in the command bar to start the stream." />
+            <LivePreviewVideo ctl={ctl} />
           )}
+          <button
+            className="cam-play-btn"
+            onClick={togglePlaying}
+            title={
+              playing
+                ? 'Pause the preview'
+                : phoneRecording
+                  ? 'Play: stills of the recording, every couple of seconds'
+                  : 'Play: the live stream'
+            }
+          >
+            {playing ? <PauseIcon /> : <PlayIcon />}
+          </button>
           {/* Camera name + switcher stay reachable even when the stream errors,
               so a bad camera can always be cycled back out of. */}
-          {(phoneRecording ? still.state.kind !== 'idle' : ctl.state.kind !== 'idle') && (
+          {feedUp && (
             <>
               <div className="cam-badges">
                 <span className={`cam-badge ${manualOn ? 'manual' : ''}`}>{manualOn ? 'MANUAL' : 'AUTO'}</span>

@@ -90,12 +90,19 @@ export function StopIcon() {
   );
 }
 
-export function LiveIcon() {
+export function PlayIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none" />
-      <path d="M6.3 6.3a8 8 0 000 11.4M17.7 6.3a8 8 0 010 11.4" />
-      <path d="M3.5 3.5a13 13 0 000 17M20.5 3.5a13 13 0 010 17" opacity="0.5" />
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <path d="M8 5.5v13a1 1 0 001.5.86l10.5-6.5a1 1 0 000-1.72L9.5 4.64A1 1 0 008 5.5z" />
+    </svg>
+  );
+}
+
+export function PauseIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <rect x="6" y="5" width="4" height="14" rx="1" />
+      <rect x="14" y="5" width="4" height="14" rx="1" />
     </svg>
   );
 }

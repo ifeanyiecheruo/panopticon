@@ -65,12 +65,29 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
     loadDetail();
   }, [loadDetail]);
 
-  // While recording, the camera view is stills instead of video. Polled only while this screen is
-  // open on a reachable recording phone - the phone renders one only when asked. A 409 means the
-  // phone left record mode on its own (its own UI, another controller): re-read the detail so the
-  // view falls back to the live controls.
+  // The camera view's play/pause. Playing shows whatever the phone can afford: stills while it
+  // records (it can't run the live encoder alongside the recording one), the live stream
+  // otherwise. Paused, the phone does no preview work at all. Starts paused, so opening a phone
+  // never puts it into live mode by itself.
+  const [previewPlaying, setPreviewPlaying] = useState(false);
   const phoneRecording = detail?.status?.mode === 'record';
-  const still = useStillPreview(phoneId, phoneRecording && !!detail?.phone.reachable, loadDetail);
+  const reachable = !!detail?.phone.reachable;
+
+  // Stills are polled only while playing on a reachable recording phone - the phone renders one
+  // only when asked. A 409 means the phone left record mode on its own (its own UI, another
+  // controller): re-read the detail so the view moves over to the live stream.
+  const still = useStillPreview(phoneId, previewPlaying && phoneRecording && reachable, loadDetail);
+
+  // The live stream, while playing on a phone that isn't recording. Keyed on the inputs, not on
+  // the stream's own state, so a stream that failed stays failed until the user presses play
+  // again rather than being retried in a loop.
+  const { watch: liveWatch, stop: liveStop, detach: liveDetach } = live;
+  const liveWanted = previewPlaying && !!detail && !phoneRecording && reachable && runId === null;
+  useEffect(() => {
+    if (liveWanted) liveWatch();
+    else if (phoneRecording) liveDetach(); // the phone left live mode itself; don't undo it
+    else void liveStop();
+  }, [liveWanted, phoneRecording, liveWatch, liveStop, liveDetach]);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
@@ -149,6 +166,9 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
     const next = detail.status?.mode !== 'record';
     setRecordBusy(true);
     try {
+      // The live view holds the camera in live mode: take it out first. Playing carries on as
+      // stills once the phone is recording.
+      if (next && live.live) await live.stop();
       const r = await SetRecording(phoneId, next);
       if (!r.ok) {
         setCalibMsg(r.message || 'Could not change recording state.');
@@ -318,7 +338,14 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
         </div>
       )}
 
-      <CameraControls phoneId={phoneId} phoneRecording={phoneRecording} ctl={live} still={still} />
+      <CameraControls
+        phoneId={phoneId}
+        phoneRecording={phoneRecording}
+        ctl={live}
+        still={still}
+        playing={previewPlaying}
+        onPlayingChange={setPreviewPlaying}
+      />
 
       <div className="section-title">Configuration</div>
       <ConfigForm

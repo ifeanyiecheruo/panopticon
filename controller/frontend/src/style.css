@@ -441,6 +441,15 @@ a{color:var(--accent);}
 }
 .cam-cycle-btn svg{width:15px; height:15px;}
 .cam-cycle-btn:disabled{opacity:.5; cursor:default;}
+/* Play/pause: bottom-left, opposite the camera switcher, and like it never faded - a paused
+   preview has nothing else on it to wake. */
+.cam-play-btn{
+  position:absolute; bottom:9px; left:9px; z-index:4;
+  width:30px; height:30px; border-radius:999px; border:none;
+  background:rgba(8,18,16,.55); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  color:rgba(233,243,238,.85); display:flex; align-items:center; justify-content:center; cursor:pointer;
+}
+.cam-play-btn svg{width:14px; height:14px;}
 
 /* one or more frosted ruler pills, stacked bottom-centre over the live video */
 .overlay-stack{
