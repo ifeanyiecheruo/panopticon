@@ -126,6 +126,11 @@ The applied state persists in `DeviceConfig.cameraControls` and is re-applied to
 pipeline (`record` or `live`) is running — a state dialled in while watching the live preview
 also governs recording. Verified on the Pixel 6 (API 36) and BLU G5 (API 28).
 
+`manualControlEnabled` is the master switch. With it `false` (auto) the phone ignores every key
+except the zoom (`zoomViewNorm`) and an **area of interest**: `aeRegionNorm` and `afRegionNorm`,
+applied with AE metering and continuous AF left on, biased to the box. The controller sets both
+regions from one rect. With it `true` every key applies, as described below.
+
 **The concrete `keys` set** (`CameraControlKeys`; a null/absent field = leave that control on
 auto). `POST` replaces the `keys` object wholesale — send the full desired set.
 
@@ -170,9 +175,9 @@ came from. An uncalibrated phone simply gets `hwZoomRatio: 1` and does it all in
 | `aeExposureCompensation` (int) | `CONTROL_AE_EXPOSURE_COMPENSATION` | `aeCompensationRange` |
 | `aeLock` (bool) | `CONTROL_AE_LOCK` (metering freeze, not a manual-exposure dial) | — |
 | `manualExposure` (bool) + `sensorExposureTimeNs` + `sensorSensitivityIso` | `CONTROL_AE_MODE=OFF` + `SENSOR_EXPOSURE_TIME` + `SENSOR_SENSITIVITY` | `hasManualSensor` (`REQUEST_AVAILABLE_CAPABILITIES` ∋ `MANUAL_SENSOR`) |
-| `aeRegionNorm` `{l,t,r,b}` 0..1 | `CONTROL_AE_REGIONS` (one max-weight `MeteringRectangle`, active-array coords) — spot metering. Applied **only alongside `manualExposure`**, as the alternative to the shutter/ISO dials (region → AE stays metering, biased to the box; dials → `AE_MODE=OFF`). The controller sends exactly one. | `maxAeRegions > 0`; sane sub-rect of 0..1 |
+| `aeRegionNorm` `{l,t,r,b}` 0..1 | `CONTROL_AE_REGIONS` (one max-weight `MeteringRectangle`, active-array coords) — spot metering. In manual, applied **only alongside `manualExposure`**, as the alternative to the shutter/ISO dials (region → AE stays metering, biased to the box; dials → `AE_MODE=OFF`). The controller sends exactly one. | `maxAeRegions > 0`; sane sub-rect of 0..1 |
 | `manualFocus` (bool) + `lensFocusDistanceDiopters` | `CONTROL_AF_MODE=OFF` + `LENS_FOCUS_DISTANCE` | `hasManualFocus` (`LENS_INFO_MINIMUM_FOCUS_DISTANCE > 0` + `AF_MODE_OFF`) |
-| `afRegionNorm` `{l,t,r,b}` 0..1 | `CONTROL_AF_MODE=CONTINUOUS_VIDEO` + `CONTROL_AF_REGIONS` (one max-weight `MeteringRectangle`) — drag-to-focus. Applied **only alongside `manualFocus`**, as the alternative to the distance dial (region → continuous AF on the box; dial → `AF_MODE=OFF` + fixed distance). The controller sends exactly one. | `maxAfRegions > 0`; sane sub-rect of 0..1 |
+| `afRegionNorm` `{l,t,r,b}` 0..1 | `CONTROL_AF_MODE=CONTINUOUS_VIDEO` + `CONTROL_AF_REGIONS` (one max-weight `MeteringRectangle`) — drag-to-focus. In manual, applied **only alongside `manualFocus`**, as the alternative to the distance dial (region → continuous AF on the box; dial → `AF_MODE=OFF` + fixed distance). The controller sends exactly one. | `maxAfRegions > 0`; sane sub-rect of 0..1 |
 | `awbMode` (int) | `CONTROL_AWB_MODE` (0 off / 1 auto / 2 incandescent / … / 8 shade) | must be in `awbModes` (`CONTROL_AWB_AVAILABLE_MODES`, deduped) |
 | `manualWhiteBalance` (bool) + `wbRedGain` / `wbGreenGain` / `wbBlueGain` | `AWB_MODE_OFF` + `COLOR_CORRECTION_MODE=TRANSFORM_MATRIX` + identity `COLOR_CORRECTION_TRANSFORM` + `COLOR_CORRECTION_GAINS` (RGGB, green used for both G channels). Wins over `awbMode`. | `hasManualWhiteBalance` (`REQUEST_AVAILABLE_CAPABILITIES` ∋ `MANUAL_POST_PROCESSING`); gains in `wbGainRange` (fixed `1.0..8.0` — Camera2 declares none) |
 | `videoStabilizationMode` (int) | `CONTROL_VIDEO_STABILIZATION_MODE` (0 off, 1 on, 2 preview-stabilization API 33+) | must be in `videoStabilizationModes` (`CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES`, deduped) |

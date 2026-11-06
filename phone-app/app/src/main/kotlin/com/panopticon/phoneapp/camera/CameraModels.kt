@@ -164,7 +164,8 @@ data class CameraControlKeys(
 
 /**
  * Persisted (in `DeviceConfig`) manual-control intent. `manualControlEnabled`
- * is the master switch: false = every pipeline runs full auto regardless of
+ * is the master switch: false = every pipeline runs auto, honouring only the zoom
+ * ([CameraControlKeys.zoomViewNorm]) and an area of interest (the AE and AF regions) from
  * [keys]. Kept whole across mode switches and app restarts so a state tuned
  * while watching the live preview also governs recording.
  */

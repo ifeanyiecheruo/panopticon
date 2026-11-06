@@ -233,10 +233,9 @@ private fun resolveSelections(
     liveTexCrop: Pair<Float, Float>?,
 ): CameraControlKeys {
     val (texCropX, texCropY) = liveTexCrop ?: (1f to 1f)
-    // What was on screen when the user drew. With the manual master switch off the pipelines run
-    // full auto and render no zoom at all, so the frame they drew on was the un-zoomed one -
-    // composing onto a stored-but-inactive zoom would land the rect somewhere they never saw.
-    val stored = if (storedSpec.manualControlEnabled) storedSpec.keys else CameraControlKeys()
+    // What was on screen when the user drew. Zoom is rendered in auto as well as manual, so the
+    // stored view is always the one they saw.
+    val stored = storedSpec.keys
 
     val currentView = stored.zoomViewNorm ?: ZoomGeometry.FULL
     val nextView = when {
@@ -290,7 +289,7 @@ private fun cameraStateResponse(
     liveTexCrop: Pair<Float, Float>?,
 ): CameraStateResponse {
     val (texCropX, texCropY) = liveTexCrop ?: (1f to 1f)
-    val zoomView = spec.keys.zoomViewNorm.takeIf { spec.manualControlEnabled } ?: ZoomGeometry.FULL
+    val zoomView = spec.keys.zoomViewNorm ?: ZoomGeometry.FULL
     val (w, h) = parseSize(videoResolution)
     val lut = runCatching {
         ZoomCalibrationLut.build(CalibrationStore(androidContext).loadForZoom(), id, w, h)

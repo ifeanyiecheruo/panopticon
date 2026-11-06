@@ -170,6 +170,14 @@ func resolveZoomKeys(keys map[string]any, stored map[string]any, rotationDegrees
 		}
 	}
 
+	// Metering selections become the absolute regions. The mock has no sensor geometry, so the
+	// viewer rect stands in for the sensor one.
+	for sel, region := range map[string]string{"aeSelectNorm": "aeRegionNorm", "afSelectNorm": "afRegionNorm"} {
+		if r, ok := rectFromAny(keys[sel]); ok {
+			keys[region] = r
+		}
+	}
+
 	// A selection is an instruction, not state: consumed here, never echoed back.
 	delete(keys, "zoomSelectNorm")
 	delete(keys, "aeSelectNorm")
@@ -190,10 +198,7 @@ func hasFloat(m map[string]any, k string) bool {
 
 // zoomSplit reports where the magnification is coming from. Uncalibrated, so the hardware does
 // none of it and GL upscales the lot - which is what a real phone falls back to as well.
-func zoomSplit(keys map[string]any, manual bool) (hwRatio, glResidual float64) {
-	if !manual {
-		return 1, 1
-	}
+func zoomSplit(keys map[string]any) (hwRatio, glResidual float64) {
 	v, ok := rectFromAny(keys["zoomViewNorm"])
 	if !ok {
 		return 1, 1

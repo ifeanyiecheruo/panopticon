@@ -683,8 +683,6 @@ class CameraGlPipeline(
         // One rect does both jobs: the fixed output-aspect trim, and whatever zoom the camera
         // hardware isn't doing off-centre. Un-zoomed it is exactly the centred trim this drew
         // before zoom existed.
-        // manualControlEnabled is the master switch: full auto means no zoom either, same as it
-        // means no manual exposure (see CameraControlApply's early return).
         // texRectUniform, not shaderRect: the uniform's Y axis runs bottom-up while every rect
         // here is viewer-oriented (top-down), so it has to be flipped on the way in. deliveredCrop
         // is what the camera is already zoomed to *for this frame* - looked up by the frame's own
@@ -1066,9 +1064,8 @@ class CameraGlPipeline(
         ).deliveredCrop
     }
 
-    /** The view the user asked for, or null when running full auto. */
-    private fun zoomView(): RectNorm? =
-        controls.keys.zoomViewNorm.takeIf { controls.manualControlEnabled }
+    /** The view the user asked for, or null when un-zoomed. Honoured in auto as well as manual. */
+    private fun zoomView(): RectNorm? = controls.keys.zoomViewNorm
 
     /** Recompute how much of the zoom the camera should do. Returns true when the hardware half
      *  changed, meaning the repeating request has to be re-issued to take effect. */

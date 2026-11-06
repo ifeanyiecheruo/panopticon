@@ -27,10 +27,31 @@ import kotlin.math.roundToInt
 object CameraControlApply {
 
     fun applyTo(builder: CaptureRequest.Builder, spec: CameraControlSpec, caps: CameraCapabilities) {
-        if (!spec.manualControlEnabled) return
         val k = spec.keys
         val active = Rect(0, 0, caps.activeArrayWidth, caps.activeArrayHeight)
         val haveActive = active.width() > 0 && active.height() > 0
+
+        // Auto: every control stays on the HAL's own auto, steered only by the area of interest -
+        // the AE and AF regions, set together by one rect. AE keeps metering (biased to the box)
+        // and AF runs continuous on it; nothing is fixed. Zoom is honoured too, but it never comes
+        // through here (see the class comment).
+        if (!spec.manualControlEnabled) {
+            if (!haveActive) return
+            k.aeRegionNorm?.takeIf { caps.maxAeRegions > 0 }?.let {
+                builder.set(
+                    CaptureRequest.CONTROL_AE_REGIONS,
+                    arrayOf(MeteringRectangle(denorm(it, active), MeteringRectangle.METERING_WEIGHT_MAX)),
+                )
+            }
+            k.afRegionNorm?.takeIf { caps.maxAfRegions > 0 }?.let {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                builder.set(
+                    CaptureRequest.CONTROL_AF_REGIONS,
+                    arrayOf(MeteringRectangle(denorm(it, active), MeteringRectangle.METERING_WEIGHT_MAX)),
+                )
+            }
+            return
+        }
 
         k.aeExposureCompensation?.let {
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, it)
