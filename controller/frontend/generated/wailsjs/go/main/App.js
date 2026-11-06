@@ -38,6 +38,10 @@ export function GetCameraControls(arg1) {
   return window['go']['main']['App']['GetCameraControls'](arg1);
 }
 
+export function GetPhoneAddresses(arg1) {
+  return window['go']['main']['App']['GetPhoneAddresses'](arg1);
+}
+
 export function GetPhoneDetail(arg1) {
   return window['go']['main']['App']['GetPhoneDetail'](arg1);
 }
@@ -88,6 +92,10 @@ export function SetCameraControls(arg1, arg2) {
 
 export function SetConfig(arg1, arg2) {
   return window['go']['main']['App']['SetConfig'](arg1, arg2);
+}
+
+export function SetPhoneAddresses(arg1, arg2) {
+  return window['go']['main']['App']['SetPhoneAddresses'](arg1, arg2);
 }
 
 export function SetRecording(arg1, arg2) {

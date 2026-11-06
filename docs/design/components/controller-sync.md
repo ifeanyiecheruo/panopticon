@@ -55,7 +55,7 @@ goroutine and its own timeouts.
 
 | Entity | Type | Responsibility |
 |---|---|---|
-| per-phone poll loop | goroutine | Every `syncPollInterval` (`main.go`, 30s), `GET /api/segments?since=<cursor>`; download each new segment's file + thumbnail. Started/stopped by `syncer.reconcile` as phones are paired/unpaired. |
+| per-phone poll loop | goroutine | Every `syncPollInterval` (`main.go`, 30s), `GET /api/segments?since=<cursor>`; download each new segment's file + thumbnail. Started/stopped by `syncer.reconcile` as phones are paired/unpaired. If the phone is unreachable, `phoneaddr.Failover` tries its other known addresses first and the pass continues at whichever answers. |
 | grouping | function | As each segment lands: extend the phone's open clip if the segment starts within `dbstore.GroupingGapMs` (500 ms) of that clip's end, else open a new clip. |
 | cursor advance | — | Only after a segment is durably written to `panopticon-archive/<phoneId>/`, assigned to a clip, and indexed. Idempotent / crash-safe. |
 | eviction handling | — | A `404` on download is a normal "already evicted" skip, not an error. |

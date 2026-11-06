@@ -539,6 +539,56 @@ export namespace main {
 	        this.ok = source["ok"];
 	    }
 	}
+	export class PhoneAddressView {
+	    address: string;
+	    active: boolean;
+	    reach?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PhoneAddressView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.address = source["address"];
+	        this.active = source["active"];
+	        this.reach = source["reach"];
+	    }
+	}
+	export class PhoneAddressesResult {
+	    ok: boolean;
+	    error?: string;
+	    addresses: PhoneAddressView[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PhoneAddressesResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.error = source["error"];
+	        this.addresses = this.convertValues(source["addresses"], PhoneAddressView);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class PhoneDetailView {
 	    phone: PhoneView;
 	    status?: phoneapi.Status;

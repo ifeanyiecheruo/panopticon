@@ -63,6 +63,7 @@ sentinel errors.
 | `identity` | keypair | Generates/persists the controller's Ed25519 keypair (the `publicKey` in `POST /api/pair`). |
 | `pairing` | Add-phone flow | `POST /api/pair` with this controller's identity; classifies failure into two distinct UI messages — unreachable address vs invalid/expired invite. Does the opportunistic calibration ingest right after a successful pair. `ParseInviteURL` splits a full URL into (address, code). |
 | `unpair` | teardown | `Unpair` (safe): checks `GET /api/segments` for un-archived footage → `needs_confirmation` if any; requires the phone reachable **and** the revoke to succeed (or `401`) before `store.DeletePhone`. `Force`: best-effort revoke, drops the row regardless. Either way archived footage is kept; `syncer.reconcile` stops the phone's goroutine on its next tick. |
+| `phoneaddr` | address upkeep | `Check` / `CheckAll`: does an address reach this phone (`GET /api/device` with its token, 3s): `ok`, `unreachable`, or `wrong_phone` on a `401`. `Failover`: for a phone not answering at its base URL, switch to the first of its other known addresses that answers. Called by the sync loop and `GetPhoneDetail` on `ErrUnreachable`. |
 | `phoneapi.Client` | HTTP client | One explicit context timeout per call type (short for metadata, long for downloads). Typed sentinels: `ErrUnreachable`, `ErrUnauthorized`, `ErrInvalidInvite`, `ErrEvicted`, `ErrUnknownCamera`, `*InvalidControlKeyError{Key,Reason}`. |
 | `phoneapi/camera.go` | client surface | `/api/cameras`, `/api/cameras/active`, `/api/camera/capabilities`, `/api/camera/state`. |
 | `phoneapi/calibration.go` | client surface | `/api/calibration/result` — decodes the full per-resolution zoom map. |
@@ -81,6 +82,7 @@ sentinel errors.
 ### 3.4 Data
 
 - Writes the `identity` row (once) and `phones` rows (on pair) / deletes them (on unpair).
+- `phoneaddr.Failover` rewrites `phones.base_url` to another of the phone's `phone_addresses`.
 - Holds no footage or config data.
 
 ### 3.5 Processing and behaviour
@@ -95,7 +97,8 @@ sentinel errors.
 - **Per-controller bearer token; self-unpair is the one registry route** —
   [`0002`](../decisions/0002-http-api-surface-and-auth.md).
 - **Invite needs address + code; identity is a public key, never an IP** —
-  [`0003`](../decisions/0003-pairing-and-unpairing.md). QR (which carries both) is
+  [`0003`](../decisions/0003-pairing-and-unpairing.md). A phone's addresses are editable
+  after pairing, and the controller fails over between them (same ADR). QR (which carries both) is
   [`../../plan/qr-pairing.md`](../../plan/qr-pairing.md).
 - **Unpair vs Force unpair as two distinct actions** —
   [`0003`](../decisions/0003-pairing-and-unpairing.md): safe Unpair must keep local

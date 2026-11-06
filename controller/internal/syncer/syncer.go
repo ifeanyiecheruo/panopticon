@@ -23,6 +23,7 @@ import (
 
 	"panopticon-controller/internal/appdirs"
 	"panopticon-controller/internal/dbstore"
+	"panopticon-controller/internal/phoneaddr"
 	"panopticon-controller/internal/phoneapi"
 )
 
@@ -169,6 +170,16 @@ func (m *Manager) runOnce(ctx context.Context, phoneID string) (client *phoneapi
 
 	client = phoneapi.New(phone.BaseURL, phone.Token)
 	resp, err := client.Segments(ctx, phone.SyncCursorMs)
+	if errors.Is(err, phoneapi.ErrUnreachable) {
+		// Its address may have changed: if another of its known addresses
+		// reaches it, that becomes the address in use, for every other
+		// caller too, and this tick goes on there.
+		if moved, ok := phoneaddr.Failover(ctx, m.store, phone); ok {
+			phone = moved
+			client = phoneapi.New(phone.BaseURL, phone.Token)
+			resp, err = client.Segments(ctx, phone.SyncCursorMs)
+		}
+	}
 	if err != nil {
 		// Unreachable/auth-failed/etc: this is exactly the "phone can be
 		// flaky, don't let it wedge anything else" case — just log and let

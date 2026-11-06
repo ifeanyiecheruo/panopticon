@@ -43,6 +43,12 @@ type Phone struct {
 	CreatedAtMs  int64
 }
 
+type PhoneAddress struct {
+	PhoneID  string
+	BaseUrl  string
+	Position int64
+}
+
 type Segment struct {
 	PhoneID       string
 	Filename      string
