@@ -30,6 +30,7 @@ type App struct {
 	dirs     appdirs.Dirs
 	syncMgr  *syncer.Manager
 	quitting bool
+	quitOnce sync.Once
 
 	// livePriorMode remembers the mode a phone was in before StartLivePreview
 	// switched it to "live", so StopLivePreview can put it back. Keyed by
@@ -1000,10 +1001,14 @@ func (a *App) ShowWindow() {
 // tray's "Quit" item — actually tears everything down rather than just
 // hiding the window.
 func (a *App) RequestQuit() {
-	a.quitting = true
-	if a.syncMgr != nil {
-		a.syncMgr.Stop()
-	}
+	// Idempotent: a repeated Quit (the tray retrying a stalled one) only asks
+	// Wails to quit again; sync is stopped once.
+	a.quitOnce.Do(func() {
+		a.quitting = true
+		if a.syncMgr != nil {
+			a.syncMgr.Stop()
+		}
+	})
 	if a.ctx != nil {
 		wailsRuntime.Quit(a.ctx)
 	}

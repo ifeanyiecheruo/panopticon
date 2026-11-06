@@ -5,6 +5,8 @@
 package trayapp
 
 import (
+	"runtime"
+
 	"github.com/getlantern/systray"
 )
 
@@ -23,7 +25,17 @@ type Callbacks struct {
 // Two independent Win32 message loops on two different OS threads is a
 // supported pattern (message loops are per-thread, not global), and is the
 // standard way to combine Wails with a systray library.
+//
+// The goroutine must stay on one OS thread for the life of the tray. A Win32
+// window belongs to the thread that created it, and GetMessage only returns
+// that thread's messages. systray's init() pins the *main* goroutine, not
+// this one, so without LockOSThread the scheduler can move the pump to
+// another thread after the tray window is created. Then the icon's clicks
+// queue up on the old thread, never dispatched, and the tray menu goes dead
+// (docs/plan/tray-unresponsive.md). Never unlocked: the thread exits with the
+// goroutine.
 func Run(cb Callbacks) {
+	runtime.LockOSThread()
 	systray.Run(func() { onReady(cb) }, func() {})
 }
 
@@ -51,10 +63,11 @@ func onReady(cb Callbacks) {
 					cb.OnOpen()
 				}
 			case <-quitItem.ClickedCh:
+				// Keep listening: if a quit stalls, another click retries it
+				// (OnQuit is idempotent) rather than finding a dead menu.
 				if cb.OnQuit != nil {
-					cb.OnQuit()
+					go cb.OnQuit()
 				}
-				return
 			}
 		}
 	}()
