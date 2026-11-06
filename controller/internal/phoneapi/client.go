@@ -662,3 +662,36 @@ func (c *Client) SegmentsMissing(ctx context.Context, filenames []string) ([]int
 func (c *Client) DownloadSegmentThumbnail(ctx context.Context, filename string) (io.ReadCloser, error) {
 	return c.downloadBinary(ctx, "/api/segments/"+url.PathEscape(filename)+"/thumbnail", thumbnailTimeout)
 }
+
+// SegmentAOI fetches GET /api/segments/:filename/aoi: the area of interest the
+// segment began with, in the recorded frame's 0..1 coordinates, or nil when it
+// had none (204). ErrEvicted on 404 - which is also what a phone on an app
+// build without the route answers.
+func (c *Client) SegmentAOI(ctx context.Context, filename string) (*RectNorm, error) {
+	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	defer cancel()
+	resp, err := c.request(ctx, http.MethodGet, "/api/segments/"+url.PathEscape(filename)+"/aoi", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusNoContent:
+		return nil, nil
+	case resp.StatusCode == http.StatusNotFound:
+		return nil, ErrEvicted
+	case resp.StatusCode == http.StatusUnauthorized:
+		return nil, ErrUnauthorized
+	case resp.StatusCode < 200 || resp.StatusCode >= 300:
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: string(b)}
+	}
+	var r RectNorm
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&r); err != nil {
+		return nil, fmt.Errorf("segment aoi: %w", err)
+	}
+	if !(0 <= r.L && r.L < r.R && r.R <= 1 && 0 <= r.T && r.T < r.B && r.B <= 1) {
+		return nil, fmt.Errorf("segment aoi: not a sub-rect of 0..1: %+v", r)
+	}
+	return &r, nil
+}

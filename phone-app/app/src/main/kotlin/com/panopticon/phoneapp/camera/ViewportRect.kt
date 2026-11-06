@@ -72,6 +72,47 @@ internal object ViewportRect {
         )
     }
 
+    /** The inverse of [inverseRotatePoint]: a pre-rotation point as it lands on screen. */
+    private fun rotatePoint(x: Float, y: Float, rotationDegrees: Int): Pair<Float, Float> =
+        when (CameraFraming.normalizedRotation(rotationDegrees)) {
+            90 -> (1f - y) to x
+            180 -> (1f - x) to (1f - y)
+            270 -> y to (1f - x)
+            else -> x to y
+        }
+
+    /**
+     * The inverse of [toSensorSpace]: a sensor-active-array rect (an `aeRegionNorm`, say) as it
+     * appears in the rotated output frame - what is on screen and what is recorded. Clipped to
+     * the frame; null when none of it is in view.
+     */
+    fun toFrameSpace(
+        sensor: RectNorm,
+        currentKeys: CameraControlKeys,
+        rotationDegrees: Int,
+        texCropX: Float = 1f,
+        texCropY: Float = 1f,
+    ): RectNorm? {
+        val v = currentViewport(currentKeys, texCropX, texCropY)
+        val vw = v.r - v.l
+        val vh = v.b - v.t
+        if (vw <= 0f || vh <= 0f) return null
+        val l = ((sensor.l - v.l) / vw).coerceIn(0f, 1f)
+        val t = ((sensor.t - v.t) / vh).coerceIn(0f, 1f)
+        val r = ((sensor.r - v.l) / vw).coerceIn(0f, 1f)
+        val b = ((sensor.b - v.t) / vh).coerceIn(0f, 1f)
+        if (r <= l || b <= t) return null
+        val corners = listOf(
+            rotatePoint(l, t, rotationDegrees),
+            rotatePoint(r, t, rotationDegrees),
+            rotatePoint(l, b, rotationDegrees),
+            rotatePoint(r, b, rotationDegrees),
+        )
+        val xs = corners.map { it.first }
+        val ys = corners.map { it.second }
+        return RectNorm(xs.min(), ys.min(), xs.max(), ys.max())
+    }
+
     /** [drawn] as seen on screen (post-rotation, within the current zoom + texCrop viewport) ->
      *  full sensor-active-array-normalized terms, ready for [CameraControlApply.denorm]. */
     fun toSensorSpace(

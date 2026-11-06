@@ -1,5 +1,6 @@
 package com.panopticon.phoneapp.clips
 
+import com.panopticon.phoneapp.calibration.RectNorm
 import kotlinx.serialization.Serializable
 
 /** Mirrors the segment object shape in docs/design/http-api.md's `GET /api/segments`.
@@ -14,4 +15,8 @@ data class SegmentEntry(
     val sizeBytes: Long,
     val width: Int,
     val height: Int,
+    /** The area of interest when the segment began, in the recorded frame's own `0..1`
+     *  coordinates (top-down); null when there was none. Served by
+     *  `GET /api/segments/{filename}/aoi`, not in the listing. */
+    val aoi: RectNorm? = null,
 )

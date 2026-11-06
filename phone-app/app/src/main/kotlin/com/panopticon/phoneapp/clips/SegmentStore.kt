@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.util.Log
+import com.panopticon.phoneapp.calibration.RectNorm
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -115,7 +116,7 @@ class SegmentStore(context: Context) {
     }
 
     @Synchronized
-    fun addSegment(file: File, createdAtMs: Long, durationMs: Long, width: Int, height: Int) {
+    fun addSegment(file: File, createdAtMs: Long, durationMs: Long, width: Int, height: Int, aoi: RectNorm? = null) {
         index()[file.name] = SegmentEntry(
             filename = file.name,
             createdAtMs = createdAtMs,
@@ -124,6 +125,7 @@ class SegmentStore(context: Context) {
             sizeBytes = file.length(),
             width = width,
             height = height,
+            aoi = aoi,
         )
         markDirty()
     }
@@ -131,6 +133,11 @@ class SegmentStore(context: Context) {
     @Synchronized
     fun listSince(sinceMs: Long): List<SegmentEntry> =
         index().values.filter { it.createdAtMs >= sinceMs }.sortedBy { it.createdAtMs }
+
+    /** The indexed entry for [filename], or null when there is none (evicted, never existed, or
+     *  re-probed by [reconcile], which can't recover an area of interest). */
+    @Synchronized
+    fun entryFor(filename: String): SegmentEntry? = index()[sanitize(filename)]
 
     fun fileFor(filename: String): File? {
         val f = File(segmentsDir, sanitize(filename))

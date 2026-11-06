@@ -309,6 +309,7 @@ user-facing **clip** is a controller/UX concern (the controller does it on sync,
 | POST | `/api/segments/missing` | — | `{ "filenames": ["clip_20260929_171502_3fa1.mp4", "clip_20260929_171512_9b0c.mp4"] }` | `{ "missing": [1] }` | Batch existence check: the indices into `filenames` whose `/file` would `404` (evicted or never existed). At most 1000 filenames per request (`400` beyond). The controller's eviction probe uses it to find which deleted clips' segments the phone no longer holds. |
 | GET | `/api/segments/:filename/file` | — | — | *(binary `video/mp4`, supports `Range`)* | Downloads one segment; `404` if evicted. |
 | GET | `/api/segments/:filename/thumbnail` | — | — | *(binary `image/jpeg`)* | Single extracted frame, for the Gallery filmstrip. |
+| GET | `/api/segments/:filename/aoi` | — | — | `{ "l": 0.31, "t": 0.42, "r": 0.58, "b": 0.77 }` | The area of interest the segment **began** with, in the recorded frame's own `0..1` coordinates (top-down, already rotated and zoomed, clipped to the frame). Taken when the segment file opened: the AE region (else the AF region) in auto mode. **`204`** when there was none — manual mode, no area set, or the area wholly out of view. `404` if the segment is evicted. The controller stores it beside the segment for the gallery's contrast maximizer. |
 | DELETE | `/api/segments/:filename` | — | — | `{ "deleted": true }` | Explicit early eviction. |
 
 (The `filename` still carries a historical `clip_` prefix — it's an opaque on-disk name, not a

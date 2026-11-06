@@ -2,6 +2,7 @@ package com.panopticon.phoneapp.camera
 
 import com.panopticon.phoneapp.calibration.RectNorm
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 private const val TOL = 1e-4f
@@ -122,5 +123,27 @@ class ViewportRectTest {
         // Un-rotate first -> (0, 0, 0.25, 0.25) within the crop, then map that top-left 25% of
         // the current (centre-quarter) crop into full-sensor terms.
         assertRectEquals(RectNorm(0.25f, 0.25f, 0.375f, 0.375f), result)
+    }
+
+    @Test
+    fun `toFrameSpace undoes toSensorSpace, zoomed and rotated`() {
+        val keys = CameraControlKeys(zoomViewNorm = RectNorm(0.25f, 0.25f, 0.75f, 0.75f))
+        val drawn = RectNorm(0.1f, 0.2f, 0.4f, 0.6f)
+        for (rot in listOf(0, 90, 180, 270)) {
+            val sensor = ViewportRect.toSensorSpace(drawn, keys, rot, texCropX = 0.8f, texCropY = 1f)
+            val back = ViewportRect.toFrameSpace(sensor, keys, rot, texCropX = 0.8f, texCropY = 1f)!!
+            assertRectEquals(drawn, back)
+        }
+    }
+
+    @Test
+    fun `toFrameSpace clips to the frame, and is null when out of view`() {
+        val keys = CameraControlKeys(zoomViewNorm = RectNorm(0.5f, 0.5f, 1f, 1f))
+        // Straddles the view's top-left corner: only the part inside survives.
+        assertRectEquals(
+            RectNorm(0f, 0f, 0.2f, 0.2f),
+            ViewportRect.toFrameSpace(RectNorm(0.4f, 0.4f, 0.6f, 0.6f), keys, 0)!!,
+        )
+        assertNull(ViewportRect.toFrameSpace(RectNorm(0.1f, 0.1f, 0.3f, 0.3f), keys, 0))
     }
 }

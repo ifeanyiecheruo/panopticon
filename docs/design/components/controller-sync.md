@@ -62,7 +62,7 @@ goroutine and its own timeouts.
 
 ### 3.2 Dependencies
 
-- `phoneapi` — `GET /api/segments`, `.../file`, `.../thumbnail`.
+- `phoneapi` — `GET /api/segments`, `.../file`, `.../thumbnail`, `.../aoi`.
 - `Store` — `segments`, `clips`, the per-phone cursor.
 - The archive directory (from `appdirs`).
 
@@ -74,7 +74,9 @@ goroutine and its own timeouts.
 ### 3.4 Data
 
 - Writes `segments` and `clips` rows and advances `phones.sync_cursor`.
-- Writes `panopticon-archive/<phoneId>/<filename>` and its thumbnail.
+- Writes `panopticon-archive/<phoneId>/<filename>` and its thumbnail, and `<filename>.aoi.json`
+  (the segment's area of interest) only when the phone answers `200` — a `204` writes nothing.
+  Best-effort, like the thumbnail; deleted with the segment on a permanent delete.
 
 ### 3.5 Processing and behaviour
 
