@@ -22,6 +22,8 @@ export function GetCalibrationProgress(arg1:string,arg2:string):Promise<main.Cal
 
 export function GetCameraControls(arg1:string):Promise<main.CameraControlsView>;
 
+export function GetPhoneAddresses(arg1:string):Promise<main.PhoneAddressesResult>;
+
 export function GetPhoneDetail(arg1:string):Promise<main.PhoneDetailView>;
 
 export function IsQuitting():Promise<boolean>;
@@ -47,6 +49,8 @@ export function SetActiveCamera(arg1:string,arg2:string):Promise<main.CameraActi
 export function SetCameraControls(arg1:string,arg2:phoneapi.CameraStatePatch):Promise<main.CameraActionResult>;
 
 export function SetConfig(arg1:string,arg2:phoneapi.ConfigPatch):Promise<main.ConfigResult>;
+
+export function SetPhoneAddresses(arg1:string,arg2:Array<string>):Promise<main.PhoneAddressesResult>;
 
 export function SetRecording(arg1:string,arg2:boolean):Promise<main.CameraActionResult>;
 

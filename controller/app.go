@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"panopticon-controller/internal/calibration"
 	"panopticon-controller/internal/dbstore"
 	"panopticon-controller/internal/pairing"
+	"panopticon-controller/internal/phoneaddr"
 	"panopticon-controller/internal/phoneapi"
 	"panopticon-controller/internal/syncer"
 	"panopticon-controller/internal/unpair"
@@ -207,6 +209,16 @@ func (a *App) GetPhoneDetail(phoneID string) (PhoneDetailView, error) {
 	detail := PhoneDetailView{Phone: view}
 
 	status, err := client.Status(a.ctxOrBackground())
+	if errors.Is(err, phoneapi.ErrUnreachable) {
+		// Try its other known addresses now rather than leaving that to the
+		// next sync tick, so opening an unreachable phone reconnects it.
+		if moved, ok := phoneaddr.Failover(a.ctxOrBackground(), a.store, phone); ok {
+			phone = moved
+			detail.Phone.BaseURL = phone.BaseURL
+			client = phoneapi.New(phone.BaseURL, phone.Token)
+			status, err = client.Status(a.ctxOrBackground())
+		}
+	}
 	if err != nil {
 		detail.StatusError = err.Error()
 		detail.Phone.Reachable = false
@@ -256,6 +268,95 @@ func (a *App) GetPhoneDetail(phoneID string) (PhoneDetailView, error) {
 	detail.Calibration = calView
 
 	return detail, nil
+}
+
+// ---- Addresses (editable from Phone detail) ----
+
+type PhoneAddressView struct {
+	Address string `json:"address"`
+	// Active marks the address in use: the one the phone last answered at.
+	Active bool `json:"active"`
+	// Reach is what checking this address found when the list was saved
+	// ("ok" | "unreachable" | "wrong_phone" | "error"); empty when the list
+	// was only read.
+	Reach string `json:"reach,omitempty"`
+}
+
+type PhoneAddressesResult struct {
+	OK        bool               `json:"ok"`
+	Error     string             `json:"error,omitempty"`
+	Addresses []PhoneAddressView `json:"addresses"`
+}
+
+// GetPhoneAddresses lists every address a phone is known to answer at, from
+// the local DB only.
+func (a *App) GetPhoneAddresses(phoneID string) PhoneAddressesResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return PhoneAddressesResult{Error: err.Error()}
+	}
+	addresses, err := a.store.PhoneAddresses(phoneID)
+	if err != nil {
+		return PhoneAddressesResult{Error: err.Error()}
+	}
+	return PhoneAddressesResult{OK: true, Addresses: addressViews(addresses, phone.BaseURL, nil)}
+}
+
+// SetPhoneAddresses replaces a paired phone's addresses, so a phone whose IP
+// changed (or that has more than one) needs no re-pair. Each address is
+// checked with the phone's token first. One that answers as a different phone
+// fails the whole save; one that doesn't answer is kept, since it may be an
+// address the phone only has some of the time. The address in use becomes the
+// first that reached the phone, else the current one if still listed, else
+// the first listed.
+func (a *App) SetPhoneAddresses(phoneID string, entered []string) PhoneAddressesResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return PhoneAddressesResult{Error: err.Error()}
+	}
+	var addresses []string
+	for _, e := range entered {
+		if b := phoneapi.NormalizeAddress(e); b != "" && !slices.Contains(addresses, b) {
+			addresses = append(addresses, b)
+		}
+	}
+	if len(addresses) == 0 {
+		return PhoneAddressesResult{Error: "Enter at least one address."}
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctxOrBackground(), 10*time.Second)
+	defer cancel()
+	reach := phoneaddr.CheckAll(ctx, addresses, phone.Token)
+	for i, r := range reach {
+		if r == phoneaddr.ReachWrongPhone {
+			return PhoneAddressesResult{
+				Error:     fmt.Sprintf("%s answered, but not as %s: it's another phone, or this phone no longer accepts this controller.", addresses[i], phone.Name),
+				Addresses: addressViews(addresses, "", reach),
+			}
+		}
+	}
+
+	active := addresses[0]
+	if i := slices.Index(reach, phoneaddr.ReachOK); i >= 0 {
+		active = addresses[i]
+	} else if slices.Contains(addresses, phone.BaseURL) {
+		active = phone.BaseURL
+	}
+	if err := a.store.SetPhoneAddresses(phoneID, addresses, active); err != nil {
+		return PhoneAddressesResult{Error: err.Error()}
+	}
+	return PhoneAddressesResult{OK: true, Addresses: addressViews(addresses, active, reach)}
+}
+
+func addressViews(addresses []string, active string, reach []phoneaddr.Reach) []PhoneAddressView {
+	out := make([]PhoneAddressView, len(addresses))
+	for i, addr := range addresses {
+		out[i] = PhoneAddressView{Address: addr, Active: addr == active}
+		if reach != nil {
+			out[i].Reach = string(reach[i])
+		}
+	}
+	return out
 }
 
 // ---- Config (editable from Phone detail) ----

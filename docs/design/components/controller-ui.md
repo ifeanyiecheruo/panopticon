@@ -95,7 +95,12 @@ components.
   is a status value). Aggregate disk-usage stat in the header.
 - **Phone detail** — command bar + editable config form + read-only status panel + battery
   glyph. `SetConfig` renames the local `phones` row on a `deviceName` change (`UpdatePhoneName`)
-  so the name propagates through Fleet / Gallery filters / clip attribution.
+  so the name propagates through Fleet / Gallery filters / clip attribution. An Addresses card
+  (`AddressesForm.tsx`) lists the phone's known addresses: edit one in place when its IP changes,
+  add or remove others, and the one in use is marked. Saving (`SetPhoneAddresses`) checks every
+  address with the phone's token, refuses the save if one answers as a different phone, keeps
+  addresses that don't answer, and makes the first that answered the one in use. No re-pair is
+  needed.
 - **Gallery / Trash** — master-detail, not a lightbox. Gallery: per-phone filter chip row,
   `autoplay` advance. Trash: no chip row, Restore + Delete
   fabs, `Empty trash` gated behind a count-naming confirm. Shift/ctrl multi-select, arrow-key +

@@ -55,8 +55,8 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
 ## 2. Design overview
 
 A hand-written domain-shaped `Store` wrapper over sqlc-generated query code, on a goose-migrated
-schema, using the pure-Go `modernc.org/sqlite` driver. Five tables: identity, phones, segments,
-clips, calibration.
+schema, using the pure-Go `modernc.org/sqlite` driver. Six tables: identity, phones,
+phone_addresses, segments, clips, calibration.
 
 ## 3. Detailed design
 
@@ -65,7 +65,7 @@ clips, calibration.
 | Entity | Type | Responsibility |
 |---|---|---|
 | `Store` | hand-written wrapper | Domain-shaped API over the generated queries (`db.go` + per-aggregate files). |
-| schema (goose) | `schemas/db/*.sql` | `001_initial` (identity, phones, calibration), `002_segments_and_clips` (the segment/clip split + a copy-over of existing rows). Applied automatically on every `Open()`. |
+| schema (goose) | `schemas/db/*.sql` | `001_initial` (identity, phones, calibration), `002_segments_and_clips` (the segment/clip split + a copy-over of existing rows), `005_phone_addresses` (each phone's known addresses, seeded from `phones.base_url`). Applied automatically on every `Open()`. |
 | queries (sqlc) | `queries/*.sql` → `*.sql.go` | Typed query code, `DO NOT EDIT` header. |
 | `RegroupUnassignedSegments` (`regroup.go`) | one-time backfill | Groups segments carried over by the `002` migration into clips. |
 | driver | `modernc.org/sqlite` | Pure Go — no CGO/gcc. |
@@ -85,7 +85,8 @@ clips, calibration.
 | Table | Columns of note |
 |---|---|
 | `identity` | the controller's Ed25519 keypair (generated once, reused for the life of the install) |
-| `phones` | id, name, base URL, bearer token, last-seen, **sync cursor** |
+| `phones` | id, name, base URL (the address in use: where the phone last answered), bearer token, last-seen, **sync cursor** |
+| `phone_addresses` | every address a phone is known to answer at, in the user's order; always includes `phones.base_url`; dropped with the phone (`ON DELETE CASCADE`) |
 | `segments` | one row per synced file, each with a `clip_id`; tombstone rows kept after purge |
 | `clips` | the user-facing item — a contiguous run of segments; `active` / `trashed` / `purged` lifecycle + aggregate span / size / count |
 | `calibration` | `manufacturer+model` → last result JSON + source phone id + timestamp (**shared**, not per-phone) |

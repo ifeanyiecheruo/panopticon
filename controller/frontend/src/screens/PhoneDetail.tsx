@@ -16,6 +16,7 @@ import { BatteryIcon } from '../components/BatteryIcon';
 import { CameraControls } from '../components/CameraControls';
 import { PhoneCommandBar } from '../components/PhoneCommandBar';
 import { ConfigForm } from '../components/ConfigForm';
+import { AddressesForm } from '../components/AddressesForm';
 import { StatusPanel } from '../components/StatusPanel';
 import { useLivePreview } from '../components/LivePreview';
 import { useStillPreview } from '../components/StillPreview';
@@ -331,6 +332,9 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
           loadDetail();
         }}
       />
+
+      <div className="section-title">Addresses</div>
+      <AddressesForm phoneId={phoneId} activeAddress={p.baseUrl} onSaved={loadDetail} />
 
       <div className="section-title">Status</div>
       <StatusPanel phone={p} status={detail.status} statusError={detail.statusError} calibration={cal} />

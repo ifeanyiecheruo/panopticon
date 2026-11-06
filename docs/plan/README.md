@@ -28,6 +28,7 @@ arming, unpair / force-unpair.
 | Controller master-detail Fleet / Gallery / Trash / Add-phone | done |
 | Gapless clip playback (one MSE-fed `<video>`, per-request fMP4 remux) | done, verified in the Wails app: multi-segment and multi-clip play-through, scrubbing, fullscreen, resolution change, 8x, an hour-long run, Trash ([`../design/components/controller-ui.md`](../design/components/controller-ui.md)) |
 | Unpair / force-unpair (controller) | done, integration-tested |
+| Editable phone addresses, with failover (controller) | done, integration-tested; verified in the app against a real phone whose IP changed (edited in place, kept across a restart) |
 | Controller state in a fixed per-user directory | done: `%LocalAppData%\Panopticon` (etc.), `$PANOPTICON_HOME` override, `wails dev` keeps the launch dir; moves an older build's launch-dir state on first run; archive paths stored relative; unit-tested |
 
 ### Device coverage

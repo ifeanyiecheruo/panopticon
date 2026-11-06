@@ -22,6 +22,8 @@ export {
   CancelCalibration,
   EraseCalibration,
   SetConfig,
+  GetPhoneAddresses,
+  SetPhoneAddresses,
   SetRecording,
   StartLivePreview,
   StopLivePreview,
@@ -46,6 +48,8 @@ export type PhoneApiConfig = phoneapi.Config;
 export type PhoneApiConfigPatch = phoneapi.ConfigPatch;
 export type PhoneApiStatus = phoneapi.Status;
 export type ConfigResult = main.ConfigResult;
+export type PhoneAddressView = main.PhoneAddressView;
+export type PhoneAddressesResult = main.PhoneAddressesResult;
 export type CalibrationView = calibration.View;
 export type CalibrationStartResult = main.CalibrationStartResult;
 export type CalibrationProgressResult = main.CalibrationProgressResult;

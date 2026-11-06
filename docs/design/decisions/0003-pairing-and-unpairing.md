@@ -29,8 +29,21 @@ pasting a full URL into either auto-fills both. QR view needs neither.
 
 ### Identity is a public key, never an IP
 
-Controllers are identified to the phone by public key only. No IP address is stored or displayed
-anywhere in either app.
+Controllers are identified to the phone by public key only, and a phone to the controller by the
+bearer token it issued. The phone stores and shows no controller address.
+
+### A phone's addresses are editable, never identity
+
+The controller does keep the addresses a paired phone answers at, because it has to reach it. A
+phone can have more than one (wifi and a VPN, say) and DHCP can move it, so re-pairing for a new
+address would be wrong: the pairing is the token, not the address. The controller keeps an
+ordered list of addresses per phone, editable on Phone detail, and uses the one the phone last
+answered at. When that stops answering, the sync loop and opening Phone detail check the others
+and switch to the first that answers.
+
+An address reaches the phone only if the phone there accepts this controller's token. An address
+that answers `401` is another phone, or one that has revoked this controller. Saving such an
+address is refused, and it is never switched to.
 
 ### Unpair vs Force unpair are two distinct actions
 
@@ -52,5 +65,6 @@ pairing/sync relationship ends (`store.DeletePhone` removes just the pairing row
 
 - Self-unpair required exactly one new phone route (`DELETE /api/pair`) — the one
   controller-registry action where the remote party needs it.
-- No location/IP data exists to leak.
+- The only address data is the controller's per-phone address list, kept to reach the phone. It
+  is never used to identify one.
 - The unsynced-footage warning is best-effort and absent on Force unpair by design.

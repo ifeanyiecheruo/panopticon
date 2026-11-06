@@ -62,7 +62,7 @@ package.
 
 | Entity | Type | Responsibility |
 |---|---|---|
-| `App` (`app.go`) | Wails-bound struct | Exported methods → `window.go.main.App.*`: `ListPhones`, `GetPhoneDetail`, `SetRecording`, `SetConfig`, `StartLivePreview` / `StopLivePreview`, `ListCameras` / `SetActiveCamera` / `GetCameraControls` / `SetCameraControls` / `ComputeEffectiveRect`, `UnpairPhone` / `ForceUnpairPhone`, `RequestQuit`, `ParseInviteURL`, calibration re-run. Thin orchestration over `internal/*`. |
+| `App` (`app.go`) | Wails-bound struct | Exported methods → `window.go.main.App.*`: `ListPhones`, `GetPhoneDetail`, `SetRecording`, `SetConfig`, `GetPhoneAddresses` / `SetPhoneAddresses`, `StartLivePreview` / `StopLivePreview`, `ListCameras` / `SetActiveCamera` / `GetCameraControls` / `SetCameraControls` / `ComputeEffectiveRect`, `UnpairPhone` / `ForceUnpairPhone`, `RequestQuit`, `ParseInviteURL`, calibration re-run. Thin orchestration over `internal/*`. |
 | `main.go` | entrypoint | `wails.Run()` + config (`syncPollInterval`, 30s). Starts the syncer and tray goroutines. |
 | `trayapp` | tray menu | `getlantern/systray` Open/Quit; its own goroutine alongside the Wails message loop. Closing the window hides it; only Quit (or `RequestQuit`) exits. |
 | `singleinstance` | lock | Windows: an exclusive `CreateFile` share-mode handle (OS-released on crash, unlike a PID file). Second launch prints a message and exits. Other OSes: a best-effort PID file. |

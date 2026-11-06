@@ -32,6 +32,15 @@ func (q *Queries) DeletePhone(ctx context.Context, id string) error {
 	return err
 }
 
+const deletePhoneAddresses = `-- name: DeletePhoneAddresses :exec
+DELETE FROM phone_addresses WHERE phone_id = ?
+`
+
+func (q *Queries) DeletePhoneAddresses(ctx context.Context, phoneID string) error {
+	_, err := q.db.ExecContext(ctx, deletePhoneAddresses, phoneID)
+	return err
+}
+
 const getPhone = `-- name: GetPhone :one
 SELECT id, name, base_url, token, manufacturer, model, last_seen_ms, sync_cursor_ms, created_at_ms
 FROM phones WHERE id = ?
@@ -86,6 +95,48 @@ func (q *Queries) InsertPhone(ctx context.Context, arg InsertPhoneParams) error 
 	return err
 }
 
+const insertPhoneAddress = `-- name: InsertPhoneAddress :exec
+INSERT INTO phone_addresses (phone_id, base_url, position) VALUES (?, ?, ?)
+`
+
+type InsertPhoneAddressParams struct {
+	PhoneID  string
+	BaseUrl  string
+	Position int64
+}
+
+func (q *Queries) InsertPhoneAddress(ctx context.Context, arg InsertPhoneAddressParams) error {
+	_, err := q.db.ExecContext(ctx, insertPhoneAddress, arg.PhoneID, arg.BaseUrl, arg.Position)
+	return err
+}
+
+const listPhoneAddresses = `-- name: ListPhoneAddresses :many
+SELECT base_url FROM phone_addresses WHERE phone_id = ? ORDER BY position ASC
+`
+
+func (q *Queries) ListPhoneAddresses(ctx context.Context, phoneID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listPhoneAddresses, phoneID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var base_url string
+		if err := rows.Scan(&base_url); err != nil {
+			return nil, err
+		}
+		items = append(items, base_url)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPhones = `-- name: ListPhones :many
 SELECT id, name, base_url, token, manufacturer, model, last_seen_ms, sync_cursor_ms, created_at_ms
 FROM phones ORDER BY created_at_ms ASC
@@ -122,6 +173,20 @@ func (q *Queries) ListPhones(ctx context.Context) ([]Phone, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const updatePhoneBaseURL = `-- name: UpdatePhoneBaseURL :exec
+UPDATE phones SET base_url = ? WHERE id = ?
+`
+
+type UpdatePhoneBaseURLParams struct {
+	BaseUrl string
+	ID      string
+}
+
+func (q *Queries) UpdatePhoneBaseURL(ctx context.Context, arg UpdatePhoneBaseURLParams) error {
+	_, err := q.db.ExecContext(ctx, updatePhoneBaseURL, arg.BaseUrl, arg.ID)
+	return err
 }
 
 const updatePhoneLastSeen = `-- name: UpdatePhoneLastSeen :exec
