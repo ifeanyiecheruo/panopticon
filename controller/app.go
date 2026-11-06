@@ -894,7 +894,7 @@ func (a *App) RestoreClip(phoneID, clipID string) error {
 }
 
 // DeleteClipPermanently: trashed -> purged. Deletes every segment's on-disk
-// file + thumbnail immediately (permanent-on-disk right away per
+// file, thumbnail and area of interest immediately (permanent-on-disk right away per
 // docs/design/decisions/0006-segments-clips-and-tombstones.md) but keeps the DB rows as tombstones — the segment rows stop resync from
 // resurrecting the files until the syncer's eviction probe confirms the phone
 // no longer has them, and drops the tombstones.
@@ -907,6 +907,9 @@ func (a *App) DeleteClipPermanently(phoneID, clipID string) error {
 		if s.LocalPath != "" {
 			if err := removeIfExists(a.dirs.ArchivePath(s.LocalPath)); err != nil {
 				log.Printf("delete segment file: %v", err)
+			}
+			if err := removeIfExists(a.dirs.ArchivePath(s.LocalPath) + syncer.AOISuffix); err != nil {
+				log.Printf("delete segment area of interest: %v", err)
 			}
 		}
 		if s.ThumbnailPath != "" {

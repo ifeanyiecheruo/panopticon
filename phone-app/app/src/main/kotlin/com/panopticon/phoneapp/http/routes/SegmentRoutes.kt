@@ -104,6 +104,20 @@ fun Route.segmentRoutes(segmentStore: SegmentStore) {
             call.respondFile(thumb)
         }
 
+        // The area of interest the segment began with, in the recorded frame's own 0..1
+        // coordinates. 204 when it had none - the controller then stores nothing and plays the
+        // segment unadjusted.
+        get("/api/segments/{filename}/aoi") {
+            val filename = call.parameters["filename"] ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorBody("missing filename"))
+            val entry = segmentStore.entryFor(filename)
+            if (entry == null || segmentStore.fileFor(filename) == null) {
+                call.respond(HttpStatusCode.NotFound, ErrorBody("segment not found (evicted or never existed)"))
+                return@get
+            }
+            val aoi = entry.aoi
+            if (aoi == null) call.respond(HttpStatusCode.NoContent) else call.respond(aoi)
+        }
+
         delete("/api/segments/{filename}") {
             val filename = call.parameters["filename"] ?: return@delete call.respond(HttpStatusCode.BadRequest, ErrorBody("missing filename"))
             val deleted = segmentStore.delete(filename)

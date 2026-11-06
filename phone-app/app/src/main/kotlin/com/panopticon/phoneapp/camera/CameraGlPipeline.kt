@@ -132,7 +132,7 @@ class CameraGlPipeline(
     /** See [ANALYSIS_FRAME_INTERVAL]. A parameter so an experiment can vary it without touching
      *  the frame loop. */
     private val analysisFrameInterval: Int = ANALYSIS_FRAME_INTERVAL,
-    private val onSegmentFinished: (file: File, createdAtMs: Long, durationMs: Long, width: Int, height: Int) -> Unit,
+    private val onSegmentFinished: (file: File, createdAtMs: Long, durationMs: Long, width: Int, height: Int, aoi: RectNorm?) -> Unit,
     private val onHealthChanged: (Boolean) -> Unit,
     private val onPhaseChanged: (recording: Boolean) -> Unit = {},
     private val onMotionChanged: (motion: Boolean) -> Unit = {},
@@ -260,6 +260,9 @@ class CameraGlPipeline(
     private var muxerTrack = -1
     private var writing = false
     private var segFile: File? = null
+    /** The area of interest when [segFile] was opened, in output-frame coordinates (see
+     *  [currentAoi]), published with it. */
+    private var segAoi: RectNorm? = null
     private var segAnchorPtsUs = -1L
     private var segStartPtsUs = -1L
     private var segLastPtsUs = -1L
@@ -859,12 +862,26 @@ class CameraGlPipeline(
             muxerTrack = mx.addTrack(fmt)
             mx.start()
             segFile = file
+            segAoi = currentAoi()
             mx
         } catch (e: Exception) {
             noteStorageLow(e.message ?: e.javaClass.simpleName)
             runCatching { file.delete() }
             null
         }
+    }
+
+    /**
+     * The area of interest as the recorded frame shows it: the AE region (else the AF region),
+     * which auto steers by, moved from sensor coordinates into the rotated, zoomed output frame.
+     * Null in manual, where those regions are spot-metering and focus tools rather than an area
+     * of interest, and when the area is wholly out of view.
+     */
+    private fun currentAoi(): RectNorm? {
+        val spec = controls
+        if (spec.manualControlEnabled) return null
+        val region = spec.keys.aeRegionNorm ?: spec.keys.afRegionNorm ?: return null
+        return ViewportRect.toFrameSpace(region, spec.keys, rotationDegrees, texCropX, texCropY)
     }
 
     private var storageLowLoggedMs = 0L
@@ -943,6 +960,7 @@ class CameraGlPipeline(
     private fun finalizeMuxer(publish: Boolean) {
         val mx = muxer ?: return
         val file = segFile
+        val aoi = segAoi
         val anchor = segAnchorPtsUs
         val last = segLastPtsUs
         muxer = null
@@ -953,20 +971,20 @@ class CameraGlPipeline(
         if (publish && stopped && anchor >= 0 && last > anchor && file.exists() && file.length() > 0L) {
             val createdAtMs = recStartEpochMs + (anchor - recStartPtsUs) / 1000
             val durationMs = (last - anchor) / 1000 + frameDurationMs
-            publishSegment(file, createdAtMs, durationMs)
+            publishSegment(file, createdAtMs, durationMs, aoi)
         } else if (file.exists()) {
             runCatching { file.delete() }
         }
     }
 
-    private fun publishSegment(file: File, startedAtMs: Long, durationMs: Long) {
+    private fun publishSegment(file: File, startedAtMs: Long, durationMs: Long, aoi: RectNorm?) {
         if (!file.exists() || file.length() == 0L) { runCatching { file.delete() }; return }
         Log.i(TAG, "segment ${file.name}: start=$startedAtMs dur=${durationMs}ms size=${file.length()}B")
         health.event("segmentPublished", "dur=${durationMs}ms bytes=${file.length()}")
         health.gauge("measuredFps", "%.2f".format(measuredFps()))
         publishMotionGauges()
         logKeyframeCadence(file)
-        onSegmentFinished(file, startedAtMs, durationMs.coerceAtLeast(0L), outputSize.width, outputSize.height)
+        onSegmentFinished(file, startedAtMs, durationMs.coerceAtLeast(0L), outputSize.width, outputSize.height, aoi)
     }
 
     // ---- camera ----

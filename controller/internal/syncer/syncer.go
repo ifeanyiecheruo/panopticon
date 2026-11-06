@@ -12,6 +12,7 @@ package syncer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -26,6 +27,13 @@ import (
 	"panopticon-controller/internal/phoneaddr"
 	"panopticon-controller/internal/phoneapi"
 )
+
+// AOISuffix names a segment's area-of-interest sidecar, <filename>.aoi.json
+// beside <filename> in the phone's archive directory, as the thumbnail is
+// <filename>.jpg. It holds {"l","t","r","b"} in the recorded frame's 0..1
+// coordinates, and exists only for a segment that began with an area of
+// interest - no sidecar means play it unadjusted.
+const AOISuffix = ".aoi.json"
 
 // Manager supervises one sync goroutine per paired phone, starting/stopping
 // them as phones are added/removed, without needing a restart.
@@ -243,6 +251,12 @@ func (m *Manager) runOnce(ctx context.Context, phoneID string) (client *phoneapi
 			thumbPath = ""
 		}
 
+		// The area of interest is best-effort too: without it the segment
+		// just plays unadjusted.
+		if err := saveAOI(ctx, client, seg.Filename, localPath+AOISuffix); err != nil {
+			log.Printf("syncer[%s]: area of interest %s: %v", phoneID, seg.Filename, err)
+		}
+
 		endMs := seg.EndMs
 		if endMs == 0 {
 			endMs = seg.CreatedAtMs + seg.DurationMs
@@ -321,6 +335,29 @@ func (m *Manager) assignClip(phoneID string, seg phoneapi.SegmentMeta, endMs int
 		return "", err
 	}
 	return clip.ID, nil
+}
+
+// saveAOI writes the segment's area of interest to destPath, or nothing when
+// it had none. A phone without the route answers 404 (ErrEvicted), which is
+// also "nothing to write" rather than a failure.
+func saveAOI(ctx context.Context, client *phoneapi.Client, filename, destPath string) error {
+	aoi, err := client.SegmentAOI(ctx, filename)
+	if errors.Is(err, phoneapi.ErrEvicted) || (err == nil && aoi == nil) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(aoi)
+	if err != nil {
+		return err
+	}
+	tmpPath := destPath + ".part"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, destPath)
 }
 
 // downloadToFile streams a phoneapi binary download to disk. Written to a

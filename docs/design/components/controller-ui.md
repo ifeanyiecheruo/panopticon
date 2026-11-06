@@ -116,6 +116,20 @@ components.
   contiguous run of whole segments (a seek outside it clears it and restarts at the target),
   read 15s ahead and evicted 10s behind. The transport bar spans the clip, not the stream;
   fullscreen is taken on the wrapper.
+- **Contrast maximizer** — a WebGL `<canvas>` laid over the `<video>` (`lib/pictureRenderer.ts`)
+  draws each presented frame. The area is the segment's area of interest (from
+  `/aoi/<phoneId>/<file>`, the syncer's `<file>.aoi.json`; `204` when none), or the whole frame
+  for a segment without one. The whole frame is stretched to the area's black and white points
+  (1st/99th percentile, gain capped at 6x), then a gamma (0.4–2.5) puts the area's median at
+  mid-grey. The tone follows the frames with a 0.3s time constant and restarts after a seek. A
+  sun button in the control bar (shown only with WebGL) turns it on and off: highlighted while
+  on, struck through while off. The choice is remembered (WebView `localStorage`), on by
+  default. While it's on, an "AOI contrast" badge sits in the video's top-left corner, fading
+  with the controls. Holding the button (0.5s) enters drawing: drag a rect over the picture and
+  it overrides every segment's area (badge "AOI override", dashed outline while the controls
+  show) for as long as the player lives, through switching area contrast off and on. A
+  right-click or the button leaves drawing unchanged; Esc leaves it and resets the override.
+  Off, or no WebGL, the clip plays as recorded.
 - **Add phone** — paste view (two fields, full-URL autofill into either) default; QR link
   (deferred). "Connecting…" → inline error distinguishing unreachable address vs bad invite, or
   a success card.

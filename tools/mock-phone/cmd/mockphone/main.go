@@ -691,7 +691,7 @@ func (s *server) handleSegmentsMissing(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleSegmentFileOrThumb(w http.ResponseWriter, r *http.Request) {
-	// Path shape: /api/segments/<filename>/file or /api/segments/<filename>/thumbnail
+	// Path shape: /api/segments/<filename>/file, .../thumbnail or .../aoi
 	rest := strings.TrimPrefix(r.URL.Path, "/api/segments/")
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) != 2 {
@@ -722,6 +722,10 @@ func (s *server) handleSegmentFileOrThumb(w http.ResponseWriter, r *http.Request
 	case "thumbnail":
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Write(makeFakeThumbnail())
+	case "aoi":
+		// Fake segments aren't recorded through the camera, so none began
+		// with an area of interest.
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}

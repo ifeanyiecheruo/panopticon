@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ClipView, SegmentView } from '../api';
 import { SegmentFeeder, type TimelineEntry } from '../lib/segmentFeeder';
+import { PictureRenderer } from '../lib/pictureRenderer';
+import type { AreaRect } from '../lib/areaLevels';
 
 interface ClipPlayerProps {
   clip: ClipView;
@@ -32,6 +34,19 @@ function fmp4Url(clip: ClipView, seg: SegmentView): string {
   return `/fmp4/${encodeURIComponent(clip.phoneId)}/${encodeURIComponent(seg.filename)}`;
 }
 
+/** The segment's area of interest (aoi.go): null when it had none - the
+ * controller answers 204 - and undefined when it couldn't be fetched. */
+async function fetchArea(clip: ClipView, seg: SegmentView): Promise<AreaRect | null | undefined> {
+  try {
+    const res = await fetch(`/aoi/${encodeURIComponent(clip.phoneId)}/${encodeURIComponent(seg.filename)}`);
+    if (res.status === 204) return null;
+    if (!res.ok) return undefined;
+    return (await res.json()) as AreaRect;
+  } catch {
+    return undefined;
+  }
+}
+
 function entriesFor(clip: ClipView | null | undefined): TimelineEntry[] {
   if (!clip) return [];
   return (clip.segments ?? []).map((s, i) => ({ key: segKey(clip, i), url: fmp4Url(clip, s), dur: (s.durationMs ?? 0) / 1000 }));
@@ -47,6 +62,33 @@ const CONTROLS_IDLE_MS = 2500;
 
 /** Speeds the fast-forward button cycles through, wrapping back to 1x. */
 const RATES = [1, 2, 4, 8] as const;
+/** Whether area contrast is on until it's first switched; the choice is then
+ * remembered under CONTRAST_KEY. */
+const CONTRAST_DEFAULT = true;
+const CONTRAST_KEY = 'panopticon.clipAreaContrast';
+/** What area contrast measures in a segment with no area of interest. */
+const WHOLE_FRAME: AreaRect = { l: 0, t: 0, r: 1, b: 1 };
+/** How long the area contrast button is held to draw an override area. */
+const LONG_PRESS_MS = 500;
+/** A drawn area narrower or shorter than this (of the frame) is a stray click. */
+const MIN_DRAWN = 0.02;
+
+function loadContrast(): boolean {
+  try {
+    const v = localStorage.getItem(CONTRAST_KEY);
+    return v === null ? CONTRAST_DEFAULT : v === 'on';
+  } catch {
+    return CONTRAST_DEFAULT;
+  }
+}
+
+function saveContrast(on: boolean) {
+  try {
+    localStorage.setItem(CONTRAST_KEY, on ? 'on' : 'off');
+  } catch {
+    // Not remembered; it still applies to this player.
+  }
+}
 
 /**
  * Plays a clip as one continuous stream of its segments and then, if
@@ -65,6 +107,13 @@ const RATES = [1, 2, 4, 8] as const;
  * clip rather than the whole stream, and the native fullscreen control could
  * only be disabled, not removed. Fullscreen is taken on the wrapper so the
  * controls come with it.
+ *
+ * What's seen is a `<canvas>` over the `<video>`: PictureRenderer draws each
+ * frame the video presents, stretching its contrast to the levels inside the
+ * area of interest its segment was recorded with - the whole frame for a
+ * segment without one. With area contrast switched off, or no WebGL, it shows
+ * the video as recorded. The video is still the one decoder and timeline;
+ * nothing is swapped.
  */
 export function ClipPlayer({ clip, autoplay = false, onFinished, onStarted, nextClip }: ClipPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -88,9 +137,46 @@ export function ClipPlayer({ clip, autoplay = false, onFinished, onStarted, next
   const [rate, setRate] = useState<number>(1);
   const [error, setError] = useState<string | null>(null);
   const idleTimer = useRef<number | undefined>(undefined);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rendererRef = useRef<PictureRenderer | null>(null);
+  const [gl, setGl] = useState(false); // the canvas renderer is running
+  const [contrast, setContrast] = useState(loadContrast); // area contrast on
+  // An area drawn over the player, used in place of every segment's own until
+  // Esc while drawing resets it.
+  const [override, setOverride] = useState<AreaRect | null>(null);
+  const overrideRef = useRef<AreaRect | null>(null);
+  overrideRef.current = override;
+  const [drawing, setDrawing] = useState(false); // drawing an override
+  const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const pressTimer = useRef<number | undefined>(undefined);
+  const longPressed = useRef(false);
+  // Areas of interest that have arrived, by `phoneId/filename` (null: none).
+  const areas = useRef(new Map<string, AreaRect | null>());
 
   const segments = clip.segments ?? [];
+  const hasSegments = segments.length > 0;
   const cid = clipId(clip);
+
+  // The renderer needs the video and canvas, which only exist while there are
+  // segments to play.
+  useEffect(() => {
+    const v = videoRef.current;
+    const c = canvasRef.current;
+    if (!v || !c) return;
+    const r = PictureRenderer.create(c, v);
+    if (!r) return;
+    r.onLost = () => {
+      rendererRef.current = null;
+      setGl(false);
+    };
+    rendererRef.current = r;
+    setGl(true);
+    return () => {
+      r.dispose();
+      rendererRef.current = null;
+      setGl(false);
+    };
+  }, [hasSegments]);
   // Where each segment starts within the clip, and the clip's total length.
   const starts: number[] = [];
   let total = 0;
@@ -155,6 +241,144 @@ export function ClipPlayer({ clip, autoplay = false, onFinished, onStarted, next
   }, [timelineSig]);
 
   useEffect(() => () => feederRef.current?.dispose(), []);
+
+  // Fetch the areas of interest of the clip and the one queued after it, and
+  // redraw as each lands - a paused frame adjusts when its area arrives.
+  useEffect(() => {
+    if (!gl) return;
+    for (const c of [clip, nextClip]) {
+      if (!c) continue;
+      for (const s of c.segments ?? []) {
+        const key = `${c.phoneId}/${s.filename}`;
+        if (areas.current.has(key)) continue;
+        void fetchArea(c, s).then((a) => {
+          if (a === undefined) return; // not cached: tried again next time
+          areas.current.set(key, a);
+          rendererRef.current?.redraw();
+        });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timelineSig, gl]);
+
+  /** The area of interest of the segment playing at a point on the stream's
+   * timeline - of the clip or nextClip - or the whole frame when it has none.
+   * A drawn override stands in for all of them. */
+  const areaAt = (mediaTime: number): AreaRect => {
+    if (overrideRef.current) return overrideRef.current;
+    const f = feederRef.current;
+    if (!f) return WHOLE_FRAME;
+    const { clip: c, nextClip: n } = latest.current;
+    for (const cl of [c, n]) {
+      if (!cl) continue;
+      const segs = cl.segments ?? [];
+      for (let i = 0; i < segs.length; i++) {
+        const start = f.startOf(segKey(cl, i));
+        if (start === null) continue;
+        const dur = (segs[i].durationMs ?? 0) / 1000;
+        if (mediaTime >= start && mediaTime < start + dur) return areas.current.get(`${cl.phoneId}/${segs[i].filename}`) ?? WHOLE_FRAME;
+      }
+    }
+    return WHOLE_FRAME;
+  };
+
+  useEffect(() => {
+    rendererRef.current?.setArea(gl && contrast ? areaAt : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gl, contrast, override]);
+
+  const switchContrast = (on: boolean) => {
+    saveContrast(on);
+    setContrast(on);
+  };
+
+  /** The video's picture within the player box (object-fit: contain), in
+   * client pixels. */
+  const pictureBox = () => {
+    const wrap = wrapRef.current?.getBoundingClientRect();
+    const v = videoRef.current;
+    if (!wrap || !v || !v.videoWidth || !v.videoHeight) return null;
+    const scale = Math.min(wrap.width / v.videoWidth, wrap.height / v.videoHeight);
+    const w = v.videoWidth * scale;
+    const h = v.videoHeight * scale;
+    return { left: wrap.left + (wrap.width - w) / 2, top: wrap.top + (wrap.height - h) / 2, w, h };
+  };
+
+  /** A client point as a fraction of the frame, kept inside it. */
+  const toFrame = (clientX: number, clientY: number) => {
+    const b = pictureBox();
+    if (!b) return null;
+    const clamp = (n: number) => Math.min(1, Math.max(0, n));
+    return { x: clamp((clientX - b.left) / b.w), y: clamp((clientY - b.top) / b.h) };
+  };
+
+  /** A frame rect placed over the player, for an outline. */
+  const outlineStyle = (a: AreaRect) => {
+    const b = pictureBox();
+    const wrap = wrapRef.current?.getBoundingClientRect();
+    if (!b || !wrap) return { display: 'none' };
+    return {
+      left: `${b.left - wrap.left + a.l * b.w}px`,
+      top: `${b.top - wrap.top + a.t * b.h}px`,
+      width: `${(a.r - a.l) * b.w}px`,
+      height: `${(a.b - a.t) * b.h}px`,
+    };
+  };
+
+  const dragRect = (d: { x0: number; y0: number; x1: number; y1: number }): AreaRect => ({
+    l: Math.min(d.x0, d.x1), t: Math.min(d.y0, d.y1), r: Math.max(d.x0, d.x1), b: Math.max(d.y0, d.y1),
+  });
+
+  const onDrawDown = (e: PointerEvent) => {
+    const p = toFrame(e.clientX, e.clientY);
+    if (!p) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+  };
+  const onDrawMove = (e: PointerEvent) => {
+    if (!drag) return;
+    const p = toFrame(e.clientX, e.clientY);
+    if (p) setDrag({ ...drag, x1: p.x, y1: p.y });
+  };
+  const onDrawUp = () => {
+    if (!drag) return;
+    const r = dragRect(drag);
+    setDrag(null);
+    if (r.r - r.l < MIN_DRAWN || r.b - r.t < MIN_DRAWN) return; // keep drawing
+    setOverride(r);
+    if (!contrast) switchContrast(true);
+    setDrawing(false);
+  };
+  const cancelDraw = () => {
+    setDrag(null);
+    setDrawing(false);
+  };
+
+  // Esc leaves drawing and resets the override, back to each segment's area.
+  useEffect(() => {
+    if (!drawing) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      setOverride(null);
+      cancelDraw();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [drawing]);
+
+  // Holding the area contrast button draws an override; a click switches.
+  const onContrastDown = () => {
+    longPressed.current = false;
+    window.clearTimeout(pressTimer.current);
+    pressTimer.current = window.setTimeout(() => {
+      longPressed.current = true;
+      setDrawing(true);
+    }, LONG_PRESS_MS);
+  };
+  const onContrastRelease = () => window.clearTimeout(pressTimer.current);
+  useEffect(() => () => window.clearTimeout(pressTimer.current), []);
 
   /** Playback crossed into nextClip: show it, and let the caller catch up. */
   const checkRollover = () => {
@@ -311,7 +535,7 @@ export function ClipPlayer({ clip, autoplay = false, onFinished, onStarted, next
     );
   }
 
-  const showControls = !playing || scrubbing || (hovering && !idle);
+  const showControls = !playing || scrubbing || drawing || (hovering && !idle);
   const pct = total > 0 ? Math.min(100, (position / total) * 100) : 0;
   const classes = ['clip-player'];
   if (fullscreen) classes.push('is-fullscreen');
@@ -335,8 +559,30 @@ export function ClipPlayer({ clip, autoplay = false, onFinished, onStarted, next
         onTimeUpdate={checkRollover}
         onError={() => setError("Can't play this clip.")}
       ></video>
+      <canvas ref={canvasRef} className="clip-canvas" aria-hidden="true"></canvas>
+      {gl && contrast && (
+        <div className={showControls ? 'clip-badge' : 'clip-badge hidden'} title="Area contrast is on">
+          {override ? 'AOI override' : 'AOI contrast'}
+        </div>
+      )}
+      {gl && contrast && override && !drawing && showControls && (
+        <div className="clip-area" style={outlineStyle(override)} aria-hidden="true" />
+      )}
       {error && <div className="clip-error">{error}</div>}
       <div className="clip-surface" onClick={togglePlay} onDblClick={toggleFullscreen} />
+      {drawing && (
+        <div
+          className="clip-draw"
+          onPointerDown={onDrawDown}
+          onPointerMove={onDrawMove}
+          onPointerUp={onDrawUp}
+          onPointerCancel={() => setDrag(null)}
+          onContextMenu={(e) => { e.preventDefault(); cancelDraw(); }}
+        >
+          <div className="clip-draw-hint">Drag over the area to maximize contrast in - Esc to reset to each segment's area</div>
+          {drag && <div className="clip-area drawing" style={outlineStyle(dragRect(drag))} />}
+        </div>
+      )}
       <div className={showControls ? 'clip-controls' : 'clip-controls hidden'}>
         <button
           type="button"
@@ -383,6 +629,34 @@ export function ClipPlayer({ clip, autoplay = false, onFinished, onStarted, next
             <div className="clip-track-thumb" style={{ left: `${pct}%` }} />
           </div>
         </div>
+        {gl && (
+          <button
+            type="button"
+            className={contrast || drawing ? 'clip-btn active' : 'clip-btn'}
+            title={contrast
+              ? `Area contrast on: stretches the contrast of ${override ? 'the drawn area' : "each segment's area of interest (or the whole frame)"} - click to turn off, hold to draw an area`
+              : 'Area contrast off - click to turn on, hold to draw an area'}
+            aria-label="Area contrast"
+            aria-pressed={contrast}
+            onPointerDown={onContrastDown}
+            onPointerUp={onContrastRelease}
+            onPointerLeave={onContrastRelease}
+            onPointerCancel={onContrastRelease}
+            onContextMenu={(e) => e.preventDefault()}
+            onClick={(e) => {
+              (e.currentTarget as HTMLButtonElement).blur();
+              if (longPressed.current) { longPressed.current = false; return; }
+              if (drawing) { cancelDraw(); return; }
+              switchContrast(!contrast);
+            }}
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <circle cx="12" cy="12" r="4" />
+              <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4" />
+              {!contrast && <path d="M4 20L20 4" />}
+            </svg>
+          </button>
+        )}
         <button
           type="button"
           className="clip-btn"
