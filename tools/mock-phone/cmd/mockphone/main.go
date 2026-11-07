@@ -95,12 +95,16 @@ type server struct {
 	// answers 503 + retryAfterMs until this elapses (mimics a cold front-facing
 	// camera). 0 disables it.
 	liveArmDelay time.Duration
+	// Answer POST /api/live/start with a 409 in record mode, as an older phone build or a warm
+	// phone does, so the controller's stills fallback can be exercised.
+	noLiveWhileRecording bool
 }
 
 func main() {
 	addr := flag.String("addr", ":8091", "listen address")
 	invite := flag.String("invite", "TEST-INVITE-CODE", "invite code this mock phone accepts (once)")
 	numSegments := flag.Int("segments", 6, "number of fake pre-existing segments to seed (as two runs split by a gap)")
+	noLiveWhileRecording := flag.Bool("no-live-while-recording", false, "refuse POST /api/live/start in record mode (409), like an older phone build or a warm phone")
 	liveArmMs := flag.Int("live-arm-ms", 1500, "ms the camera 'arms' after entering live mode; POST /api/live/start 503s with retryAfterMs until it elapses (0 disables)")
 	overheated := flag.Bool("overheated", false, "report the thermal guard as tripped (status \"overheated\", battery over the critical temperature)")
 	flag.Parse()
@@ -121,6 +125,7 @@ func main() {
 		activeCameraID:       "0",
 		controlKeys:          map[string]any{},
 		liveArmDelay:         time.Duration(*liveArmMs) * time.Millisecond,
+		noLiveWhileRecording: *noLiveWhileRecording,
 		overheated:           *overheated,
 		thermalCriticalLevel: "severe",
 		thermalSafeLevel:     "moderate",
@@ -321,7 +326,7 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMode: GET returns the current mode; POST switches it. `standby` is the
-// explicit stop that frees the camera; `live` from `record` is a 409.
+// explicit stop that frees the camera. Record <-> live keeps the camera and any live stream.
 func (s *server) handleMode(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		s.mu.Lock()
@@ -343,15 +348,13 @@ func (s *server) handleMode(w http.ResponseWriter, r *http.Request) {
 	leftLive := false
 	switch body.Mode {
 	case "record", "standby":
-		leftLive = s.mode == "live"
+		// Record and live are one pipeline on the phone: switching between them keeps the
+		// stream. Only standby, which closes the camera, ends it.
+		leftLive = body.Mode == "standby" && s.mode != "standby"
 		s.mode = body.Mode
 	case "live":
-		if s.mode == "record" {
-			s.mu.Unlock()
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "stop recording first: POST /api/mode {\"mode\":\"standby\"}"})
-			return
-		}
-		enteringLive := s.mode != "live"
+		// From record this is the same pipeline with recording off: no arming, stream kept.
+		enteringLive := s.mode == "standby"
 		s.mode = "live"
 		if enteringLive && s.liveArmDelay > 0 {
 			s.live.mu.Lock()

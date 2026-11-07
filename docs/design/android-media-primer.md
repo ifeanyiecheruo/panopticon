@@ -173,6 +173,10 @@ Terms:
   `00 00 00 01` start codes — what `MediaCodec` emits and what MPEG-TS wants) and length-prefixed
   (what an `.mp4` stores). The live muxer works in Annex-B.
 
+> Since [`0016`](decisions/0016-live-off-the-recording-encoder.md), `record` and `live` share one
+> pipeline and one encoder, and the live view taps the recording encoder; the separate live
+> pipeline described below is history.
+
 The phone has **one** hardware encoder. `record` and `live` are mutually exclusive partly for
 this reason ([`decisions/0010-mode-state-machine.md`](decisions/0010-mode-state-machine.md)).
 

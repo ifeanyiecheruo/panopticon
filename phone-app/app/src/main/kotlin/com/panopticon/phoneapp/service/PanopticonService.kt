@@ -9,7 +9,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -18,7 +20,6 @@ import com.panopticon.phoneapp.MainActivity
 import com.panopticon.phoneapp.PanopticonApplication
 import com.panopticon.phoneapp.R
 import com.panopticon.phoneapp.camera.CameraGlPipeline
-import com.panopticon.phoneapp.camera.LivePipeline
 import com.panopticon.phoneapp.http.PanopticonHttpServer
 import com.panopticon.phoneapp.state.AppMode
 import com.panopticon.phoneapp.state.RecordingStatus
@@ -56,6 +57,9 @@ class PanopticonService : Service() {
      * through a mode switch could leave a pipeline running that nothing will ever stop.
      */
     private val pipelineLock = Any()
+
+    /** Main-thread handler for [liveIdleCheck]. */
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
      * Held for as long as this service lives. A `camera` foreground service keeps the *process*
@@ -177,7 +181,6 @@ class PanopticonService : Service() {
                     batteryCurrent = app.batteryCurrent,
                     onModeChanged = ::handleModeChanged,
                     onCameraConfigChanged = ::handleCameraConfigChanged,
-                    liveProvider = { app.livePipeline },
                     recordProvider = { app.cameraGlPipeline },
                 )
                 server.start()
@@ -201,25 +204,48 @@ class PanopticonService : Service() {
 
     private fun applyMode(mode: AppMode) {
         when (mode) {
-            AppMode.RECORD -> {
-                stopLivePipeline()
-                if (cameraPipeline == null) startCameraPipeline()
-            }
-            AppMode.LIVE -> {
-                // RECORD and LIVE are mutually exclusive - tear the recording pipeline down and
-                // bring up the live one (armed-idle; POST /api/live/start begins broadcasting).
-                releaseCameraPipeline()
-                app.appState.setMotionActive(false)
-                app.appState.setRecordingStatus(RecordingStatus.IDLE)
-                startLivePipeline()
+            AppMode.RECORD, AppMode.LIVE -> {
+                // One pipeline for both (docs/design/decisions/0016-live-off-the-recording-encoder.md):
+                // RECORD <-> LIVE only turns segment writing on or off, so the camera, its
+                // exposure and focus, and a live viewer's stream all carry on across the switch.
+                val recording = mode == AppMode.RECORD
+                val pipeline = cameraPipeline
+                if (pipeline == null) startCameraPipeline(recording) else pipeline.setRecording(recording)
+                if (!recording) {
+                    app.appState.setMotionActive(false)
+                    app.appState.setRecordingStatus(RecordingStatus.IDLE)
+                }
             }
             AppMode.STANDBY -> {
                 // Explicit stop: fully release the camera so a calibration sweep can take it.
                 releaseCameraPipeline()
-                stopLivePipeline()
                 app.appState.setMotionActive(false)
                 app.appState.setRecordingStatus(RecordingStatus.STOPPED)
             }
+        }
+        scheduleLiveIdleCheck()
+    }
+
+    /**
+     * LIVE runs the whole camera pipeline - camera, GL, encoder - for a viewer, and costs about
+     * what recording does. A viewer that goes away without a word (a crashed controller, a laptop
+     * that slept) would otherwise leave it running indefinitely; so LIVE with nobody watching for
+     * [LIVE_IDLE_TO_STANDBY_MS] drops to STANDBY. The live tap's own 15s watchdog ends the stream
+     * first; this then gives the camera back.
+     */
+    private val liveIdleCheck = Runnable {
+        synchronized(pipelineLock) {
+            if (app.appState.mode.value != AppMode.LIVE) return@Runnable
+            if (cameraPipeline?.liveTap?.isBroadcasting == true) return@Runnable
+            Log.i(TAG, "LIVE with no viewer for ${LIVE_IDLE_TO_STANDBY_MS}ms: back to standby")
+        }
+        app.requestMode(AppMode.STANDBY)
+    }
+
+    private fun scheduleLiveIdleCheck() {
+        mainHandler.removeCallbacks(liveIdleCheck)
+        if (app.appState.mode.value == AppMode.LIVE && cameraPipeline?.liveTap?.isBroadcasting != true) {
+            mainHandler.postDelayed(liveIdleCheck, LIVE_IDLE_TO_STANDBY_MS)
         }
     }
 
@@ -233,21 +259,15 @@ class PanopticonService : Service() {
         // Nothing is running to reconfigure; the persisted config is picked up on resume.
         if (app.appState.overheated) return@synchronized
         when (change) {
-            CameraConfigChange.ACTIVE_CAMERA -> when (app.appState.mode.value) {
-                AppMode.RECORD -> {
+            CameraConfigChange.ACTIVE_CAMERA -> when (val mode = app.appState.mode.value) {
+                AppMode.RECORD, AppMode.LIVE -> {
                     releaseCameraPipeline()
-                    startCameraPipeline()
-                }
-                AppMode.LIVE -> {
-                    stopLivePipeline()
-                    startLivePipeline()
+                    startCameraPipeline(recording = mode == AppMode.RECORD)
                 }
                 AppMode.STANDBY -> Unit
             }
             CameraConfigChange.CONTROLS -> {
-                val spec = app.appConfig.get().cameraControls
-                cameraPipeline?.applyControls(spec)
-                app.livePipeline?.applyControls(spec)
+                cameraPipeline?.applyControls(app.appConfig.get().cameraControls)
             }
         }
     }
@@ -267,7 +287,6 @@ class PanopticonService : Service() {
     private fun handleThermalChanged(tripped: Boolean) = synchronized(pipelineLock) {
         if (tripped) {
             releaseCameraPipeline()
-            stopLivePipeline()
             app.calibrationRunner.cancelActive()
             app.appState.setMotionActive(false)
             app.appState.setRecordingStatus(RecordingStatus.STOPPED)
@@ -290,32 +309,8 @@ class PanopticonService : Service() {
         pipeline.release()
     }
 
-    private fun startLivePipeline() {
-        if (app.livePipeline != null) return
-        app.appState.setLiveViewers(0)
-        val cfg = app.appConfig.get()
-        app.livePipeline = LivePipeline(
-            context = applicationContext,
-            liveDir = File(applicationContext.cacheDir, "live"),
-            cameraId = app.cameraCatalog.resolveActiveId(cfg.activeCameraId),
-            initialControls = cfg.cameraControls,
-            videoResolution = cfg.videoResolution,
-            rotationDegreesConfig = cfg.rotationDegrees,
-            healthRegistry = app.cameraHealth,
-            onHealthChanged = { healthy -> app.appState.setCameraHealthy(healthy) },
-            onBroadcastingChanged = { broadcasting ->
-                app.appState.setLiveViewers(if (broadcasting) 1 else 0)
-            },
-        ).also { it.start() }
-    }
-
-    private fun stopLivePipeline() {
-        app.livePipeline?.release()
-        app.livePipeline = null
-        app.appState.setLiveViewers(0)
-    }
-
-    private fun startCameraPipeline() {
+    /** [recording] false is LIVE: the same pipeline, writing nothing - see [CameraGlPipeline.setRecording]. */
+    private fun startCameraPipeline(recording: Boolean = true) {
         // Starts ARMED (analysing for motion), not RECORDING - the motion gate
         // decides when a segment is actually written.
         app.appState.setRecordingStatus(RecordingStatus.IDLE)
@@ -356,7 +351,19 @@ class PanopticonService : Service() {
             },
             onMotionChanged = cb@{ motion ->
                 if (cameraPipeline !== pipeline) return@cb
+                // Analysis keeps running in LIVE (so the detector is warm for recording), but
+                // "motion" on the phone's own UI means "would be recording".
+                if (app.appState.mode.value != AppMode.RECORD) return@cb
                 app.appState.setMotionActive(motion)
+            },
+            recording = recording,
+            liveDir = File(applicationContext.cacheDir, "live"),
+            onBroadcastingChanged = cb@{ broadcasting ->
+                // A released pipeline's tap reports its end late, from its own thread; by then
+                // the live pipeline may own the viewer count.
+                if (cameraPipeline !== pipeline) return@cb
+                app.appState.setLiveViewers(if (broadcasting) 1 else 0)
+                mainHandler.post { synchronized(pipelineLock) { scheduleLiveIdleCheck() } }
             },
         )
         cameraPipeline = pipeline
@@ -369,9 +376,9 @@ class PanopticonService : Service() {
         app.onCameraConfigChanged = null
         thermalGuard?.stop()
         thermalGuard = null
+        mainHandler.removeCallbacks(liveIdleCheck)
         synchronized(pipelineLock) {
             releaseCameraPipeline()
-            stopLivePipeline()
         }
         httpServer?.stop()
         httpServer = null
@@ -424,6 +431,11 @@ class PanopticonService : Service() {
     }
 
     companion object {
+        /** LIVE with no viewer for this long goes back to STANDBY - see [liveIdleCheck]. Long
+         *  enough to ride out a controller window that is hidden for a moment, or a viewer
+         *  reconnecting after a camera switch. */
+        private const val LIVE_IDLE_TO_STANDBY_MS = 2 * 60_000L
+
         fun start(context: android.content.Context) {
             val intent = Intent(context, PanopticonService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

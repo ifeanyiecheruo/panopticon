@@ -1,7 +1,7 @@
 package com.panopticon.phoneapp.http.routes
 
 import com.panopticon.phoneapp.camera.LiveHlsRelay
-import com.panopticon.phoneapp.camera.LivePipeline
+import com.panopticon.phoneapp.camera.LiveSource
 import com.panopticon.phoneapp.http.ErrorBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -58,12 +58,13 @@ private fun parseByteRange(header: String): IntRange? {
 /**
  * Live view (LL-HLS). See docs/design/http-api.md's "Live view" section.
  *
- *  - `POST /api/live/start` idempotently begins broadcasting; `409` unless the phone is in LIVE
- *    mode (enter it first via `POST /api/mode {"mode":"live"}`, which is itself a `409` from
- *    `record`).
- *  - `DELETE /api/live/stop` drops back to armed-idle (usually unnecessary - a 15s no-request
- *    watchdog on [LivePipeline] does it).
- *  - `GET /live/live.m3u8` serves the rolling LL-HLS playlist straight from [LivePipeline]'s
+ *  - `POST /api/live/start` idempotently begins broadcasting, off the camera pipeline's encoder
+ *    (see [com.panopticon.phoneapp.camera.LiveTap]) in RECORD or LIVE - a recording carries on
+ *    untouched, and a switch between the two doesn't interrupt the stream. `409` in STANDBY,
+ *    where no camera is open, and while recording on a warm phone.
+ *  - `DELETE /api/live/stop` stops broadcasting (usually unnecessary - a 15s no-request
+ *    watchdog does it).
+ *  - `GET /live/live.m3u8` serves the rolling LL-HLS playlist straight from the source's
  *    relay. A request carrying `_HLS_msn` (optionally `_HLS_part`) is a blocking reload - it
  *    holds the response open until that part (or whole segment) actually exists, instead of
  *    polling on a fixed interval, up to [BLOCKING_RELOAD_TIMEOUT_MS].
@@ -74,10 +75,10 @@ private fun parseByteRange(header: String): IntRange? {
  *    token is deferred - the controller proxies these server-side with the full token today).
  *    Every GET also "touches" the watchdog.
  *
- * [live] is looked up per request because the pipeline only exists while the phone is in LIVE
- * mode - `PanopticonService` creates it on the mode switch and releases it on the way out.
+ * [live] is looked up per request because the pipelines come and go with the mode -
+ * `PanopticonService` creates them on a mode switch and releases them on the way out.
  */
-fun Route.liveRoutes(live: () -> LivePipeline?, overheated: () -> Boolean) {
+fun Route.liveRoutes(live: () -> LiveSource?, overheated: () -> Boolean) {
     // Authenticated by the global installAuth() intercept.
     run {
         post("/api/live/start") {
@@ -89,10 +90,11 @@ fun Route.liveRoutes(live: () -> LivePipeline?, overheated: () -> Boolean) {
             }
             val pipeline = live() ?: return@post call.respond(
                 HttpStatusCode.Conflict,
-                ErrorBody("not in live mode: POST /api/mode {\"mode\":\"live\"} first"),
+                ErrorBody("no camera running: live view needs record or live mode"),
             )
+            pipeline.refusal()?.let { return@post call.respond(HttpStatusCode.Conflict, ErrorBody(it)) }
             when (val count = pipeline.startBroadcasting()) {
-                LivePipeline.STILL_ARMING -> {
+                LiveSource.STILL_ARMING -> {
                     // Camera is coming up (cold front-camera start): tell the caller to retry.
                     call.response.header(HttpHeaders.RetryAfter, "2")
                     call.respond(
@@ -116,7 +118,7 @@ fun Route.liveRoutes(live: () -> LivePipeline?, overheated: () -> Boolean) {
         get("/live/live.m3u8") {
             val pipeline = live() ?: return@get call.respond(
                 HttpStatusCode.Conflict,
-                ErrorBody("not in live mode"),
+                ErrorBody("no camera running"),
             )
             pipeline.touch()
             // LL-HLS blocking reload: a client that already has a copy of the playlist appends
@@ -144,7 +146,7 @@ fun Route.liveRoutes(live: () -> LivePipeline?, overheated: () -> Boolean) {
             val name = call.parameters["segment"].orEmpty()
             val seq = SEGMENT_NAME.matchEntire(name)?.groupValues?.get(1)?.toIntOrNull()
                 ?: return@get call.respond(HttpStatusCode.NotFound, ErrorBody("not a live segment"))
-            val pipeline = live() ?: return@get call.respond(HttpStatusCode.NotFound, ErrorBody("not in live mode"))
+            val pipeline = live() ?: return@get call.respond(HttpStatusCode.NotFound, ErrorBody("no camera running"))
             pipeline.touch()
             call.response.header(HttpHeaders.CacheControl, "no-store")
             val bytes = pipeline.readSegment(seq)

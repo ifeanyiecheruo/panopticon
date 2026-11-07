@@ -1,6 +1,8 @@
 # 0010 — Phone mode state machine
 
-**Status:** Accepted · implemented.
+**Status:** Accepted · implemented. **`live` updated by
+[`0016`](0016-live-off-the-recording-encoder.md)** (2026-11-06): `record` and `live` are one
+pipeline, and `live` from `record` is allowed.
 
 ## Context
 
@@ -15,13 +17,14 @@ Three top-level modes on `/api/mode`:
 |---|---|---|
 | `record` | motion-gated recording pipeline owns it | **sticky** — takes precedence over every other camera-using feature |
 | `standby` | released | the only state calibration or live preview can be entered from |
-| `live` | live-preview pipeline (plain HLS) | armed-idle until `POST /api/live/start` |
+| `live` | the recording pipeline with recording off ([`0016`](0016-live-off-the-recording-encoder.md)) | streams on `POST /api/live/start`; no viewer for 2 min → `standby` |
 
 Transitions:
 
 - `standby` and `record` are always allowed; no-op `200` if already there.
-- `live` **from `record`** is a `409` — `{"error":"stop recording first: POST /api/mode
-  {\"mode\":\"standby\"}"}`. Go via `standby`.
+- ~~`live` **from `record`** is a `409`~~ — **superseded by
+  [`0016`](0016-live-off-the-recording-encoder.md)**: `record` ⇄ `live` is one flag on one
+  pipeline, so both directions are allowed and neither touches the camera.
 - `POST /api/calibration/start` while in `record` is a `409`
   (`{"error":"stop recording on the phone before calibrating"}`).
 

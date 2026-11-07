@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"slices"
 	"sync"
@@ -418,6 +420,36 @@ func (a *App) SetRecording(phoneID string, recording bool) CameraActionResult {
 	}
 }
 
+// StopRecordingToLive stops a phone's recording while someone is watching it:
+// the phone goes to "live" rather than "standby", which on a phone with one
+// pipeline for both is a flag - the camera, and the viewer's stream, carry on.
+// Turning the preview off afterwards (StopLivePreview) returns it to standby,
+// as if live had been entered from there. A phone build that still answers
+// record -> live with a 409 goes to standby instead, as SetRecording would.
+func (a *App) StopRecordingToLive(phoneID string) CameraActionResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return CameraActionResult{Outcome: "other", Message: err.Error()}
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+	err = client.SetMode(a.ctxOrBackground(), "live")
+	var httpErr *phoneapi.HTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
+		return a.SetRecording(phoneID, false)
+	}
+	switch {
+	case err == nil:
+		a.liveMu.Lock()
+		a.livePriorMode[phoneID] = "standby"
+		a.liveMu.Unlock()
+		return CameraActionResult{OK: true, Outcome: "ok"}
+	case errors.Is(err, phoneapi.ErrUnreachable):
+		return CameraActionResult{Outcome: "unreachable", Message: "Could not reach the phone."}
+	default:
+		return CameraActionResult{Outcome: "other", Message: err.Error()}
+	}
+}
+
 // ---- Calibration (re-run driven from Phone detail) ----
 
 type CalibrationStartResult struct {
@@ -467,12 +499,14 @@ type LivePreviewResult struct {
 	Message      string `json:"message,omitempty"`
 }
 
-// StartLivePreview moves one phone into live mode and starts its HLS broadcast,
-// returning the same-origin playlist path the frontend should hand to hls.js
-// (served by liveProxyHandler). Mirrors StartCalibration's contract: a phone
-// that's actively recording is left alone (Outcome "recording") - the caller's
-// UI disables the button with that reason rather than us force-stopping a
-// recording.
+// StartLivePreview starts one phone's HLS broadcast, returning the same-origin
+// playlist path the frontend should hand to hls.js (served by liveProxyHandler).
+//
+// A recording phone is not moved out of record: it broadcasts off its recording
+// encoder, and the recording carries on. If it won't - a phone build that
+// predates that, or one too warm to spare it - the answer is Outcome
+// "recording", and the caller falls back to stills. Otherwise the phone is
+// moved into live mode first.
 func (a *App) StartLivePreview(phoneID string) LivePreviewResult {
 	phone, err := a.store.GetPhone(phoneID)
 	if err != nil {
@@ -491,7 +525,7 @@ func (a *App) StartLivePreview(phoneID string) LivePreviewResult {
 		return LivePreviewResult{Outcome: "overheated", Message: overheatedMessage}
 	}
 	if status.Mode == "record" {
-		return LivePreviewResult{Outcome: "recording", Message: "The phone is recording. Stop recording on the phone before watching live."}
+		return a.startLiveWhileRecording(phoneID, client)
 	}
 
 	priorMode := status.Mode // "standby" or already "live"
@@ -520,10 +554,45 @@ func (a *App) StartLivePreview(phoneID string) LivePreviewResult {
 	return LivePreviewResult{OK: true, Outcome: "ok", PlaylistPath: "/live/" + phoneID + "/live.m3u8"}
 }
 
-// StopLivePreview ends the broadcast and restores the phone to the mode it was
-// in before StartLivePreview (defaulting to "record", the sticky resting mode).
-// Best-effort: a phone that's already unreachable just stops on its own via its
-// inactivity watchdog.
+// startLiveWhileRecording is StartLivePreview for a phone in record mode: ask
+// it to broadcast off its recording encoder, with no mode change. A 409 is the
+// phone declining - an older build, or warm - and comes back as "recording".
+func (a *App) startLiveWhileRecording(phoneID string, client *phoneapi.Client) LivePreviewResult {
+	// No mode to restore when this stops: StopLivePreview only stops the stream.
+	a.liveMu.Lock()
+	delete(a.livePriorMode, phoneID)
+	a.liveMu.Unlock()
+
+	if _, err := client.LiveStartAwaitReady(a.ctxOrBackground(), 20*time.Second); err != nil {
+		var httpErr *phoneapi.HTTPError
+		switch {
+		case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict:
+			return LivePreviewResult{Outcome: "recording", Message: phoneErrorText(httpErr.Body, "The phone is recording and is not serving live video.")}
+		case errors.Is(err, phoneapi.ErrUnreachable):
+			return LivePreviewResult{Outcome: "unreachable", Message: "Could not reach the phone."}
+		default:
+			return LivePreviewResult{Outcome: "other", Message: err.Error()}
+		}
+	}
+	return LivePreviewResult{OK: true, Outcome: "ok", PlaylistPath: "/live/" + phoneID + "/live.m3u8"}
+}
+
+// phoneErrorText is the "error" field of a phone's JSON error body, or fallback.
+func phoneErrorText(body, fallback string) string {
+	var e struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal([]byte(body), &e) == nil && e.Error != "" {
+		return e.Error
+	}
+	return fallback
+}
+
+// StopLivePreview ends the broadcast. A phone that is recording only stops
+// streaming: its mode is never touched, whoever started the recording. Otherwise
+// the phone goes back to the mode it was in before StartLivePreview (defaulting
+// to "record", the sticky resting mode). Best-effort: a phone that's already
+// unreachable just stops on its own via its inactivity watchdog.
 func (a *App) StopLivePreview(phoneID string) error {
 	phone, err := a.store.GetPhone(phoneID)
 	if err != nil {
@@ -535,11 +604,15 @@ func (a *App) StopLivePreview(phoneID string) error {
 	prior, ok := a.livePriorMode[phoneID]
 	delete(a.livePriorMode, phoneID)
 	a.liveMu.Unlock()
+
+	_ = client.LiveStop(a.ctxOrBackground())
+	if status, err := client.Status(a.ctxOrBackground()); err == nil && status.Mode != "live" {
+		// Recording (or already in standby): there is no live mode to leave.
+		return nil
+	}
 	if !ok || prior == "" || prior == "live" {
 		prior = "record"
 	}
-
-	_ = client.LiveStop(a.ctxOrBackground())
 	return client.SetMode(a.ctxOrBackground(), prior)
 }
 

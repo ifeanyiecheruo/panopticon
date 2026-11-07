@@ -7,7 +7,6 @@ import com.panopticon.phoneapp.calibration.CalibrationRunner
 import com.panopticon.phoneapp.camera.CameraCatalog
 import com.panopticon.phoneapp.camera.CameraHealthRegistry
 import com.panopticon.phoneapp.camera.CameraGlPipeline
-import com.panopticon.phoneapp.camera.LivePipeline
 import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.http.routes.calibrationRoutes
 import com.panopticon.phoneapp.http.routes.cameraRoutes
@@ -63,7 +62,6 @@ class PanopticonHttpServer(
     private val batteryCurrent: BatteryCurrentSampler,
     private val onModeChanged: (AppMode) -> Unit,
     private val onCameraConfigChanged: (CameraConfigChange) -> Unit,
-    private val liveProvider: () -> LivePipeline?,
     private val recordProvider: () -> CameraGlPipeline?,
 ) {
     private var engine: ApplicationEngine? = null
@@ -144,10 +142,11 @@ class PanopticonHttpServer(
             // Rects are drawn over whichever view the controller has: the live video in LIVE,
             // a still in RECORD. Both render with their own pipeline's trim.
             cameraRoutes(androidContext, cameraCatalog, appConfig, appState, onCameraConfigChanged) {
-                liveProvider()?.currentTexCrop() ?: recordProvider()?.currentTexCrop()
+                recordProvider()?.currentTexCrop()
             }
             healthRoutes(cameraHealth)
-            liveRoutes(liveProvider, overheated = { appState.overheated })
+            // RECORD and LIVE are the one pipeline; its tap is the live view in both.
+            liveRoutes({ recordProvider()?.liveTap }, overheated = { appState.overheated })
             snapshotRoutes(recordProvider, appState)
         }
     }

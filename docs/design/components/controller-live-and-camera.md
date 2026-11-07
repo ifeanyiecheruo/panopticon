@@ -61,8 +61,9 @@ Linked to their row in [`architecture.md` §1.4](../architecture.md#14-acronyms-
 
 ## 2. Design overview
 
-`App` moves a phone into/out of `live` (leaving a recording phone alone) with a retry that
-tolerates the cold-camera arming `503`. `liveproxy` serves the feed same-origin, forwarding
+`App` moves a phone into/out of `live` with a retry that tolerates the cold-camera arming `503`;
+a recording phone is not moved - it streams off its recording encoder
+([`0016`](../decisions/0016-live-off-the-recording-encoder.md)). `liveproxy` serves the feed same-origin, forwarding
 LL-HLS's blocking-reload query params and byte-range part fetches and relaying whatever
 status/`Content-Range` the phone returns. `LivePreview.tsx` plays it with LL-HLS-tuned hls.js
 config + a stall watchdog + a latency-ratchet reset.
@@ -76,9 +77,9 @@ drawn, in viewer coordinates; the phone resolves them.
 
 | Entity | Type | Responsibility |
 |---|---|---|
-| `StartLivePreview` / `StopLivePreview` | `App` methods | Move a phone into/out of `live` and start/stop its broadcast; remember the prior mode; a recording phone is left alone (`outcome:"recording"`). Uses `phoneapi.LiveStartAwaitReady` — retries the hinted `503` arming response for ~20s. |
+| `StartLivePreview` / `StopLivePreview` | `App` methods | Start/stop a phone's broadcast. A standby phone is moved into `live` and back (the prior mode is remembered). A recording phone is only asked to stream, and stopping never changes its mode; if it declines (`409`: an older build, or warm) the outcome is `"recording"`, the frontend's cue for stills. Uses `phoneapi.LiveStartAwaitReady` — retries the hinted `503` arming response for ~20s. |
 | `stillproxy` | asset-server handler | `GET /still/<phoneId>` → the phone's `GET /api/camera/snapshot`, token server-side. Relays the phone's `409`/`503` status and JSON body so the frontend can tell "stopped recording" from "retry"; an unreachable phone is a `504`. |
-| `useStillPreview` + `StillPreviewImage` | hook + view | Polls `/still/<phoneId>` every 2s, one request at a time, only while Phone detail is open on a reachable recording phone and the window is visible - the phone renders a still only when asked ([`0015`](../decisions/0015-recording-stills.md)). Keeps the last still up (dimmed, with the reason) through a transient `503`; a `409` stops polling and re-reads the phone's detail. `nudge()` looks again after 1.2s following a control change. |
+| `useStillPreview` + `StillPreviewImage` | hook + view | Polls `/still/<phoneId>` every 2s, one request at a time, only while the preview is on for a reachable recording phone that declined to stream, and the window is visible - the phone renders a still only when asked ([`0015`](../decisions/0015-recording-stills.md)). Keeps the last still up (dimmed, with the reason) through a transient `503`; a `409` stops polling and re-reads the phone's detail. `nudge()` looks again after 1.2s following a control change. |
 | `liveproxy` | asset-server handler | Token stays server-side; hls.js fetches same-origin. Forwards `_HLS_msn`/`_HLS_part` on a playlist fetch and any `Range` header on a segment fetch; relays the phone's real status (`200`/`206`/`404`/`416`) and `Content-Range` instead of always assuming `200`. |
 | `useLivePreview` + `LivePreview.tsx` | hook + view | hls.js against the local proxy with LL-HLS-tuned config (`lowLatencyMode: true`, `liveSyncDuration(Count)` deliberately left unset, ~20s `maxBufferLength`, patient retries) + a 2s stall watchdog + a periodic `targetLatency` reset back to the playlist's `partHoldBack` after a stall-free window. `reattach()` on a camera switch or resolution change. Bounded manifest-404 retry that resets once the first fragment buffers. |
 | `CameraControls.tsx` + `phonecam/*` | UI | Camera switcher (logical + physical sub-cameras); a manual-controls master toggle; capability-gated sliders/toggles. Ported phone Preview interactions: frosted drag-rulers over the live `<video>`, a drag-scroller mode bar, categorical dropdowns, per-slider reset, an "Auto" toggle, a 2s idle-fade. One shared drag-box rect picker for Zoom/Focus/Exposure/area of interest (applies on pointer-up, Esc cancels). Entering auto resets everything but zoom; while in auto the Auto button's own panel is the area-of-interest picker (one rect sets the AE and AF regions together, both staying automatic), Zoom stays usable without leaving auto, and every other mode button is disabled until Auto is pressed again to leave it. Focus/Exposure rects are manual-mode only. A right-aligned resolution `<select>` re-attaches the player when changed. |
@@ -106,12 +107,13 @@ drawn, in viewer coordinates; the phone resolves them.
 
 ### 3.5 Processing and behaviour
 
-- One camera viewport, two feeds: stills while the phone records, the live video otherwise. The
-  controls and rect pickers work over either, in the same viewer coordinates; only the resolution
-  dropdown is disabled while recording (the phone `409`s it).
-- Live preview is gated behind an explicit action — never auto-started on page open (live and
-  record are mutually exclusive). Stills start on their own, because they cost the phone nothing
-  until asked and stop when the screen closes.
+- One camera viewport: live video in both modes, stills only when a recording phone declines to
+  stream. The controls and rect pickers work over either, in the same viewer coordinates; only
+  the resolution dropdown is disabled while recording (the phone `409`s it).
+- The preview is behind an explicit toggle (an eye on the viewport) and starts off, so opening a
+  phone never streams by itself. A hidden window drops the player; the phone stops 15s later.
+  While the preview is on, the last frame stands in during a feed switch (record ↔ live), so the
+  viewport keeps its size.
 - The stall watchdog + latency-ratchet reset are the concrete subset of the prototype's hls.js
   workarounds LL-HLS needs to not spiral into permanent rebuffering or a permanently inflated
   target latency.
@@ -126,6 +128,8 @@ drawn, in viewer coordinates; the phone resolves them.
 - **Plain HLS first, then LL-HLS, both behind a server-side proxy + vendored hls.js** —
   [`0007`](../decisions/0007-live-preview-plain-hls.md).
 - **Stills while recording; zoom unfrozen** — [`0015`](../decisions/0015-recording-stills.md).
+- **Live video while recording, off the recording encoder; stills as the fallback** —
+  [`0016`](../decisions/0016-live-off-the-recording-encoder.md).
 - **Camera control on the live surface** —
   [`0008`](../decisions/0008-camera-control-and-multi-camera.md),
   [`0012`](../decisions/0012-ux-shape.md): the ported phone Preview interactions

@@ -10,7 +10,7 @@ import kotlin.math.abs
 
 /**
  * Shared sensor-aspect source-buffer sizing, centre-crop math, and rotation-aware output sizing
- * for the GL blit both [CameraGlPipeline] (RECORD) and [LivePipeline] (LIVE) use to get from
+ * for the GL blit [CameraGlPipeline] (RECORD and LIVE) uses to get from
  * "whatever aspect ratio the camera's SurfaceTexture output happens to be" to a target aspect
  * ratio without an anamorphic squash, and then to the final on-screen orientation.
  */

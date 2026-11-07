@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.panopticon.phoneapp.PanopticonApplication
+import com.panopticon.phoneapp.camera.LiveSource
 import com.panopticon.phoneapp.state.AppMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,12 +43,13 @@ class DebugLiveReceiver : BroadcastReceiver() {
         }, 3_000)
     }
 
-    /** Force a fresh RECORD -> LIVE transition and wait for the service to wire up the pipeline.
-     * The service's onModeChangeRequested hook may not exist yet on a cold, slow device when the
-     * broadcast first lands, so a plain requestMode(LIVE) can silently no-op. */
-    private suspend fun ensureLivePipeline(app: PanopticonApplication): Boolean {
+    /** Enter LIVE and wait for the service to wire up the camera pipeline, whose live tap is the
+     * stream. The service's onModeChangeRequested hook may not exist yet on a cold, slow device
+     * when the broadcast first lands, so a plain requestMode(LIVE) can silently no-op. */
+    private suspend fun ensureLivePipeline(app: PanopticonApplication): LiveSource? {
         repeat(20) { attempt ->
-            if (app.livePipeline != null) return true
+            val pipeline = app.cameraGlPipeline
+            if (pipeline != null && app.appState.mode.value == AppMode.LIVE) return pipeline.liveTap
             if (app.appState.mode.value == AppMode.LIVE) {
                 // mode says LIVE but the service never acted - bounce it.
                 app.requestMode(AppMode.STANDBY)
@@ -57,7 +59,7 @@ class DebugLiveReceiver : BroadcastReceiver() {
             Log.i(TAG, "  waiting for live pipeline (attempt ${attempt + 1})")
             delay(1_000)
         }
-        return app.livePipeline != null
+        return app.cameraGlPipeline?.liveTap
     }
 
     private suspend fun runProbe(context: Context, app: PanopticonApplication, durationMs: Long) {
@@ -70,13 +72,18 @@ class DebugLiveReceiver : BroadcastReceiver() {
         var bytesDumped = 0L
         var startFailed = false
 
-        if (!ensureLivePipeline(app)) {
-            Log.e(TAG, "LIVE PROBE FAIL: livePipeline still null after retries (service not up?)")
+        val pipeline = ensureLivePipeline(app) ?: run {
+            Log.e(TAG, "LIVE PROBE FAIL: no camera pipeline after retries (service not up?)")
             return
         }
-        val pipeline = app.livePipeline!!
 
-        val started = pipeline.startBroadcasting()
+        // The encoder takes a moment to produce its output format after the pipeline starts.
+        var started = LiveSource.STILL_ARMING
+        repeat(20) {
+            started = pipeline.startBroadcasting()
+            if (started != LiveSource.STILL_ARMING) return@repeat
+            delay(500)
+        }
         if (started <= 0) {
             startFailed = true
             Log.e(TAG, "LIVE PROBE FAIL: startBroadcasting() returned $started")

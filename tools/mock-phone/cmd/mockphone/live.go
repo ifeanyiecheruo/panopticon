@@ -436,12 +436,18 @@ func (s *server) handleLiveStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	mode := s.mode
+	mode, noLiveWhileRecording := s.mode, s.noLiveWhileRecording
 	s.mu.Unlock()
-	if mode != "live" {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "not in live mode"})
+	switch {
+	case mode == "standby":
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "no camera running: live view needs record or live mode"})
+		return
+	case mode == "record" && noLiveWhileRecording:
+		// What an older phone build, or a warm phone, answers: the controller falls back to stills.
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "phone is warm (thermal moderate): no live view while recording, stills only"})
 		return
 	}
+	// In record the stream comes off the recording encoder, which is already running: no arming.
 	s.live.mu.Lock()
 	arming := time.Now().Before(s.live.armAt)
 	s.live.mu.Unlock()

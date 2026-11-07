@@ -118,6 +118,10 @@ export function StopLivePreview(arg1) {
   return window['go']['main']['App']['StopLivePreview'](arg1);
 }
 
+export function StopRecordingToLive(arg1) {
+  return window['go']['main']['App']['StopRecordingToLive'](arg1);
+}
+
 export function TrashClip(arg1, arg2) {
   return window['go']['main']['App']['TrashClip'](arg1, arg2);
 }

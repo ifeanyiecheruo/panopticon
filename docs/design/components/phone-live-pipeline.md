@@ -13,9 +13,16 @@ path.*
 Describe the component that serves a live view of the camera as LL-HLS, single-stream, with a
 cold-camera arming contract.
 
+> **Updated by [`0016`](../decisions/0016-live-off-the-recording-encoder.md) (2026-11-06):**
+> `LivePipeline` is gone. The live view is `LiveTap` (`camera/LiveSource.kt`) on
+> `CameraGlPipeline`'s encoder, in `record` and `live` alike; `live` is that pipeline with
+> recording off. What this spec says about `LiveHlsRelay`, `TsMuxer` and the routes still holds,
+> except that finished segments are now kept in memory rather than written to the cache dir.
+> Read `LivePipeline` below as history.
+
 ### 1.2 Scope
 
-Covers `camera/LivePipeline.kt`, `camera/LiveHlsRelay.kt`, `camera/ts/TsMuxer.kt` (+
+Covers `camera/LiveSource.kt` (`LiveTap`), `camera/LiveHlsRelay.kt`, `camera/ts/TsMuxer.kt` (+
 `TsMuxerTest`), `http/routes/LiveRoutes.kt`, and `src/debug/DebugLiveReceiver.kt`. The
 hand-rolled MPEG-TS muxing rules are also covered by
 [`../../quirks/mpeg-ts.md`](../../quirks/mpeg-ts.md).
@@ -101,8 +108,8 @@ broadcasting lifecycle.
 
 ### 3.5 Processing and behaviour
 
-- `live` and `record` are mutually exclusive; `live` from `record` is a `409` (go via
-  `standby`).
+- ~~`live` and `record` are mutually exclusive~~ — one pipeline since
+  [`0016`](../decisions/0016-live-off-the-recording-encoder.md); `record` ⇄ `live` keeps the stream.
 - Cold-camera contract: `503 {error:"camera still starting", retryAfterMs:2000}` + `Retry-After`
   while arming; bare `503 {error:"live camera unavailable"}` is a hard failure. The controller
   retries the hinted form for ~20s.

@@ -25,6 +25,7 @@ export {
   GetPhoneAddresses,
   SetPhoneAddresses,
   SetRecording,
+  StopRecordingToLive,
   StartLivePreview,
   StopLivePreview,
   UnpairPhone,

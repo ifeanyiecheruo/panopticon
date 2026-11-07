@@ -36,7 +36,7 @@ those files carry a prerequisite note pointing at the relevant section.
 |---|---|
 | [`phone-service-and-http.md`](phone-service-and-http.md) | `PanopticonService` lifecycle, the Ktor server + auth gate, pairing internals |
 | [`phone-recording-pipeline.md`](phone-recording-pipeline.md) | `CameraGlPipeline`: GL fan-out, continuous encoder, motion gate, pre-roll, gapless rotation, `SegmentStore` |
-| [`phone-live-pipeline.md`](phone-live-pipeline.md) | `LivePipeline` + `LiveHlsRelay` + `TsMuxer`: arming/broadcast, plain-HLS output |
+| [`phone-live-pipeline.md`](phone-live-pipeline.md) | `LiveTap` + `LiveHlsRelay` + `TsMuxer`: LL-HLS off the camera pipeline's encoder (`LivePipeline` retired, see 0016) |
 | [`phone-calibration.md`](phone-calibration.md) | `CalibrationRunner` + `ZoomMath` + persistence |
 | [`phone-camera-control.md`](phone-camera-control.md) | catalog, capabilities read, control apply/validation, physical-camera targeting |
 | [`phone-ui.md`](phone-ui.md) | Compose UI: Home, Connect, Gallery, Calibrate |

@@ -62,15 +62,10 @@ fun Route.modeRoutes(appState: AppState, onModeChanged: (AppMode) -> Unit) {
                 return@post
             }
 
+            // RECORD <-> LIVE is one flag on one pipeline (it used to be a 409 from record, back
+            // when LIVE had a pipeline of its own): stopping a recording someone is watching goes
+            // straight to LIVE, and the camera and the viewer's stream carry on.
             val current = appState.mode.value
-            if (requested == AppMode.LIVE && current == AppMode.RECORD) {
-                call.respond(
-                    HttpStatusCode.Conflict,
-                    ErrorBody("stop recording first: POST /api/mode {\"mode\":\"standby\"}"),
-                )
-                return@post
-            }
-
             if (requested != current) {
                 appState.setMode(requested)
                 onModeChanged(requested)

@@ -8,7 +8,7 @@ import android.media.MediaFormat
 import android.util.Size
 
 /**
- * Shared recording-size selection so RECORD ([CameraGlPipeline]) and LIVE ([LivePipeline]) pick
+ * Shared recording-size selection so RECORD and LIVE (both [CameraGlPipeline]) and calibration pick
  * the exact same size for the same requested `videoResolution` - both now capture through a
  * `SurfaceTexture` (see [CameraFraming]/[GlBlit]), so there's a single, shared enumeration and
  * fallback ladder rather than two pipelines guessing independently and risking divergent aspect
@@ -67,4 +67,13 @@ internal object RecordingSizeSelection {
     private fun avcVideoCapabilities() = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
         .firstOrNull { it.isEncoder && it.supportedTypes.any { t -> t.equals(MediaFormat.MIMETYPE_VIDEO_AVC, true) } }
         ?.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)?.videoCapabilities
+}
+
+/** "1920x1080" -> Size(1920, 1080); anything unparseable -> null. */
+internal fun parseVideoSize(s: String): Size? {
+    val parts = s.split('x', 'X')
+    if (parts.size != 2) return null
+    val w = parts[0].trim().toIntOrNull() ?: return null
+    val h = parts[1].trim().toIntOrNull() ?: return null
+    return if (w > 0 && h > 0) Size(w, h) else null
 }
