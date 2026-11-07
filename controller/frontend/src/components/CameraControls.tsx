@@ -166,8 +166,6 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
   const [confirmCam, setConfirmCam] = useState<string | null>(null);
   const [idle, setIdle] = useState(false);
 
-  /** The last frame that was on screen when the preview was paused; null shows a blank frame. */
-  const [frozen, setFrozen] = useState<string | null>(null);
   /** The most recent frame the feed showed, kept up to date while it plays. Stands in for the
    *  feed while it is between pictures - the live stream giving way to stills when recording
    *  starts, or the reverse - so the frame keeps its size instead of collapsing to a
@@ -201,8 +199,8 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
   const caps: CameraCapabilities | undefined = view?.capabilities;
   const activeCamId = view?.state?.cameraId || cams.find((c) => c.isActive)?.cameraId || '';
   // One viewport, two feeds: stills while recording, the live video otherwise. Every control and
-  // rect picker below works over whichever is up, in the same 0..1 coordinates. Paused, the
-  // frozen frame shows but nothing works over it - a change wouldn't show until play.
+  // rect picker below works over whichever is up, in the same 0..1 coordinates. Off, the frame
+  // is blank and nothing works over it - a change wouldn't show until play.
   // Live video in both modes; stills only when a recording phone has declined to stream.
   const useStills = phoneRecording && ctl.state.kind === 'refused';
   const feedShowing = useStills ? still.showing : ctl.playing;
@@ -237,11 +235,8 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
   }, [liveShowing]);
 
   const togglePlaying = () => {
-    if (playing) {
-      // Freeze what was visible, at full size. Nothing on screen right now (between feeds, or an
-      // error) falls back to the last frame the feed showed.
-      setFrozen(grabFrame(viewportRef.current) ?? lastFrameRef.current ?? frozen);
-    }
+    // Off leaves a blank frame, and an old picture must not stand in once it comes back on.
+    if (playing) lastFrameRef.current = null;
     onPlayingChange(!playing);
   };
   const nudgeStill = still.nudge;
@@ -889,9 +884,8 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
     );
   }
 
-  // What fills the frame when the feed can't: the frozen frame while off, the last frame while
-  // the feed switches over.
-  const standIn = playing ? lastFrameRef.current : frozen;
+  // What fills the frame while the feed switches over: its last frame. Off, the frame is blank.
+  const standIn = playing ? lastFrameRef.current : null;
 
   // ---- render ----
   return (
@@ -930,7 +924,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
                   <img
                     class="live-video still-image frozen-frame"
                     src={standIn}
-                    alt={playing ? 'The last picture, while the preview switches over' : 'The preview, off'}
+                    alt="The last picture, while the preview switches over"
                     draggable={false}
                   />
                   {bridging && bridgeNote && <div class="still-problem">{bridgeNote}</div>}
