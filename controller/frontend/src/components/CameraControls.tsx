@@ -14,7 +14,7 @@ import { StillPreviewImage, type StillController } from './StillPreview';
 import { HScroll } from './phonecam/HScroll';
 import { Ruler, type RulerSpec } from './phonecam/Ruler';
 import { modeIcon, CycleIcon, ResetIcon, type ModeIconName, type RulerIconName } from './phonecam/icons';
-import { PlayIcon, PauseIcon } from '../lib/icons';
+import { EyeIcon, EyeOffIcon } from '../lib/icons';
 
 /** Plain (method-free) shapes for the editable draft + patch payload — the
  * generated Wails model classes carry a `convertValues` method that makes an
@@ -67,15 +67,24 @@ interface Props {
   onPlayingChange: (playing: boolean) => void;
 }
 
+/** How often the live video's current frame is kept as the stand-in for a feed switch. */
+const LAST_FRAME_MS = 1000;
+/** The stand-in only fills the frame for a second or two, so it needn't be full size. */
+const LAST_FRAME_EDGE = 640;
+
 /** The picture the viewport is showing right now - the live <video>'s current frame or the
- *  still <img> - as a JPEG data URL, or null when there is nothing on screen yet. Both sources
- *  are same-origin (the controller proxies them), so the canvas is never tainted. */
-function grabFrame(root: HTMLElement | null): string | null {
+ *  still <img> - as a JPEG data URL, scaled to at most [maxEdge] on its longer side, or null
+ *  when there is nothing on screen yet. Both sources are same-origin (the controller proxies
+ *  them), so the canvas is never tainted. */
+function grabFrame(root: HTMLElement | null, maxEdge = Infinity): string | null {
   const media = root?.querySelector<HTMLVideoElement | HTMLImageElement>('.live-video:not(.frozen-frame)');
   if (!media) return null;
-  const w = media instanceof HTMLVideoElement ? media.videoWidth : media.naturalWidth;
-  const h = media instanceof HTMLVideoElement ? media.videoHeight : media.naturalHeight;
-  if (!w || !h) return null;
+  const srcW = media instanceof HTMLVideoElement ? media.videoWidth : media.naturalWidth;
+  const srcH = media instanceof HTMLVideoElement ? media.videoHeight : media.naturalHeight;
+  if (!srcW || !srcH) return null;
+  const scale = Math.min(1, maxEdge / Math.max(srcW, srcH));
+  const w = Math.round(srcW * scale);
+  const h = Math.round(srcH * scale);
   try {
     const canvas = document.createElement('canvas');
     canvas.width = w;
@@ -156,6 +165,11 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
 
   /** The last frame that was on screen when the preview was paused; null shows a blank frame. */
   const [frozen, setFrozen] = useState<string | null>(null);
+  /** The most recent frame the feed showed, kept up to date while it plays. Stands in for the
+   *  feed while it is between pictures - the live stream giving way to stills when recording
+   *  starts, or the reverse - so the frame keeps its size instead of collapsing to a
+   *  placeholder and back. A ref: refreshing it needs no render. */
+  const lastFrameRef = useRef<string | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -186,15 +200,42 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
   // One viewport, two feeds: stills while recording, the live video otherwise. Every control and
   // rect picker below works over whichever is up, in the same 0..1 coordinates. Paused, the
   // frozen frame shows but nothing works over it - a change wouldn't show until play.
-  const viewing = playing && (phoneRecording ? still.showing : ctl.playing);
-  const feedUp = playing && (phoneRecording ? still.state.kind !== 'idle' : ctl.state.kind !== 'idle');
+  const feedShowing = phoneRecording ? still.showing : ctl.playing;
+  const feedError = phoneRecording ? still.state.kind === 'error' : ctl.state.kind === 'error';
+  const viewing = playing && feedShowing;
+  // Playing but between pictures: the last frame stands in, with what is happening over it.
+  const bridging = playing && !feedShowing && !feedError;
+  const bridgeNote = phoneRecording
+    ? 'Fetching a still from the phone…'
+    : ctl.state.kind === 'starting'
+      ? 'Connecting to the live stream…'
+      : '';
+
+  // Keep the last frame current: each still as it lands, and the live video once a second.
+  const stillUrl = still.state.kind === 'showing' ? still.state.url : null;
+  useEffect(() => {
+    if (!playing || !phoneRecording || !stillUrl) return;
+    const id = requestAnimationFrame(() => {
+      lastFrameRef.current = grabFrame(viewportRef.current, LAST_FRAME_EDGE) ?? lastFrameRef.current;
+    });
+    return () => cancelAnimationFrame(id);
+  }, [playing, phoneRecording, stillUrl]);
+  const liveShowing = playing && !phoneRecording && ctl.playing;
+  useEffect(() => {
+    if (!liveShowing) return;
+    const grab = () => {
+      lastFrameRef.current = grabFrame(viewportRef.current, LAST_FRAME_EDGE) ?? lastFrameRef.current;
+    };
+    grab();
+    const id = setInterval(grab, LAST_FRAME_MS);
+    return () => clearInterval(id);
+  }, [liveShowing]);
 
   const togglePlaying = () => {
     if (playing) {
-      // Freeze what was visible. Nothing on screen yet (still connecting, or an error) leaves the
-      // previous frozen frame alone rather than blanking it.
-      const frame = grabFrame(viewportRef.current);
-      if (frame) setFrozen(frame);
+      // Freeze what was visible, at full size. Nothing on screen right now (between feeds, or an
+      // error) falls back to the last frame the feed showed.
+      setFrozen(grabFrame(viewportRef.current) ?? lastFrameRef.current ?? frozen);
     }
     onPlayingChange(!playing);
   };
@@ -513,7 +554,10 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
   let note: string | undefined;
   let rectTarget: RectTarget | undefined;
 
-  if (caps && viewing) {
+  // Worked out whenever the preview is on, not only while a picture is up, so the mode bar and
+  // pickers below don't vanish and reappear (shifting the page) while the feed switches over.
+  // The on-picture overlays (rulers, rect pickers) are still drawn only over a live picture.
+  if (caps && playing) {
     const C = caps;
     switch (validOpen) {
       case 'zoom': {
@@ -839,6 +883,10 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
     );
   }
 
+  // What fills the frame when the feed can't: the frozen frame while off, the last frame while
+  // the feed switches over.
+  const standIn = playing ? lastFrameRef.current : frozen;
+
   // ---- render ----
   return (
     <>
@@ -869,37 +917,46 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
           onMouseMove={wake}
           onMouseLeave={scheduleFade}
         >
-          {!playing ? (
+          {(!playing || bridging) && (
             <div class="live-preview">
-              {frozen ? (
-                <div class="live-video-wrap">
-                  <img class="live-video frozen-frame" src={frozen} alt="The preview, paused" draggable={false} />
+              {standIn ? (
+                <div class={`live-video-wrap ${bridging ? 'stale' : ''}`}>
+                  <img
+                    class="live-video still-image frozen-frame"
+                    src={standIn}
+                    alt={playing ? 'The last picture, while the preview switches over' : 'The preview, off'}
+                    draggable={false}
+                  />
+                  {bridging && bridgeNote && <div class="still-problem">{bridgeNote}</div>}
                 </div>
               ) : (
-                <div class="live-frame-idle" />
+                <div class="live-frame-idle">{bridging ? bridgeNote : ''}</div>
               )}
             </div>
-          ) : phoneRecording ? (
-            <StillPreviewImage still={still} />
-          ) : (
-            <LivePreviewVideo ctl={ctl} />
+          )}
+          {/* The feed stays mounted while it is between pictures - hls.js needs its <video> to
+              attach to - but out of the layout, so only one box ever takes up room. */}
+          {playing && (
+            <div style={bridging ? { display: 'none' } : undefined}>
+              {phoneRecording ? <StillPreviewImage still={still} /> : <LivePreviewVideo ctl={ctl} />}
+            </div>
           )}
           <button
             className="cam-play-btn"
             onClick={togglePlaying}
             title={
               playing
-                ? 'Pause the preview'
+                ? 'Preview on - click to turn it off'
                 : phoneRecording
-                  ? 'Play: stills of the recording, every couple of seconds'
-                  : 'Play: the live stream'
+                  ? 'Preview off - click for stills of the recording, every couple of seconds'
+                  : 'Preview off - click for the live stream'
             }
           >
-            {playing ? <PauseIcon /> : <PlayIcon />}
+            {playing ? <EyeIcon /> : <EyeOffIcon />}
           </button>
           {/* Camera name + switcher stay reachable even when the stream errors,
               so a bad camera can always be cycled back out of. */}
-          {feedUp && (
+          {playing && (
             <>
               <div className="cam-badges">
                 <span className={`cam-badge ${manualOn ? 'manual' : ''}`}>{manualOn ? 'MANUAL' : 'AUTO'}</span>
@@ -959,7 +1016,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
           </div>
         )}
 
-        {viewing && caps && (
+        {playing && caps && (
           <>
             <div className="adjust-row">
               <button
@@ -1013,7 +1070,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
           </>
         )}
 
-        {viewing && (
+        {playing && (
           <div className="calib-sub phonecam-hint">
             {rectTarget
               ? validOpen === 'zoom'

@@ -85,6 +85,15 @@ export function useStillPreview(phoneId: string, enabled: boolean, onNotRecordin
           const blob = await res.blob();
           if (cancelled) return;
           const url = URL.createObjectURL(blob);
+          // Decoded before it goes on screen: an <img> that is still decoding has no height,
+          // and the frame would collapse and spring back on the first still.
+          const pre = new Image();
+          pre.src = url;
+          await pre.decode().catch(() => {});
+          if (cancelled) {
+            URL.revokeObjectURL(url);
+            return;
+          }
           releaseUrl();
           urlRef.current = url;
           const at = Number(res.headers.get('X-Captured-At-Ms')) || Date.now();

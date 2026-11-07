@@ -195,13 +195,18 @@ export function useLivePreview(phoneId: string): LiveController {
         }
       });
 
-      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+      // "Playing" means a frame is on screen, not just buffered: before the first frame decodes
+      // the <video> has its 300x150 default size, and showing it then makes the frame jump.
+      const markPlaying = () => {
+        if (hlsRef.current !== hls || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
         if (!playingRef.current) {
           playingRef.current = true;
           retriesRef.current = 0;
         }
         setState({ kind: 'playing' });
-      });
+      };
+      hls.on(Hls.Events.FRAG_BUFFERED, markPlaying);
+      video.addEventListener('loadeddata', markPlaying, { once: true });
 
       hls.loadSource(playlistPath);
       hls.attachMedia(video);
