@@ -67,6 +67,9 @@ interface Props {
   onPlayingChange: (playing: boolean) => void;
 }
 
+/** Why the camera controls are disabled while the preview is off. */
+const PREVIEW_OFF_HINT = 'Turn the preview on (the eye) to adjust the camera';
+
 /** How often the live video's current frame is kept as the stand-in for a feed switch. */
 const LAST_FRAME_MS = 1000;
 /** The stand-in only fills the frame for a second or two, so it needn't be full size. */
@@ -556,10 +559,11 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
   let note: string | undefined;
   let rectTarget: RectTarget | undefined;
 
-  // Worked out whenever the preview is on, not only while a picture is up, so the mode bar and
-  // pickers below don't vanish and reappear (shifting the page) while the feed switches over.
-  // The on-picture overlays (rulers, rect pickers) are still drawn only over a live picture.
-  if (caps && playing) {
+  // Worked out whenever the camera's capabilities are known, not only while a picture is up, so
+  // the mode bar and pickers below stay put (no page shift) as the preview goes on and off or the
+  // feed switches over; with the preview off they are shown disabled. The on-picture overlays
+  // (rulers, rect pickers) are still drawn only over a live picture.
+  if (caps) {
     const C = caps;
     switch (validOpen) {
       case 'zoom': {
@@ -1018,18 +1022,23 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
           </div>
         )}
 
-        {playing && caps && (
-          <>
+        {caps && (
+          // Always laid out; with the preview off, shown but disabled - there is nothing to
+          // judge a change against, and the rows appearing on play would shift the page.
+          <div className={`pcam-controls ${playing ? '' : 'off'}`}>
             <div className="adjust-row">
               <button
                 className={`pcam-auto ${manualOn ? '' : 'on'} ${validOpen === 'auto' ? 'open' : ''}`}
                 onClick={onAutoButton}
+                disabled={!playing}
                 title={
-                  manualOn
-                    ? 'Auto: every control except zoom back to auto; then drag a box to set the area of interest'
-                    : validOpen === 'auto'
-                      ? 'Leave auto for manual controls'
-                      : 'Back to the area of interest'
+                  !playing
+                    ? PREVIEW_OFF_HINT
+                    : manualOn
+                      ? 'Auto: every control except zoom back to auto; then drag a box to set the area of interest'
+                      : validOpen === 'auto'
+                        ? 'Leave auto for manual controls'
+                        : 'Back to the area of interest'
                 }
               >
                 <ResetIcon />
@@ -1041,8 +1050,10 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
                     key={m.id}
                     data-key={m.id}
                     className={`adjust-btn ${validOpen === m.id ? 'open' : ''}`}
-                    disabled={!manualOn && m.id !== 'zoom'}
-                    title={!manualOn && m.id !== 'zoom' ? 'Leave auto to use this' : undefined}
+                    disabled={!playing || (!manualOn && m.id !== 'zoom')}
+                    title={
+                      !playing ? PREVIEW_OFF_HINT : !manualOn && m.id !== 'zoom' ? 'Leave auto to use this' : undefined
+                    }
                     onClick={() => setOpenMode(m.id)}
                   >
                     {modeIcon(m.icon)}
@@ -1057,6 +1068,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
                 <label>{activeSelect.label}</label>
                 <select
                   value={activeSelect.value}
+                  disabled={!playing}
                   onChange={(e) => activeSelect.onChange((e.target as HTMLSelectElement).value)}
                 >
                   {activeSelect.options.map((o) => (
@@ -1069,12 +1081,14 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
             )}
 
             {note && <div className="calib-sub">{note}</div>}
-          </>
+          </div>
         )}
 
-        {playing && (
+        {caps && (
           <div className="calib-sub phonecam-hint">
-            {rectTarget
+            {!playing
+              ? `${PREVIEW_OFF_HINT}.`
+              : rectTarget
               ? validOpen === 'zoom'
                 ? 'Drag the ruler to zoom, or drag a box on the preview to zoom into it — the dashed box is what you will see (applied on release, Esc cancels). ' +
                   (useStills

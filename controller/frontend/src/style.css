@@ -451,6 +451,11 @@ a{color:var(--accent);}
 }
 .cam-play-btn svg{width:14px; height:14px;}
 
+/* The controls under the preview, laid out whether or not it is on (so turning it on doesn't shift
+   the page); dimmed and disabled while it is off. */
+.pcam-controls.off{opacity:.45;}
+.pcam-controls.off button, .pcam-controls.off select{cursor:default;}
+
 /* one or more frosted ruler pills, stacked bottom-centre over the live video */
 .overlay-stack{
   position:absolute; left:50%; bottom:12px; transform:translateX(-50%);
