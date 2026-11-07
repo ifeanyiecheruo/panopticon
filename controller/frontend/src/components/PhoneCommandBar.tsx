@@ -1,5 +1,5 @@
 import type { LiveController } from './LivePreview';
-import { RecordIcon, StopIcon, LiveIcon, CalibrateIcon, UnpairIcon, GalleryIcon } from '../lib/icons';
+import { RecordIcon, StopIcon, CalibrateIcon, UnpairIcon, GalleryIcon } from '../lib/icons';
 
 interface Props {
   reachable: boolean;
@@ -22,7 +22,8 @@ interface Props {
 }
 
 /** Every phone action in one row at the top of Phone-detail. The expanded UIs
- * (live video, calibration progress, unpair confirmations) render below. */
+ * (calibration progress, unpair confirmations) render below; the camera view has its own
+ * play/pause control. */
 export function PhoneCommandBar({
   reachable,
   phoneRecording,
@@ -38,8 +39,9 @@ export function PhoneCommandBar({
   onToggleUnpair,
 }: Props) {
   const livePreviewOn = live.live;
-  const recordDisabled = !reachable || recordBusy || livePreviewOn || calibRunning;
-  const watchDisabled = !reachable || phoneRecording || calibRunning || live.busy;
+  // Starting to record while the live view is up stops the broadcast first (PhoneDetail); only
+  // the moment it is still connecting is off limits, since that start can't be taken back.
+  const recordDisabled = !reachable || recordBusy || live.busy || calibRunning;
   const calibDisabled = !reachable || phoneRecording || calibRunning || livePreviewOn || !canCalibrate;
 
   return (
@@ -49,8 +51,8 @@ export function PhoneCommandBar({
         disabled={recordDisabled}
         onClick={onToggleRecording}
         title={
-          livePreviewOn
-            ? 'Stop the live preview first'
+          live.busy
+            ? 'The live view is still connecting'
             : calibRunning
               ? 'Calibration is running'
               : undefined
@@ -59,21 +61,6 @@ export function PhoneCommandBar({
         {phoneRecording ? <StopIcon /> : <RecordIcon />}
         {recordBusy ? '…' : phoneRecording ? 'Stop recording' : 'Start recording'}
       </button>
-
-      {live.live ? (
-        <button className="btn danger" onClick={live.stop}>
-          <StopIcon /> Stop live
-        </button>
-      ) : (
-        <button
-          className="btn"
-          disabled={watchDisabled}
-          onClick={live.watch}
-          title={phoneRecording ? 'Stop recording to watch live' : undefined}
-        >
-          <LiveIcon /> {live.busy ? 'Starting…' : 'Watch live'}
-        </button>
-      )}
 
       <button className="btn" onClick={onViewGallery}>
         <GalleryIcon /> Gallery
@@ -89,7 +76,7 @@ export function PhoneCommandBar({
             : phoneRecording
               ? 'Stop recording to calibrate'
               : livePreviewOn
-                ? 'Stop the live preview first'
+                ? 'Pause the preview first'
                 : undefined
         }
       >
