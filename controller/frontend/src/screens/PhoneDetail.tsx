@@ -36,6 +36,26 @@ function useWindowVisible(): boolean {
   return visible;
 }
 
+/** Where a phone's preview on/off is remembered, per phone. */
+const previewKey = (phoneId: string) => `panopticon.previewOn.${phoneId}`;
+
+function loadPreviewOn(phoneId: string): boolean {
+  try {
+    return localStorage.getItem(previewKey(phoneId)) === 'on';
+  } catch {
+    return false;
+  }
+}
+
+function savePreviewOn(phoneId: string, on: boolean) {
+  try {
+    if (on) localStorage.setItem(previewKey(phoneId), 'on');
+    else localStorage.removeItem(previewKey(phoneId));
+  } catch {
+    // Not remembered; it still applies until the phone is closed.
+  }
+}
+
 interface PhoneDetailProps {
   onPhoneChanged?: () => void;
   phoneId: string;
@@ -83,8 +103,16 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
   // The camera view's on/off. On, it is the live stream in either mode: a recording phone streams
   // off its recording encoder, with no mode change. A recording phone that declines (an older
   // build, or warm) is shown as stills instead. Off, the phone does no preview work at all.
-  // Starts off, so opening a phone never puts it into live mode by itself.
-  const [previewPlaying, setPreviewPlaying] = useState(false);
+  // Remembered per phone: opening a phone puts the preview back the way the user last left it on
+  // that phone (off for one never turned on), so it only goes live by itself if they left it on.
+  const [previewPlaying, setPreviewPlayingState] = useState(() => loadPreviewOn(phoneId));
+  const setPreviewPlaying = useCallback(
+    (on: boolean) => {
+      setPreviewPlayingState(on);
+      savePreviewOn(phoneId, on);
+    },
+    [phoneId],
+  );
   const phoneRecording = detail?.status?.mode === 'record';
   const reachable = !!detail?.phone.reachable;
   const windowVisible = useWindowVisible();
