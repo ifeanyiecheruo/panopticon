@@ -38,7 +38,9 @@ import java.util.concurrent.atomic.AtomicLong
 internal class SnapshotReadback(
     /** The longer edge of a still, in pixels. A still is never larger than the encoded frame. */
     private val maxEdge: Int = DEFAULT_MAX_EDGE,
-    private val jpegQuality: Int = DEFAULT_JPEG_QUALITY,
+    /** JPEG quality, read once per grab so a change to `snapshotJpegQuality` in /api/config
+     *  shows on the next still rather than the next pipeline start. */
+    private val jpegQuality: () -> Int = { DEFAULT_JPEG_QUALITY },
 ) {
     class Snapshot(val jpeg: ByteArray, val width: Int, val height: Int, val capturedAtMs: Long, private val elapsedMs: Long) {
         fun ageMs(): Long = SystemClock.elapsedRealtime() - elapsedMs
@@ -112,8 +114,9 @@ internal class SnapshotReadback(
             buf.position(0)
             buf.get(rgba)
             val elapsed = SystemClock.elapsedRealtime()
+            val quality = jpegQuality().coerceIn(MIN_JPEG_QUALITY, MAX_JPEG_QUALITY)
             executor.execute {
-                runCatching { encode(rgba, w, h, jpegQuality) }
+                runCatching { encode(rgba, w, h, quality) }
                     .onSuccess { jpeg ->
                         val snap = Snapshot(jpeg, w, h, capturedAtMs, elapsed)
                         synchronized(lock) { latest = snap }
@@ -187,7 +190,15 @@ internal class SnapshotReadback(
     companion object {
         private const val TAG = "SnapshotReadback"
         const val DEFAULT_MAX_EDGE = 960
-        const val DEFAULT_JPEG_QUALITY = 75
+        /** 75 read as grainy on a 960px still; 85 costs roughly half as many bytes again. */
+        const val DEFAULT_JPEG_QUALITY = 85
+        const val MIN_JPEG_QUALITY = 10
+        const val MAX_JPEG_QUALITY = 100
+
+        /** Why [quality] is no good as `snapshotJpegQuality`, or null if it's fine. */
+        fun validateQuality(quality: Int): String? =
+            if (quality in MIN_JPEG_QUALITY..MAX_JPEG_QUALITY) null
+            else "snapshotJpegQuality must be $MIN_JPEG_QUALITY..$MAX_JPEG_QUALITY, got $quality"
 
         /** [outW] x [outH] scaled so its longer edge is at most [maxEdge], keeping the aspect
          *  ratio; never enlarged. Even dimensions, which every JPEG decoder is happy with. */

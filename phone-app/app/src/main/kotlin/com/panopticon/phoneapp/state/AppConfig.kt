@@ -3,6 +3,7 @@ package com.panopticon.phoneapp.state
 import android.content.Context
 import android.os.Build
 import com.panopticon.phoneapp.camera.CameraControlSpec
+import com.panopticon.phoneapp.camera.SnapshotReadback
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -37,6 +38,8 @@ data class DeviceConfig(
     val thermalCriticalTempC: Float = ThermalPolicy.DEFAULT_CRITICAL_C,
     /** Battery temperature it must fall back to (and stay at) before camera work resumes; same caveat. */
     val thermalSafeTempC: Float = ThermalPolicy.DEFAULT_SAFE_C,
+    /** JPEG quality (10..100) of the stills served while recording (`GET /api/camera/snapshot`). */
+    val snapshotJpegQuality: Int = SnapshotReadback.DEFAULT_JPEG_QUALITY,
 )
 
 class AppConfig(context: Context) {

@@ -223,7 +223,7 @@ class CameraGlPipeline(
     @Volatile private var texCropFinalized = false
     private val motionReadback = MotionReadback(READBACK_W, READBACK_H, ::analyseFrame)
     /** Stills for a controller watching while this records - pull-only, see [requestSnapshot]. */
-    private val snapshots = SnapshotReadback()
+    private val snapshots = SnapshotReadback(jpegQuality = { appConfig.get().snapshotJpegQuality })
 
     // Motion detection, and the one channel the camera half of this class uses to talk to it.
     // Everything below that reconfigures, re-requests or restarts the camera brackets itself in

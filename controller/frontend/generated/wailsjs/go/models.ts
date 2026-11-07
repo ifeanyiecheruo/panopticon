@@ -1028,6 +1028,7 @@ export namespace phoneapi {
 	    thermalSafeLevel: string;
 	    thermalCriticalTempC: number;
 	    thermalSafeTempC: number;
+	    snapshotJpegQuality: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Config(source);
@@ -1043,6 +1044,7 @@ export namespace phoneapi {
 	        this.thermalSafeLevel = source["thermalSafeLevel"];
 	        this.thermalCriticalTempC = source["thermalCriticalTempC"];
 	        this.thermalSafeTempC = source["thermalSafeTempC"];
+	        this.snapshotJpegQuality = source["snapshotJpegQuality"];
 	    }
 	}
 	export class ConfigPatch {
@@ -1054,6 +1056,7 @@ export namespace phoneapi {
 	    thermalSafeLevel?: string;
 	    thermalCriticalTempC?: number;
 	    thermalSafeTempC?: number;
+	    snapshotJpegQuality?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigPatch(source);
@@ -1069,6 +1072,7 @@ export namespace phoneapi {
 	        this.thermalSafeLevel = source["thermalSafeLevel"];
 	        this.thermalCriticalTempC = source["thermalCriticalTempC"];
 	        this.thermalSafeTempC = source["thermalSafeTempC"];
+	        this.snapshotJpegQuality = source["snapshotJpegQuality"];
 	    }
 	}
 	

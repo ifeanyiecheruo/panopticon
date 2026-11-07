@@ -269,7 +269,7 @@ assigned to a clip, and indexed. Detail:
 Persisted on device, no schema/migration framework:
 
 - **`DeviceConfig`** — `deviceName`, `motionSensitivity`, `storageCapBytes`, `ringBufferMaxAgeMs`,
-  `activeCameraId`, `cameraControls` (`CameraControlKeys` + `rotationDegrees` + `videoResolution`).
+  `snapshotJpegQuality`, `activeCameraId`, `cameraControls` (`CameraControlKeys` + `rotationDegrees` + `videoResolution`).
 - **Segment index** — one JSON blob in `SharedPreferences`, held in memory by `SegmentStore` as
   the authoritative copy; `reconcile()` on launch drops entries whose file is gone and re-probes
   untracked files. (Dir/keys still literally say `clip` for historical reasons — renaming would

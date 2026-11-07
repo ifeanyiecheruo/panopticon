@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.StatFs
 import com.panopticon.phoneapp.BuildConfig
+import com.panopticon.phoneapp.camera.SnapshotReadback
 import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.http.ErrorBody
 import com.panopticon.phoneapp.state.AppConfig
@@ -76,6 +77,7 @@ data class ConfigResponse(
     val thermalSafeLevel: String,
     val thermalCriticalTempC: Float,
     val thermalSafeTempC: Float,
+    val snapshotJpegQuality: Int,
 )
 
 // `rotationDegrees` is a camera-pipeline setting - read/written via
@@ -90,6 +92,7 @@ data class ConfigPatch(
     val thermalSafeLevel: String? = null,
     val thermalCriticalTempC: Float? = null,
     val thermalSafeTempC: Float? = null,
+    val snapshotJpegQuality: Int? = null,
 )
 
 private fun DeviceConfig.toResponse() = ConfigResponse(
@@ -101,6 +104,7 @@ private fun DeviceConfig.toResponse() = ConfigResponse(
     thermalSafeLevel = thermalSafeLevel,
     thermalCriticalTempC = thermalCriticalTempC,
     thermalSafeTempC = thermalSafeTempC,
+    snapshotJpegQuality = snapshotJpegQuality,
 )
 
 fun Route.deviceRoutes(
@@ -181,6 +185,10 @@ fun Route.deviceRoutes(
                     patch.thermalSafeTempC ?: current.thermalSafeTempC,
                 )?.let { return@post call.respond(HttpStatusCode.BadRequest, ErrorBody(it)) }
             }
+            patch.snapshotJpegQuality?.let { q ->
+                SnapshotReadback.validateQuality(q)
+                    ?.let { return@post call.respond(HttpStatusCode.BadRequest, ErrorBody(it)) }
+            }
             // The guard reads the config on every sample, so a new threshold takes effect within
             // one sample period. Levels are stored lowercased, the form /api/status reports.
             val updated = appConfig.update { current ->
@@ -193,6 +201,7 @@ fun Route.deviceRoutes(
                     thermalSafeLevel = patch.thermalSafeLevel?.lowercase() ?: current.thermalSafeLevel,
                     thermalCriticalTempC = patch.thermalCriticalTempC ?: current.thermalCriticalTempC,
                     thermalSafeTempC = patch.thermalSafeTempC ?: current.thermalSafeTempC,
+                    snapshotJpegQuality = patch.snapshotJpegQuality ?: current.snapshotJpegQuality,
                 )
             }
             call.respond(updated.toResponse())
