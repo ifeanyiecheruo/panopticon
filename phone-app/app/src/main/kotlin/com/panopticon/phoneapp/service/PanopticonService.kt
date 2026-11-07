@@ -358,6 +358,13 @@ class PanopticonService : Service() {
                 if (cameraPipeline !== pipeline) return@cb
                 app.appState.setMotionActive(motion)
             },
+            liveDir = File(applicationContext.cacheDir, "live"),
+            onBroadcastingChanged = cb@{ broadcasting ->
+                // A released pipeline's tap reports its end late, from its own thread; by then
+                // the live pipeline may own the viewer count.
+                if (cameraPipeline !== pipeline) return@cb
+                app.appState.setLiveViewers(if (broadcasting) 1 else 0)
+            },
         )
         cameraPipeline = pipeline
         app.cameraGlPipeline = pipeline

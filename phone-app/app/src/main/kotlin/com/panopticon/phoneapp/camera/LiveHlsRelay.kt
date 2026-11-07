@@ -52,7 +52,8 @@ private class SegmentBuffer : ByteArrayOutputStream() {
  * (`PART-HOLD-BACK`). The hls.js latency workarounds this needs client-side are documented in
  * `docs/quirks/live-hls.md`.
  *
- * This does NOT own a camera surface or an encoder - it's fed by [LivePipeline]'s drain thread.
+ * This does NOT own a camera surface or an encoder - it's fed by [LivePipeline]'s drain thread,
+ * or in RECORD mode by [CameraGlPipeline]'s through a [LiveTap].
  * [feed] is non-blocking: the muxing + file I/O happens on this class's own worker thread via a
  * bounded, drop-on-full queue, so a slow flash write can never stall the encoder drain.
  */
@@ -216,8 +217,12 @@ class LiveHlsRelay(
     private fun processSample(sample: QueuedSample) {
         if (codecConfigBytes == null) codecConfigBytes = extractCodecConfig(sample.format)
         if (sample.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) return
-        if (baseTimestampUs < 0) baseTimestampUs = sample.presentationTimeUs
         val isKeyFrame = (sample.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+        // The stream has to open on a keyframe: everything before one references frames the
+        // viewer never got. LivePipeline's encoder starts with one anyway; a relay tapped onto an
+        // encoder that is already running (LiveTap) joins mid-GOP and waits here for the next.
+        if (baseTimestampUs < 0 && !isKeyFrame) return
+        if (baseTimestampUs < 0) baseTimestampUs = sample.presentationTimeUs
         handleAccessUnit(sample.data, sample.presentationTimeUs - baseTimestampUs, isKeyFrame)
     }
 

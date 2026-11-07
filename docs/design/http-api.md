@@ -273,15 +273,20 @@ latency close to `PART-HOLD-BACK` (down from plain HLS's ~4–6s — see
 The phone runs a dedicated single-stream `camera → MediaCodec → TsMuxer` pipeline; `MediaMuxer`
 can't emit MPEG-TS so the muxer is hand-rolled. Entering `live` mode arms the pipeline (camera
 warm, nothing encoding); `POST /api/live/start` begins broadcasting; a 15s no-request inactivity
-watchdog returns it to armed-idle. `/live/*` is behind the normal bearer token — the controller
+watchdog returns it to armed-idle.
+
+**While recording**, `POST /api/live/start` works too, with no mode change: the relay is fed from
+the recording encoder's own output (`LiveTap`), so the view is the recording itself - same view,
+size and bitrate - and the camera and the recording carry on untouched. The stream opens on the
+next keyframe (one is requested at start). The same 15s watchdog ends it. `/live/*` is behind the normal bearer token — the controller
 proxies these server-side, so hls.js fetches same-origin (the prototype's separate GET-only
 scoped token is deferred). See [`../quirks/live-hls.md`](../quirks/live-hls.md).
 
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
-| POST | `/api/live/start` | — | `{}` | `{ "started": true, "viewerCount": 1 }` | Idempotently begins broadcasting; `409` unless the phone is in `live` mode. `503 { "error": "camera still starting", "retryAfterMs": 2000 }` (plus a `Retry-After` header) while the camera is still arming — a cold front-facing camera can take several seconds; the caller should retry until it succeeds. `503 { "error": "live camera unavailable" }` (no `retryAfterMs`) is a hard failure — do not retry. `503 { "error": "phone is overheated; …" }` while the thermal guard has the camera shut down — do not retry until `/api/status` stops reporting `overheated`. |
+| POST | `/api/live/start` | — | `{}` | `{ "started": true, "viewerCount": 1 }` | Idempotently begins broadcasting, in `live` mode or (off the recording encoder) in `record` mode; `409` in `standby`, which has no camera open. `503 { "error": "camera still starting", "retryAfterMs": 2000 }` (plus a `Retry-After` header) while the camera is still arming — a cold front-facing camera can take several seconds; the caller should retry until it succeeds. `503 { "error": "live camera unavailable" }` (no `retryAfterMs`) is a hard failure — do not retry. `503 { "error": "phone is overheated; …" }` while the thermal guard has the camera shut down — do not retry until `/api/status` stops reporting `overheated`. |
 | DELETE | `/api/live/stop` | — | — | `{ "stopped": true, "viewerCount": 0 }` | Explicit stop (usually unnecessary — 15s inactivity watchdog handles it). |
-| GET | `/live/live.m3u8` | `_HLS_msn=`, `_HLS_part=` *(both optional; LL-HLS blocking reload)* | — | *(text `application/vnd.apple.mpegurl`)* | Rolling LL-HLS playlist. With `_HLS_msn` (optionally `_HLS_part`), blocks up to ~4× the part target duration until that part/segment exists instead of returning immediately. `404` before broadcasting starts, `409` when not in `live` mode. |
+| GET | `/live/live.m3u8` | `_HLS_msn=`, `_HLS_part=` *(both optional; LL-HLS blocking reload)* | — | *(text `application/vnd.apple.mpegurl`)* | Rolling LL-HLS playlist. With `_HLS_msn` (optionally `_HLS_part`), blocks up to ~4× the part target duration until that part/segment exists instead of returning immediately. `404` before broadcasting starts, `409` in `standby`. |
 | GET | `/live/live-<n>.ts` | — (a `Range: bytes=<start>-<end>` request header, not a query param, selects an in-progress part) | — | *(binary `video/mp2t`)* | A finalized segment: full body, `200`. Not yet finalized: with a `Range` header matching a byte range this segment's playlist entry advertised (`EXT-X-PART`/`EXT-X-PRELOAD-HINT`), `206` + `Content-Range` for whatever's been muxed so far, or `416` if that range isn't there yet. `404` once fully rolled out of the window. |
 
 ### Stills while recording

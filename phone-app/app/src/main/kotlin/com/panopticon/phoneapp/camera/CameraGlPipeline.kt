@@ -138,6 +138,11 @@ class CameraGlPipeline(
     private val onMotionChanged: (motion: Boolean) -> Unit = {},
     /** Asked to free space when a segment can't be opened for lack of it - see [newMuxer]. */
     private val onStorageLow: () -> Unit = {},
+    /** Where [liveTap] writes its HLS segments (the same cache dir LIVE mode uses; the two
+     *  never run at once). */
+    liveDir: File = File(context.cacheDir, "live"),
+    /** The live view off this pipeline's encoder started (true) or ended (false). */
+    onBroadcastingChanged: (Boolean) -> Unit = {},
 ) {
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
@@ -224,6 +229,19 @@ class CameraGlPipeline(
     private val motionReadback = MotionReadback(READBACK_W, READBACK_H, ::analyseFrame)
     /** Stills for a controller watching while this records - pull-only, see [requestSnapshot]. */
     private val snapshots = SnapshotReadback(jpegQuality = { appConfig.get().snapshotJpegQuality })
+
+    /**
+     * Live video while recording, off the recording encoder's own output - see [LiveTap]. Idle
+     * (one volatile read per encoded frame) until a viewer calls `POST /api/live/start`.
+     */
+    internal val liveTap = LiveTap(
+        liveDir = liveDir,
+        isProducing = { running && trackFormat != null },
+        requestKeyFrame = {
+            encoder?.setParameters(android.os.Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
+        },
+        onBroadcastingChanged = onBroadcastingChanged,
+    )
 
     // Motion detection, and the one channel the camera half of this class uses to talk to it.
     // Everything below that reconfigures, re-requests or restarts the camera brackets itself in
@@ -328,6 +346,7 @@ class CameraGlPipeline(
 
     fun release() {
         stop()
+        liveTap.close()
         callbackThread.quitSafely()
         workExecutor.shutdown()
         motionReadback.shutdown()
@@ -370,6 +389,7 @@ class CameraGlPipeline(
                 texCropFinalized = false
                 rotationDegrees = CameraFraming.normalizedRotation(appConfig.get().rotationDegrees)
                 outputSize = CameraFraming.rotatedOutputSize(recordingSize, rotationDegrees)
+                liveTap.outputSizeChanged(outputSize.width, outputSize.height)
                 health.gauge("recordingSize", "${recordingSize.width}x${recordingSize.height}")
                 health.gauge("sourceSize", "${sourceSize.width}x${sourceSize.height}")
                 health.gauge("outputSize", "${outputSize.width}x${outputSize.height}")
@@ -817,6 +837,9 @@ class CameraGlPipeline(
         src.position(info.offset); src.limit(info.offset + info.size)
         val bytes = ByteArray(info.size).also { src.get(it) }
         val f = Frame(bytes, info.presentationTimeUs, info.flags, key)
+        // A viewer, if there is one, gets every access unit as it is encoded - motion or not.
+        // The relay only reads the bytes; the ring and muxer below share the same array.
+        trackFormat?.let { liveTap.feed(bytes, info.presentationTimeUs, info.flags, it) }
 
         if (recStartPtsUs < 0) {
             recStartPtsUs = f.ptsUs

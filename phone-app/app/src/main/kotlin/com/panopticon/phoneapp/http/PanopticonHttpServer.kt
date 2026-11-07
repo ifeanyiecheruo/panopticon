@@ -147,7 +147,8 @@ class PanopticonHttpServer(
                 liveProvider()?.currentTexCrop() ?: recordProvider()?.currentTexCrop()
             }
             healthRoutes(cameraHealth)
-            liveRoutes(liveProvider, overheated = { appState.overheated })
+            // LIVE mode's own pipeline, or RECORD's encoder tapped: at most one exists at a time.
+            liveRoutes({ liveProvider() ?: recordProvider()?.liveTap }, overheated = { appState.overheated })
             snapshotRoutes(recordProvider, appState)
         }
     }

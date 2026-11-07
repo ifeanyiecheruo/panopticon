@@ -99,7 +99,7 @@ class LivePipeline(
     private val healthRegistry: CameraHealthRegistry = CameraHealthRegistry(),
     private val onHealthChanged: (Boolean) -> Unit = {},
     private val onBroadcastingChanged: (Boolean) -> Unit = {},
-) {
+) : LiveSource {
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val rotationDegrees = CameraFraming.normalizedRotation(rotationDegreesConfig)
 
@@ -196,15 +196,13 @@ class LivePipeline(
 
     val isBroadcasting: Boolean get() = broadcasting.get()
 
-    fun currentPlaylist(): String? = relay?.currentPlaylist()
+    override fun currentPlaylist(): String? = relay?.currentPlaylist()
 
-    fun readSegment(seq: Int): ByteArray? = relay?.readSegment(seq)
+    override fun readSegment(seq: Int): ByteArray? = relay?.readSegment(seq)
 
-    /** LL-HLS blocking-reload wait for `(msn, part)` - see [LiveHlsRelay.awaitAtLeast]. */
-    fun relayAwaitAtLeast(msn: Int, part: Int?): CompletableDeferred<Unit>? = relay?.awaitAtLeast(msn, part)
+    override fun relayAwaitAtLeast(msn: Int, part: Int?): CompletableDeferred<Unit>? = relay?.awaitAtLeast(msn, part)
 
-    /** LL-HLS in-progress part/preload-hint byte range - see [LiveHlsRelay.readInProgressRange]. */
-    fun relayReadInProgressRange(seq: Int, startOffset: Int, endOffsetExclusive: Int): ByteArray? =
+    override fun relayReadInProgressRange(seq: Int, startOffset: Int, endOffsetExclusive: Int): ByteArray? =
         relay?.readInProgressRange(seq, startOffset, endOffsetExclusive)
 
     // ---- lifecycle ----
@@ -241,7 +239,7 @@ class LivePipeline(
     /** Idempotent. Begins broadcasting (repeating request targets the camera surface, relay runs).
      * Returns the viewer count (1); 0 if the camera failed to arm (hard failure);
      * [STILL_ARMING] (-1) if arming is still in progress and the caller should retry. */
-    suspend fun startBroadcasting(): Int = mutex.withLock {
+    override suspend fun startBroadcasting(): Int = mutex.withLock {
         lastAccessMs.set(SystemClock.elapsedRealtime())
         if (broadcasting.get()) return@withLock 1
         // Arming (open camera + configure the capture session) can take several
@@ -274,10 +272,10 @@ class LivePipeline(
     }
 
     /** Explicit stop. The watchdog calls the same path after [inactivityTimeoutMs] of no GETs. */
-    suspend fun stopBroadcasting() = mutex.withLock { stopBroadcastingLocked() }
+    override suspend fun stopBroadcasting() = mutex.withLock { stopBroadcastingLocked() }
 
     /** Called on every playlist/segment GET so the inactivity watchdog knows someone's watching. */
-    fun touch() = lastAccessMs.set(SystemClock.elapsedRealtime())
+    override fun touch() = lastAccessMs.set(SystemClock.elapsedRealtime())
 
     /**
      * Merge a new manual-control state and, if currently broadcasting, re-issue the repeating
@@ -791,7 +789,7 @@ class LivePipeline(
 
     companion object {
         /** [startBroadcasting] return value: the camera is still coming up; retry shortly. */
-        const val STILL_ARMING = -1
+        const val STILL_ARMING = LiveSource.STILL_ARMING
     }
 
     /** Match RECORD mode's aspect ratio (indeed, since both now enumerate sizes the same way via
