@@ -58,11 +58,16 @@ export interface LiveController {
   state: LiveState;
   playing: boolean;
   busy: boolean;
-  /** True while the stream is playing OR spinning up (button should show Stop). */
+  /** True while the stream is playing OR spinning up. */
   live: boolean;
   videoRef: { current: HTMLVideoElement | null };
   watch: () => void;
-  stop: () => void;
+  /** Drop the player and take the phone out of live mode. Resolves once the phone has been
+   *  told, so a caller about to change the phone's mode (start recording) can wait for it. */
+  stop: () => Promise<void>;
+  /** Drop the player without touching the phone: for when the phone has already left live
+   *  mode on its own (started recording), where telling it to stop would undo that. */
+  detach: () => void;
   /** Re-arm the phone broadcast and rebuild the hls.js pipeline against the
    * (now-different) camera, without taking the phone out of live mode. Call
    * after a camera switch so the preview follows the new camera. No-op unless
@@ -83,9 +88,11 @@ export function useLivePreview(phoneId: string): LiveController {
   const stallTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastProgressRef = useRef({ t: 0, at: 0 });
   const lastStallKickAtRef = useRef(0);
+  // Bumped by every stop/detach, so a watch() still waiting on the phone knows it was cancelled.
+  const genRef = useRef(0);
 
   const teardown = useCallback(
-    (opts: { stopPhone: boolean }) => {
+    (opts: { stopPhone: boolean }): Promise<void> => {
       if (stallTimerRef.current) {
         clearInterval(stallTimerRef.current);
         stallTimerRef.current = null;
@@ -97,14 +104,21 @@ export function useLivePreview(phoneId: string): LiveController {
       playingRef.current = false;
       if (opts.stopPhone && startedRef.current) {
         startedRef.current = false;
-        StopLivePreview(phoneId).catch(() => {});
+        return StopLivePreview(phoneId).catch(() => {});
       }
+      return Promise.resolve();
     },
     [phoneId],
   );
 
   // Stop the broadcast when the component goes away.
-  useEffect(() => () => teardown({ stopPhone: true }), [teardown]);
+  useEffect(
+    () => () => {
+      genRef.current += 1;
+      void teardown({ stopPhone: true });
+    },
+    [teardown],
+  );
 
   const jumpToLiveEdge = useCallback((hls: Hls) => {
     const video = videoRef.current;
@@ -177,17 +191,22 @@ export function useLivePreview(phoneId: string): LiveController {
           hls.recoverMediaError();
         } else {
           setState({ kind: 'error', message: `Playback error: ${data.details}` });
-          teardown({ stopPhone: true });
+          void teardown({ stopPhone: true });
         }
       });
 
-      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+      // "Playing" means a frame is on screen, not just buffered: before the first frame decodes
+      // the <video> has its 300x150 default size, and showing it then makes the frame jump.
+      const markPlaying = () => {
+        if (hlsRef.current !== hls || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
         if (!playingRef.current) {
           playingRef.current = true;
           retriesRef.current = 0;
         }
         setState({ kind: 'playing' });
-      });
+      };
+      hls.on(Hls.Events.FRAG_BUFFERED, markPlaying);
+      video.addEventListener('loadeddata', markPlaying, { once: true });
 
       hls.loadSource(playlistPath);
       hls.attachMedia(video);
@@ -216,12 +235,18 @@ export function useLivePreview(phoneId: string): LiveController {
   );
 
   const watch = useCallback(async () => {
+    const gen = ++genRef.current;
     setState({ kind: 'starting' });
     let res;
     try {
       res = await StartLivePreview(phoneId);
     } catch (err) {
-      setState({ kind: 'error', message: String(err) });
+      if (genRef.current === gen) setState({ kind: 'error', message: String(err) });
+      return;
+    }
+    if (genRef.current !== gen) {
+      // Stopped while the phone was arming: it is in live mode now, and nobody is watching.
+      if (res.ok) StopLivePreview(phoneId).catch(() => {});
       return;
     }
     if (!res.ok || !res.playlistPath) {
@@ -230,7 +255,7 @@ export function useLivePreview(phoneId: string): LiveController {
         message:
           res.message ||
           (res.outcome === 'recording'
-            ? 'The phone is recording — stop recording to watch live.'
+            ? 'The phone is recording.'
             : res.outcome === 'overheated'
               ? 'The phone is too hot — live preview resumes once it cools.'
               : 'Could not start live preview.'),
@@ -242,14 +267,23 @@ export function useLivePreview(phoneId: string): LiveController {
   }, [phoneId, attachHls]);
 
   const stop = useCallback(() => {
-    teardown({ stopPhone: true });
+    genRef.current += 1;
+    setState({ kind: 'idle' });
+    return teardown({ stopPhone: true });
+  }, [teardown]);
+
+  const detach = useCallback(() => {
+    genRef.current += 1;
+    startedRef.current = false;
+    void teardown({ stopPhone: false });
     setState({ kind: 'idle' });
   }, [teardown]);
 
   const reattach = useCallback(async () => {
     if (!startedRef.current) return;
+    const gen = genRef.current; // a pause mid-way bumps it: then leave the player down
     setState({ kind: 'starting' });
-    teardown({ stopPhone: false }); // keep the phone in live mode; just drop hls.js
+    void teardown({ stopPhone: false }); // keep the phone in live mode; just drop hls.js
     // A camera switch tears down + rebuilds the phone's live pipeline. The arming
     // wait is now handled inside StartLivePreview (it retries the phone's
     // 503+retryAfter for ~20s), so this only needs a couple of passes to ride
@@ -260,6 +294,7 @@ export function useLivePreview(phoneId: string): LiveController {
       try {
         res = await StartLivePreview(phoneId);
       } catch (err) {
+        if (genRef.current !== gen) return;
         if (i === REATTACH_TRIES - 1) {
           setState({ kind: 'error', message: String(err) });
           return;
@@ -267,6 +302,7 @@ export function useLivePreview(phoneId: string): LiveController {
         await new Promise((r) => setTimeout(r, 1000));
         continue;
       }
+      if (genRef.current !== gen) return;
       if (res.ok && res.playlistPath) {
         attachHls(res.playlistPath);
         return;
@@ -290,6 +326,7 @@ export function useLivePreview(phoneId: string): LiveController {
     videoRef,
     watch,
     stop,
+    detach,
     reattach,
   };
 }
@@ -299,12 +336,12 @@ interface LivePreviewVideoProps {
   /** Rendered absolutely over the <video> box (same coordinate space) with the
    * current playing flag — used by the zoom-rect picker. */
   overlay?: (playing: boolean) => ComponentChildren;
-  /** Shown in the frame before a stream is started. */
+  /** Shown in the frame before a stream is started; blank when omitted. */
   idleHint?: ComponentChildren;
 }
 
 /** Presentational half of the live preview: just the framed <video> + overlay
- * slot + status line. The Watch/Stop control lives in the command bar. */
+ * slot + status line. The play/pause control lives on the camera viewport. */
 export function LivePreviewVideo({ ctl, overlay, idleHint }: LivePreviewVideoProps) {
   const { state, videoRef } = ctl;
   return (
@@ -316,9 +353,9 @@ export function LivePreviewVideo({ ctl, overlay, idleHint }: LivePreviewVideoPro
       </div>
 
       {state.kind === 'idle' && (
-        <div class="live-frame-idle">{idleHint ?? 'Not watching. Use “Watch live” above.'}</div>
+        <div class="live-frame-idle">{idleHint}</div>
       )}
-      {state.kind === 'starting' && <div class="calib-sub">Connecting to the phone…</div>}
+      {state.kind === 'starting' && <div class="live-frame-idle">Connecting to the phone…</div>}
       {state.kind === 'error' && <div class="live-frame-idle error">{state.message}</div>}
     </div>
   );
