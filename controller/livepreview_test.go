@@ -14,6 +14,7 @@ type fakeLivePhone struct {
 	mu          sync.Mutex
 	mode        string
 	refuseInRec bool     // answer live/start with 409 in record, like an older build or a warm phone
+	oldModeRule bool     // answer record -> live with 409, like a build from before one pipeline
 	modesSet    []string // every POST /api/mode body, in order
 	liveStarts  int
 	liveStops   int
@@ -30,6 +31,11 @@ func (f *fakeLivePhone) serve(t *testing.T) *httptest.Server {
 		case "/api/mode":
 			var body struct{ Mode string }
 			json.NewDecoder(r.Body).Decode(&body)
+			if f.oldModeRule && f.mode == "record" && body.Mode == "live" {
+				w.WriteHeader(http.StatusConflict)
+				w.Write([]byte(`{"error":"stop recording first"}`))
+				return
+			}
 			f.modesSet = append(f.modesSet, body.Mode)
 			f.mode = body.Mode
 			json.NewEncoder(w).Encode(map[string]string{"mode": body.Mode})
@@ -133,5 +139,40 @@ func TestStopLivePreview_FromLive_RestoresPriorMode(t *testing.T) {
 	}
 	if got, want := phone.modesSet, []string{"live", "standby"}; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("modes set = %v, want %v", got, want)
+	}
+}
+
+// TestStopRecordingToLive_KeepsCameraOnThenStandbyOnStop: stopping a watched recording goes to
+// live (one flag on the phone, the stream carries on); turning the preview off then rests the
+// phone in standby, not back in record.
+func TestStopRecordingToLive_KeepsCameraOnThenStandbyOnStop(t *testing.T) {
+	phone := &fakeLivePhone{mode: "record"}
+	app := newLivePreviewTestApp(t, phone)
+
+	if res := app.StopRecordingToLive("phone1"); !res.OK {
+		t.Fatalf("StopRecordingToLive = %+v", res)
+	}
+	if phone.mode != "live" {
+		t.Fatalf("mode = %s, want live", phone.mode)
+	}
+	if err := app.StopLivePreview("phone1"); err != nil {
+		t.Fatalf("StopLivePreview: %v", err)
+	}
+	if got, want := phone.modesSet, []string{"live", "standby"}; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("modes set = %v, want %v", got, want)
+	}
+}
+
+// TestStopRecordingToLive_OlderPhone_FallsBackToStandby: a phone that still refuses
+// record -> live is stopped the old way.
+func TestStopRecordingToLive_OlderPhone_FallsBackToStandby(t *testing.T) {
+	phone := &fakeLivePhone{mode: "record", oldModeRule: true}
+	app := newLivePreviewTestApp(t, phone)
+
+	if res := app.StopRecordingToLive("phone1"); !res.OK {
+		t.Fatalf("StopRecordingToLive = %+v", res)
+	}
+	if phone.mode != "standby" {
+		t.Errorf("mode = %s, want standby (modes set: %v)", phone.mode, phone.modesSet)
 	}
 }

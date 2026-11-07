@@ -8,7 +8,7 @@ import java.nio.FloatBuffer
 /**
  * Shared, stateless GL building blocks for the "blit the camera's OES texture into a target
  * surface, centre-cropped to an aspect ratio and rotated by a multiple of 90 degrees" step used
- * by both [CameraGlPipeline] (RECORD) and [LivePipeline] (LIVE), so `rotationDegrees` is applied
+ * by [CameraGlPipeline] (RECORD and LIVE), so `rotationDegrees` is applied
  * identically by both and the live preview always shows what actually gets recorded. Each
  * pipeline still owns its own EGL context, textures and program object - only the shader source
  * and the rotated-quad vertex math are shared.

@@ -68,7 +68,7 @@ of every route but `POST /api/pair`, and keeps the pairing/invite state the gate
 
 | Entity | Type | Responsibility |
 |---|---|---|
-| `PanopticonService` | foreground `START_STICKY` service | Holds the current mode; constructs/tears down `CameraGlPipeline` (record) or `LivePipeline` (live); rebuilds the running pipeline on a camera switch or `videoResolution` change; starts the HTTP server. |
+| `PanopticonService` | foreground `START_STICKY` service | Holds the current mode; constructs/tears down `CameraGlPipeline` - one pipeline for record and live, switched with `setRecording` ([`0016`](../decisions/0016-live-off-the-recording-encoder.md)) - and drops an unwatched `live` to `standby` after 2 min; rebuilds the running pipeline on a camera switch or `videoResolution` change; starts the HTTP server. |
 | `PanopticonHttpServer` | embedded Ktor/Netty server (port 8080) | Wires the route groups; retries `embeddedServer(...).start()` on `BindException` (~20 attempts / ~30s). |
 | `AuthPlugin` | Ktor plugin | Bearer-token gate on every route except `POST /api/pair`; `401` on missing/unknown/revoked. |
 | `http/routes/*` | route handlers | `DeviceRoutes`, `ModeRoutes`, `SegmentRoutes`, `CameraRoutes`, `CalibrationRoutes`, `LiveRoutes`, pairing. |
@@ -79,7 +79,7 @@ of every route but `POST /api/pair`, and keeps the pairing/invite state the gate
 ### 3.2 Dependencies
 
 - `SegmentStore` — segment listing / serving / deletion for `/api/segments…`.
-- `CameraGlPipeline` / `LivePipeline` — the mode implementations the service builds.
+- `CameraGlPipeline` — the pipeline the service builds, for record and live alike.
 - `CalibrationRunner` — for `/api/calibration/*`.
 - The camera-control components — for `/api/cameras*` and `/api/camera/*`.
 - `DeviceConfig` persistence (`SharedPreferences`).

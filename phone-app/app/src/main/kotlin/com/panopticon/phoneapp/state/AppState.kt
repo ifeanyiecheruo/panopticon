@@ -44,8 +44,8 @@ class AppState {
     private val _motionActive = MutableStateFlow(false)
     val motionActive: StateFlow<Boolean> = _motionActive
 
-    // Set by PanopticonService from LivePipeline's broadcasting state (0 = armed-idle or not in
-    // LIVE mode, 1 = broadcasting). Surfaced on /api/status.
+    // Set by PanopticonService from the camera pipeline's live tap (0 = nobody watching, 1 =
+    // broadcasting), in RECORD or LIVE. Surfaced on /api/status.
     private val _liveViewers = MutableStateFlow(0)
     val liveViewers: StateFlow<Int> = _liveViewers
 

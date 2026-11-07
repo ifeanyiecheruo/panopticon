@@ -123,6 +123,11 @@ private const val MIN_FREE_TO_OPEN_BYTES = 200L * 1024 * 1024
  *
  * Single camera stream = no `[analysis + video]` two-stream HAL dependency (which the BLU G5's
  * Unisoc SC9863A rejects). Verified sustained on both the Pixel 6 and the BLU G5.
+ *
+ * It is also LIVE mode's pipeline (docs/design/decisions/0016-live-off-the-recording-encoder.md):
+ * the same camera, encoder and [liveTap], with [setRecording] off so no segment is ever opened.
+ * Moving between RECORD and LIVE is that one flag - the camera, its exposure and focus, the
+ * encoder and any live viewer's stream all carry on.
  */
 class CameraGlPipeline(
     private val context: Context,
@@ -143,6 +148,8 @@ class CameraGlPipeline(
     private val onMotionChanged: (motion: Boolean) -> Unit = {},
     /** Asked to free space when a segment can't be opened for lack of it - see [newMuxer]. */
     private val onStorageLow: () -> Unit = {},
+    /** Whether motion opens segments (RECORD) or nothing is written (LIVE) - see [setRecording]. */
+    recording: Boolean = true,
     /** Where [liveTap] writes its HLS segments (the same cache dir LIVE mode uses; the two
      *  never run at once). */
     liveDir: File = File(context.cacheDir, "live"),
@@ -187,6 +194,22 @@ class CameraGlPipeline(
     @Volatile private var running = false
     private var runLoopJob: Job? = null
 
+    /** RECORD (true) or LIVE (false). Read by the drain thread on every encoded frame. */
+    @Volatile private var recordingEnabled = recording
+
+    /**
+     * Switch between RECORD and LIVE without touching the camera. Off, the drain thread finalizes
+     * a segment that is open (publishing it, as a trailer ending would) and opens no more; motion
+     * analysis keeps running, so the detector and the pre-roll ring are already warm when
+     * recording comes back on.
+     */
+    fun setRecording(enabled: Boolean) {
+        if (recordingEnabled == enabled) return
+        recordingEnabled = enabled
+        health.event(if (enabled) "recordingOn" else "recordingOff", null)
+        Log.i(TAG, "recording ${if (enabled) "on" else "off"} (camera and encoder carry on)")
+    }
+
     private var recordingSize = Size(1280, 720)
     // The camera → SurfaceTexture buffer size. When the sensor's native aspect
     // ratio differs from [recordingSize]'s, this is a sensor-aspect size (so the
@@ -228,8 +251,8 @@ class CameraGlPipeline(
         put(floatArrayOf(-1f, -1f, 0f, 0f, 1f, -1f, 1f, 0f, -1f, 1f, 0f, 1f, 1f, 1f, 1f, 1f)); position(0)
     }
     private val stMatrix = FloatArray(16)
-    // See LivePipeline's identical field - texCrop is computed before we've seen a real
-    // transform matrix, then corrected once we have one in case this camera swaps axes.
+    // texCrop is computed before we've seen a real transform matrix, then corrected once we have
+    // one in case this camera swaps axes.
     @Volatile private var texCropFinalized = false
     private val motionReadback = MotionReadback(READBACK_W, READBACK_H, ::analyseFrame)
     /** Stills for a controller watching while this records - pull-only, see [requestSnapshot]. */
@@ -244,9 +267,10 @@ class CameraGlPipeline(
         // Watching while recording costs mostly Wi-Fi (~+250mW at 4Mbps on the Pixel 7 Pro) on
         // top of a pipeline that already runs all day. Once the phone is warm, keep that for the
         // recording: the viewer falls back to stills, which cost a fraction of it.
+        // Only while recording: in LIVE, watching is the only reason the camera is on at all.
         refuse = {
-            val t = ThermalReader.read(context)
-            if (t.supported && t.severity >= LIVE_WHILE_RECORDING_MAX_SEVERITY) {
+            val t = if (recordingEnabled) ThermalReader.read(context) else null
+            if (t != null && t.supported && t.severity >= LIVE_WHILE_RECORDING_MAX_SEVERITY) {
                 "phone is warm (thermal ${t.level}): no live view while recording, stills only"
             } else {
                 null
@@ -378,8 +402,7 @@ class CameraGlPipeline(
         if (running) snapshots.request(maxAgeMs) else null
 
     /** The output-aspect trim this run renders with, once the first frame has fixed it; for
-     *  mapping a rect drawn over a still back to the sensor, as [LivePipeline.currentTexCrop]
-     *  does for the live view. */
+     *  mapping a rect drawn over the live view or a still back to the sensor. */
     fun currentTexCrop(): Pair<Float, Float>? =
         if (texCropFinalized) texCropX to texCropY else null
 
@@ -867,7 +890,7 @@ class CameraGlPipeline(
         while (ring.size >= 2 && f.ptsUs - ring.peekFirst().ptsUs > ringDepthUs) ring.removeFirst()
 
         val now = SystemClock.elapsedRealtime()
-        val shouldWrite = motionEver.get() && now - lastMotionMs.get() < trailerMs
+        val shouldWrite = recordingEnabled && motionEver.get() && now - lastMotionMs.get() < trailerMs
 
         if (writing) {
             if (shouldWrite) {
@@ -1181,7 +1204,7 @@ class CameraGlPipeline(
 
             // The capture rate the HAL has settled on, recorded only when it changes. This is the
             // evidence the CONTROL_AE_TARGET_FPS_RANGE question turns on: the record path leaves
-            // it unpinned (LivePipeline pins it), and pinning it is both a plausible fix for the
+            // it unpinned (the retired LivePipeline pinned it), and pinning it is both a plausible fix for the
             // stalls and a plausible regression, because it stops the HAL lengthening exposure at
             // night. Rather than guess, watch whether the rate actually droops before a stall.
             result.get(CaptureResult.CONTROL_AE_TARGET_FPS_RANGE)?.let { range ->

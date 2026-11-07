@@ -1,9 +1,9 @@
 # 0016 — Live video while recording, off the recording encoder
 
 **Status:** Accepted · implemented (phone-app, controller, mock phone), 2026-11-06. Measured on
-the Pixel 7 Pro. Partly supersedes [`0015`](0015-recording-stills.md): stills stay, as the
-fallback. Planned next: LIVE mode on the same pipeline, so moving between record and live no
-longer reopens the camera.
+the Pixel 7 Pro. Partly supersedes [`0015`](0015-recording-stills.md) (stills stay, as the
+fallback), and [`0007`](0007-live-preview-plain-hls.md)'s and [`0010`](0010-mode-state-machine.md)'s
+"RECORD and LIVE are mutually exclusive": LIVE is now the recording pipeline with recording off.
 Component specs: [`phone-recording-pipeline.md`](../components/phone-recording-pipeline.md),
 [`controller-live-and-camera.md`](../components/controller-live-and-camera.md).
 
@@ -25,11 +25,33 @@ consumes: H.264 access units with 1s keyframes, against the relay's 1s segment t
 `CameraGlPipeline`'s drain thread hands every encoded access unit to a `LiveTap`. Idle, that is one
 volatile read per frame. `POST /api/live/start` in RECORD starts a `LiveHlsRelay` on it, with no
 mode change, and asks the encoder for a keyframe so the viewer isn't kept waiting for the GOP; the
-relay drops samples until that keyframe. The live routes serve a `LiveSource`, which `LivePipeline`
-(LIVE mode) and `LiveTap` (RECORD) both implement. The same 15s no-fetch watchdog ends it.
+relay drops samples until that keyframe. The live routes serve the tap as a `LiveSource`. The same
+15s no-fetch watchdog ends it.
 
 The view is the recording itself: the same view rect, size and bitrate (4Mbps, 30fps) - not the
-2Mbps/24fps of LIVE's own encoder.
+2Mbps/24fps of the separate LIVE encoder it replaced (below).
+
+### LIVE is the same pipeline, with recording off
+
+`LivePipeline` - LIVE's own camera, encoder and relay - is gone. LIVE is `CameraGlPipeline` with
+`setRecording(false)`: the drain thread opens no segment (finalizing one that is open), and
+everything else runs as in RECORD, motion analysis included, so the detector and the pre-roll
+ring are already warm when recording comes back on. RECORD ⇄ LIVE is that one flag: the camera,
+its converged exposure and focus, the encoder and a viewer's stream all carry on, and
+`POST /api/mode` allows `live` from `record`. The controller relies on that. It doesn't reconnect
+the player when a recording starts or stops, and stopping a recording someone is watching goes to
+`live` (`StopRecordingToLive`), not `standby`; turning the preview off then rests the phone in
+standby.
+
+LIVE used to sit armed-idle (camera open, nothing encoding) until a viewer arrived. Now it runs the
+whole pipeline, which costs about what recording does, so LIVE with no viewer for 2 minutes drops
+to STANDBY on its own: a controller that goes away without a word can't leave the camera running.
+
+Camera switches, resolution and rotation changes still rebuild the pipeline (a new frame size),
+and so does STANDBY; those are the remaining reasons a viewer reconnects. LIVE now uses the record
+request as it is, so it no longer pins `CONTROL_AE_TARGET_FPS_RANGE` (see
+[`../../quirks/camera2-recording-pipeline.md`](../../quirks/camera2-recording-pipeline.md)): in low
+light the frame rate can drop, as it can while recording.
 
 ### Live segments in memory
 
@@ -69,5 +91,8 @@ Measured on the Pixel 7 Pro, recording at 1280×720, 150s per phase, power rails
   cooled from earlier tests); a long soak, and a weaker phone, are still to be measured.
 - A recording phone can be framed and adjusted against real video. Stills remain for older builds
   and warm phones.
+- Starting or stopping a recording while watching doesn't interrupt the stream or reopen the
+  camera. On the Pixel 7 Pro, a viewer pulling continuously through record → live → record got
+  every segment, 30fps with no timestamp gaps, and the camera pipeline's run count didn't move.
 - Live while recording is at the recording's resolution and bitrate: up to 4K at 4Mbps. Fine on the
   LAN, heavier over Tailscale.

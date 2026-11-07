@@ -184,24 +184,26 @@ Rationale: [`decisions/0011-controller-runtime-and-state.md`](decisions/0011-con
 flowchart TB
     Svc["PanopticonService\n(foreground service, mode owner)"]
     HTTP["PanopticonHttpServer\n(Ktor: auth gate + route groups)"]
-    Rec["CameraGlPipeline (record)\nCamera2 → SurfaceTexture → GL fan-out\n→ continuous MediaCodec\n→ motion-gated MediaMuxer + pre-roll ring"]
+    Rec["CameraGlPipeline (record + live)\nCamera2 → SurfaceTexture → GL fan-out\n→ continuous MediaCodec\n→ motion-gated MediaMuxer + pre-roll ring\n→ LiveTap"]
     Motion["MotionDetector\n(tracked displacement on GL luma readback)"]
-    Live["LivePipeline (live)\nCamera2 → MediaCodec → LiveHlsRelay\n→ hand-rolled TsMuxer"]
+    Live["LiveHlsRelay\n(LL-HLS off the pipeline's encoder)\n→ hand-rolled TsMuxer"]
     Cal["CalibrationRunner\n(empirical per-camera zoom sweep)"]
     CamCtl["Camera control\nCatalog · CapabilitiesReader ·\nControlApply · ControlValidation"]
     Store["SegmentStore\n(in-memory index + coalesced flush)"]
     Pair["InviteManager · ControllerRegistry\n(local library, not routes)"]
     UI["Compose UI\nHome · Connect · Gallery · Calibrate"]
 
-    Svc --> Rec & Live & Cal
-    Rec --> Motion & Store
+    Svc --> Rec & Cal
+    Rec --> Motion & Store & Live
     HTTP --> Svc & Store & CamCtl & Cal & Pair & Live
     UI --> Svc & Store & Pair
 ```
 
-`record`, `standby`, and `live` are mutually exclusive; `record` is sticky and must be left for
-`standby` explicitly before calibration or live can take the camera
-([`decisions/0010-mode-state-machine.md`](decisions/0010-mode-state-machine.md)). Component
+`record`, `standby`, and `live` are exclusive modes; `record` is sticky and must be left for
+`standby` explicitly before calibration can take the camera
+([`decisions/0010-mode-state-machine.md`](decisions/0010-mode-state-machine.md)). `record` and
+`live` are one pipeline with recording on or off, and the live view streams in both
+([`decisions/0016-live-off-the-recording-encoder.md`](decisions/0016-live-off-the-recording-encoder.md)). Component
 detail: [`components/`](components/) `phone-*` files.
 
 ### 5.2 controller

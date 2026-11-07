@@ -58,10 +58,10 @@ private fun parseByteRange(header: String): IntRange? {
 /**
  * Live view (LL-HLS). See docs/design/http-api.md's "Live view" section.
  *
- *  - `POST /api/live/start` idempotently begins broadcasting. In LIVE mode that is
- *    [com.panopticon.phoneapp.camera.LivePipeline]'s own encoder; in RECORD mode it is the
- *    recording encoder's output, tapped (see [com.panopticon.phoneapp.camera.LiveTap]) - the
- *    recording carries on untouched. `409` in STANDBY, where no camera is open.
+ *  - `POST /api/live/start` idempotently begins broadcasting, off the camera pipeline's encoder
+ *    (see [com.panopticon.phoneapp.camera.LiveTap]) in RECORD or LIVE - a recording carries on
+ *    untouched, and a switch between the two doesn't interrupt the stream. `409` in STANDBY,
+ *    where no camera is open, and while recording on a warm phone.
  *  - `DELETE /api/live/stop` stops broadcasting (usually unnecessary - a 15s no-request
  *    watchdog does it).
  *  - `GET /live/live.m3u8` serves the rolling LL-HLS playlist straight from the source's

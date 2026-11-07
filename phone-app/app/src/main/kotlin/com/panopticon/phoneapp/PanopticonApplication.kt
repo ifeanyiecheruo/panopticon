@@ -6,7 +6,6 @@ import com.panopticon.phoneapp.calibration.CalibrationStore
 import com.panopticon.phoneapp.camera.CameraCatalog
 import com.panopticon.phoneapp.camera.CameraGlPipeline
 import com.panopticon.phoneapp.camera.CameraHealthRegistry
-import com.panopticon.phoneapp.camera.LivePipeline
 import com.panopticon.phoneapp.clips.SegmentStore
 import com.panopticon.phoneapp.pairing.ControllerRegistry
 import com.panopticon.phoneapp.pairing.InviteManager
@@ -66,17 +65,9 @@ class PanopticonApplication : Application() {
     var onModeChangeRequested: ((AppMode) -> Unit)? = null
 
     /**
-     * The LIVE-mode camera pipeline, or null whenever the phone isn't in LIVE mode.
-     * [com.panopticon.phoneapp.service.PanopticonService] creates it on the switch into LIVE and
-     * releases it on the way out; the HTTP live routes read it through here.
-     */
-    @Volatile
-    var livePipeline: LivePipeline? = null
-
-    /**
-     * The RECORD-mode pipeline, or null outside RECORD. Registered by
-     * [com.panopticon.phoneapp.service.PanopticonService] the same way as [livePipeline] so the
-     * `/api/camera/state` route can push a control change onto whichever pipeline is running.
+     * The camera pipeline - RECORD and LIVE both - or null in STANDBY (and while overheated).
+     * Registered by [com.panopticon.phoneapp.service.PanopticonService], which owns it, so the
+     * HTTP routes (live view, stills, camera state) can reach whatever is running.
      */
     @Volatile
     var cameraGlPipeline: CameraGlPipeline? = null

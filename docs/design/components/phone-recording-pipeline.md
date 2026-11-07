@@ -128,10 +128,12 @@ Segment entry: `{filename, createdAtMs, durationMs, endMs, sizeBytes, width, hei
 - **Stills, not a second stream, for viewing a recording** —
   [`0015`](../decisions/0015-recording-stills.md): one extra draw and readback of a frame already
   being rendered, only when a controller asks, instead of a second encoder running all day.
-- **Live video off the recording encoder** —
+- **Live video off the recording encoder; LIVE is this pipeline** —
   [`0016`](../decisions/0016-live-off-the-recording-encoder.md): `LiveTap` hands the encoder's
   output to an LL-HLS relay while someone watches - no second encoder, no camera change. Refused
-  from thermal `moderate`, where viewers fall back to stills.
+  while recording from thermal `moderate`, where viewers fall back to stills. `setRecording(false)`
+  is LIVE mode: nothing written, everything else running, so record ⇄ live never reopens the
+  camera.
 - **Continuous encoder + motion-gated muxer + pre-roll ring** —
   [`0004`](../decisions/0004-recording-pipeline.md): keeps rotation gapless and lets a
   segment start *before* motion.

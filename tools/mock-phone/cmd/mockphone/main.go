@@ -326,7 +326,7 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMode: GET returns the current mode; POST switches it. `standby` is the
-// explicit stop that frees the camera; `live` from `record` is a 409.
+// explicit stop that frees the camera. Record <-> live keeps the camera and any live stream.
 func (s *server) handleMode(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		s.mu.Lock()
@@ -348,17 +348,13 @@ func (s *server) handleMode(w http.ResponseWriter, r *http.Request) {
 	leftLive := false
 	switch body.Mode {
 	case "record", "standby":
-		// Leaving live stops its stream; so does record -> standby, which ends the recording
-		// encoder a record-mode stream comes off.
-		leftLive = s.mode == "live" || (s.mode == "record" && body.Mode == "standby")
+		// Record and live are one pipeline on the phone: switching between them keeps the
+		// stream. Only standby, which closes the camera, ends it.
+		leftLive = body.Mode == "standby" && s.mode != "standby"
 		s.mode = body.Mode
 	case "live":
-		if s.mode == "record" {
-			s.mu.Unlock()
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "stop recording first: POST /api/mode {\"mode\":\"standby\"}"})
-			return
-		}
-		enteringLive := s.mode != "live"
+		// From record this is the same pipeline with recording off: no arming, stream kept.
+		enteringLive := s.mode == "standby"
 		s.mode = "live"
 		if enteringLive && s.liveArmDelay > 0 {
 			s.live.mu.Lock()

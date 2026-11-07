@@ -47,7 +47,7 @@ latency was judged worth cutting — see [`../design/decisions/0007-live-preview
   pins both devices to dead-regular ~0.96–1.0s segments. Also pins the capture rate via
   `CONTROL_AE_TARGET_FPS_RANGE` so the encoder gets a steady frame cadence for hls.js's buffer
   maths (a HAL dropping to 15 fps for exposure makes the buffer lumpy).
-- **armed-idle vs broadcasting.** Entering `live` mode opens the camera + configures the session
+- **armed-idle vs broadcasting** (until [`0016`](../design/decisions/0016-live-off-the-recording-encoder.md): `live` now runs the full pipeline and drops to `standby` after 2 min unwatched). Entering `live` mode opens the camera + configures the session
   but sets no repeating request — zero encoding cost until `POST /api/live/start`. A 15s
   no-`GET` inactivity watchdog drops back to armed-idle.
 - **`/live/*` uses the full bearer token.** The prototype minted a separate GET-only scoped

@@ -420,6 +420,36 @@ func (a *App) SetRecording(phoneID string, recording bool) CameraActionResult {
 	}
 }
 
+// StopRecordingToLive stops a phone's recording while someone is watching it:
+// the phone goes to "live" rather than "standby", which on a phone with one
+// pipeline for both is a flag - the camera, and the viewer's stream, carry on.
+// Turning the preview off afterwards (StopLivePreview) returns it to standby,
+// as if live had been entered from there. A phone build that still answers
+// record -> live with a 409 goes to standby instead, as SetRecording would.
+func (a *App) StopRecordingToLive(phoneID string) CameraActionResult {
+	phone, err := a.store.GetPhone(phoneID)
+	if err != nil {
+		return CameraActionResult{Outcome: "other", Message: err.Error()}
+	}
+	client := phoneapi.New(phone.BaseURL, phone.Token)
+	err = client.SetMode(a.ctxOrBackground(), "live")
+	var httpErr *phoneapi.HTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
+		return a.SetRecording(phoneID, false)
+	}
+	switch {
+	case err == nil:
+		a.liveMu.Lock()
+		a.livePriorMode[phoneID] = "standby"
+		a.liveMu.Unlock()
+		return CameraActionResult{OK: true, Outcome: "ok"}
+	case errors.Is(err, phoneapi.ErrUnreachable):
+		return CameraActionResult{Outcome: "unreachable", Message: "Could not reach the phone."}
+	default:
+		return CameraActionResult{Outcome: "other", Message: err.Error()}
+	}
+}
+
 // ---- Calibration (re-run driven from Phone detail) ----
 
 type CalibrationStartResult struct {

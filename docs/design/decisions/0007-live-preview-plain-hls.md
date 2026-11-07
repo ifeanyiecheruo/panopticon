@@ -48,16 +48,26 @@ See [`../../quirks/mpeg-ts.md`](../../quirks/mpeg-ts.md).
 
 ### Single stream, no GL for live
 
+**Superseded by [`0016`](0016-live-off-the-recording-encoder.md):** live now comes off the
+recording pipeline's encoder (GL fan-out and all), in both `record` and `live` mode.
+
 Live does no motion analysis, so the camera renders straight into the encoder input surface —
 one stream, no GL thread. The BLU G5 two-stream rejection is a non-issue here by construction.
 
 ### RECORD and LIVE are mutually exclusive
+
+**Superseded by [`0016`](0016-live-off-the-recording-encoder.md):** they are one pipeline, and
+`live` from `record` is allowed.
 
 Deliberate — low-end phones don't multi-task encoders well. `live` from `record` is a `409` (go
 via `standby`; see [`0010`](0010-mode-state-machine.md)). A recording phone is viewed through
 on-demand stills from the recording pipeline instead ([`0015`](0015-recording-stills.md)).
 
 ### Armed-idle vs broadcasting, with a cold-camera arming contract
+
+**Armed-idle superseded by [`0016`](0016-live-off-the-recording-encoder.md):** `live` runs the
+whole pipeline and drops to `standby` after 2 minutes with no viewer. The arming contract stays:
+`503` + `retryAfterMs` until the encoder has produced its first output.
 
 Entering `live` opens the camera but encodes nothing until `POST /api/live/start`; a 15s no-`GET`
 watchdog returns it to armed-idle. `POST /api/live/start` answers

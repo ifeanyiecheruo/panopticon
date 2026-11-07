@@ -15,9 +15,8 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * What the live-view routes (`/api/live/start`, `/live/...`) serve from. Two pipelines provide
- * one: [LivePipeline] in LIVE mode, with an encoder of its own, and [CameraGlPipeline] in RECORD
- * mode through a [LiveTap] on the recording encoder's output.
+ * What the live-view routes (`/api/live/start`, `/live/...`) serve from: [CameraGlPipeline]'s
+ * [LiveTap], in RECORD and LIVE alike.
  */
 interface LiveSource {
     /** Idempotent. The viewer count (1) once broadcasting; 0 if the camera can't broadcast;
@@ -50,15 +49,15 @@ interface LiveSource {
 }
 
 /**
- * Live view off an encoder that is already running for another reason - RECORD's, which encodes
- * continuously whether or not a clip is being written. The drain thread hands every encoded
- * access unit to [feed]; while nobody is watching that is one volatile read, and while someone
- * is it goes to a [LiveHlsRelay] exactly as [LivePipeline]'s own encoder output does. No second
- * encoder, no camera change: the view is the recording, as it is being recorded.
+ * Live view off the pipeline's one encoder, which runs continuously in RECORD and LIVE whether or
+ * not a clip is being written. The drain thread hands every encoded access unit to [feed]; while
+ * nobody is watching that is one volatile read, and while someone is it goes to a [LiveHlsRelay].
+ * No second encoder: the view is the recording, as it is being recorded. Switching between RECORD
+ * and LIVE doesn't touch it, so a viewer's stream simply carries on.
  *
  * The relay begins on the next keyframe (it drops what comes before), and [requestKeyFrame] asks
  * the encoder for one straight away so a viewer isn't kept waiting for the 1s GOP to come round.
- * Like [LivePipeline], an [inactivityTimeoutMs] watchdog stops the relay once no viewer has
+ * An [inactivityTimeoutMs] watchdog stops the relay once no viewer has
  * fetched anything for that long.
  */
 internal class LiveTap(

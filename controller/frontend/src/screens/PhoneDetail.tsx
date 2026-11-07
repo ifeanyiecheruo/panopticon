@@ -6,6 +6,7 @@ import {
   CancelCalibration,
   EraseCalibration,
   SetRecording,
+  StopRecordingToLive,
   UnpairPhone,
   ForceUnpairPhone,
   type PhoneDetailView,
@@ -90,16 +91,31 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
 
   // The live stream. Keyed on the inputs, not on the stream's own state, so a stream that failed
   // stays failed until the user turns the preview off and on, rather than being retried in a
-  // loop. A change of mode restarts it: the phone serves it from a different pipeline. A hidden
-  // window only drops the player (the phone stops on its own 15s later) and keeps the phone's
-  // mode, so coming back is quick.
+  // loop. Starting or stopping a recording doesn't touch it: on the phone, record and live are
+  // one pipeline, and the stream carries on across the switch. A hidden window only drops the
+  // player (the phone stops streaming 15s later) and keeps the phone's mode, so coming back is
+  // quick.
   const { watch: liveWatch, stop: liveStop, detach: liveDetach } = live;
   const liveWanted = previewPlaying && !!detail && reachable && runId === null;
   useEffect(() => {
     if (!liveWanted) void liveStop();
     else if (!windowVisible) liveDetach();
     else liveWatch();
-  }, [liveWanted, windowVisible, phoneRecording, liveWatch, liveStop, liveDetach]);
+  }, [liveWanted, windowVisible, liveWatch, liveStop, liveDetach]);
+
+  // The exceptions, where a mode change does need a fresh start: stills (a recording phone had
+  // declined) after recording stops, and a stream that had already failed. A phone build from
+  // before one pipeline drops the stream on a mode change; the player notices that by itself
+  // (repeated fatal errors restart it).
+  const liveKind = live.state.kind;
+  const prevRecordingRef = useRef(phoneRecording);
+  useEffect(() => {
+    const changed = prevRecordingRef.current !== phoneRecording;
+    prevRecordingRef.current = phoneRecording;
+    if (!changed || !liveWanted || !windowVisible) return;
+    if (liveKind === 'refused' || liveKind === 'error') liveWatch();
+    // Deliberately keyed on the mode alone: a refusal or failure on its own must not loop.
+  }, [phoneRecording]);
 
   // Declined while recording: look again now and then - a warm phone cools down.
   const liveRefused = live.state.kind === 'refused';
@@ -191,9 +207,10 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
     const next = detail.status?.mode !== 'record';
     setRecordBusy(true);
     try {
-      // No need to stop the live view first: the phone goes straight from live to record, and the
-      // view restarts on the new mode (see the live effect above).
-      const r = await SetRecording(phoneId, next);
+      // No need to touch the live view: the phone goes straight between live and record, and the
+      // stream carries on. Stopping a recording someone is watching goes to live, not standby, so
+      // the camera stays on for them; turning the preview off later rests the phone in standby.
+      const r = !next && previewPlaying ? await StopRecordingToLive(phoneId) : await SetRecording(phoneId, next);
       if (!r.ok) {
         setCalibMsg(r.message || 'Could not change recording state.');
       }

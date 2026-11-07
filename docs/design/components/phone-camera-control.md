@@ -24,7 +24,7 @@ Covers `camera/CameraCatalog.kt`, `camera/CameraLabels.kt`, `camera/CameraCapabi
 ### 1.3 Context
 
 Sits behind `/api/cameras*` and `/api/camera/*`. It doesn't own a pipeline; it hands applied
-state to whichever of `CameraGlPipeline` / `LivePipeline` is running, and a switch or
+state to `CameraGlPipeline` (record and live), and a switch or
 `videoResolution` change asks `PanopticonService` to rebuild that pipeline.
 
 ### 1.4 Definitions

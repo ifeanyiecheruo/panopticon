@@ -105,7 +105,7 @@ them can run.
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
 | GET | `/api/mode` | — | — | `{ "mode": "record" }` | Current top-level mode. |
-| POST | `/api/mode` | — | `{ "mode": "standby" }` | `{ "mode": "standby" }` | Switches mode. `standby` and `record` are always allowed. `live` from `record` is a **`409`** (`{"error":"stop recording first: POST /api/mode {\"mode\":\"standby\"}"}`) — go via `standby`. No-op `200` if already there. While overheated (`/api/status` `status:"overheated"`), `record` and `standby` are recorded and take effect once the phone cools; `live` is a **`503`** (`{"error":"phone is overheated; live preview is unavailable until it cools"}`). |
+| POST | `/api/mode` | — | `{ "mode": "standby" }` | `{ "mode": "standby" }` | Switches mode. All transitions are allowed. `record` ⇄ `live` is one flag on one pipeline ([`0016`](decisions/0016-live-off-the-recording-encoder.md)): the camera and a live viewer's stream carry on. (Phones on builds before that answer `live` from `record` with a `409` — go via `standby`.) `live` with no live viewer for 2 minutes drops to `standby` on its own. No-op `200` if already there. While overheated (`/api/status` `status:"overheated"`), `record` and `standby` are recorded and take effect once the phone cools; `live` is a **`503`** (`{"error":"phone is overheated; live preview is unavailable until it cools"}`). |
 
 ### Cameras (selection)
 
@@ -270,15 +270,15 @@ which happen many times per hour inside one process.
 `#EXT-X-VERSION:9`, `EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK≈1s`). Glass-to-glass
 latency close to `PART-HOLD-BACK` (down from plain HLS's ~4–6s — see
 [`../design/decisions/0007-live-preview-plain-hls.md`](decisions/0007-live-preview-plain-hls.md)).
-The phone runs a dedicated single-stream `camera → MediaCodec → TsMuxer` pipeline; `MediaMuxer`
-can't emit MPEG-TS so the muxer is hand-rolled. Entering `live` mode arms the pipeline (camera
-warm, nothing encoding); `POST /api/live/start` begins broadcasting; a 15s no-request inactivity
-watchdog returns it to armed-idle.
+The stream comes off the camera pipeline's encoder (`LiveTap` →
+`LiveHlsRelay` → hand-rolled `TsMuxer`; `MediaMuxer` can't emit MPEG-TS), in `record` and `live`
+alike: `live` is the recording pipeline with recording off. `POST /api/live/start` begins
+broadcasting; a 15s no-request inactivity watchdog ends it, and `live` with no viewer for 2
+minutes drops to `standby`. Switching between `record` and `live` doesn't interrupt the stream.
 
-**While recording**, `POST /api/live/start` works too, with no mode change: the relay is fed from
-the recording encoder's own output (`LiveTap`), so the view is the recording itself - same view,
-size and bitrate - and the camera and the recording carry on untouched. The stream opens on the
-next keyframe (one is requested at start). The same 15s watchdog ends it. `/live/*` is behind the normal bearer token — the controller
+**While recording** the view is the recording itself - same view, size and bitrate - and the
+recording carries on untouched. The stream opens on the next keyframe (one is requested at
+start). `/live/*` is behind the normal bearer token — the controller
 proxies these server-side, so hls.js fetches same-origin (the prototype's separate GET-only
 scoped token is deferred). See [`../quirks/live-hls.md`](../quirks/live-hls.md).
 

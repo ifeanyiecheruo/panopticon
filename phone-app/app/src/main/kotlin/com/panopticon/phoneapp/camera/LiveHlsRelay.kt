@@ -52,8 +52,8 @@ private class SegmentBuffer : ByteArrayOutputStream() {
  * (`PART-HOLD-BACK`). The hls.js latency workarounds this needs client-side are documented in
  * `docs/quirks/live-hls.md`.
  *
- * This does NOT own a camera surface or an encoder - it's fed by [LivePipeline]'s drain thread,
- * or in RECORD mode by [CameraGlPipeline]'s through a [LiveTap].
+ * This does NOT own a camera surface or an encoder - it's fed by [CameraGlPipeline]'s drain thread
+ * through a [LiveTap], in RECORD and LIVE alike.
  * [feed] is non-blocking: the muxing + file I/O happens on this class's own worker thread via a
  * bounded, drop-on-full queue, so a slow flash write can never stall the encoder drain.
  */
@@ -176,7 +176,7 @@ class LiveHlsRelay(
         clearStaleFiles()
     }
 
-    /** Called from [LivePipeline]'s drain thread for every encoded sample, in order. Non-blocking. */
+    /** Called from the pipeline's drain thread (via [LiveTap]) for every encoded sample, in order. Non-blocking. */
     fun feed(data: ByteArray, presentationTimeUs: Long, flags: Int, format: MediaFormat) {
         if (!queue.offer(QueuedSample(data, presentationTimeUs, flags, format))) {
             Log.w(TAG, "live sample queue full - dropping a sample")
@@ -216,8 +216,8 @@ class LiveHlsRelay(
         if (sample.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) return
         val isKeyFrame = (sample.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
         // The stream has to open on a keyframe: everything before one references frames the
-        // viewer never got. LivePipeline's encoder starts with one anyway; a relay tapped onto an
-        // encoder that is already running (LiveTap) joins mid-GOP and waits here for the next.
+        // viewer never got. The encoder is already running when a viewer arrives, so the relay
+        // joins mid-GOP and waits here for the next (LiveTap asks for one straight away).
         if (baseTimestampUs < 0 && !isKeyFrame) return
         if (baseTimestampUs < 0) baseTimestampUs = sample.presentationTimeUs
         handleAccessUnit(sample.data, sample.presentationTimeUs - baseTimestampUs, isKeyFrame)
@@ -368,9 +368,8 @@ class LiveHlsRelay(
 
         /** Target segment length. Short segments = finer granularity: a single slow fetch costs
          * ~1s of buffer, not 2-3s, and the DVR window holds proportionally more segments.
-         * [LivePipeline] requests an explicit sync frame on this cadence so a segment can always
-         * rotate on a keyframe at roughly this interval regardless of what the encoder's
-         * `KEY_I_FRAME_INTERVAL` hint actually does on a given device. */
+         * Matches the encoder's 1s `KEY_I_FRAME_INTERVAL`, so a segment can rotate on a keyframe
+         * at roughly this interval. */
         const val DEFAULT_SEGMENT_DURATION_US = 1_000_000L
 
         /** ~3 parts per 1s segment. Also the source of truth for LiveRoutes' blocking-reload
