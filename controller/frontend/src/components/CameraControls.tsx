@@ -60,7 +60,7 @@ interface Props {
   phoneRecording: boolean;
   /** The live video, in live mode. */
   ctl: LiveController;
-  /** Stills, while recording - the phone can't run the live encoder then. */
+  /** Stills: the stand-in when a recording phone declines to stream (an older build, or warm). */
   still: StillController;
   /** The viewport's play/pause. The caller turns it into the live stream or stills. */
   playing: boolean;
@@ -200,12 +200,14 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
   // One viewport, two feeds: stills while recording, the live video otherwise. Every control and
   // rect picker below works over whichever is up, in the same 0..1 coordinates. Paused, the
   // frozen frame shows but nothing works over it - a change wouldn't show until play.
-  const feedShowing = phoneRecording ? still.showing : ctl.playing;
-  const feedError = phoneRecording ? still.state.kind === 'error' : ctl.state.kind === 'error';
+  // Live video in both modes; stills only when a recording phone has declined to stream.
+  const useStills = phoneRecording && ctl.state.kind === 'refused';
+  const feedShowing = useStills ? still.showing : ctl.playing;
+  const feedError = useStills ? still.state.kind === 'error' : ctl.state.kind === 'error';
   const viewing = playing && feedShowing;
   // Playing but between pictures: the last frame stands in, with what is happening over it.
   const bridging = playing && !feedShowing && !feedError;
-  const bridgeNote = phoneRecording
+  const bridgeNote = useStills
     ? 'Fetching a still from the phone…'
     : ctl.state.kind === 'starting'
       ? 'Connecting to the live stream…'
@@ -214,13 +216,13 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
   // Keep the last frame current: each still as it lands, and the live video once a second.
   const stillUrl = still.state.kind === 'showing' ? still.state.url : null;
   useEffect(() => {
-    if (!playing || !phoneRecording || !stillUrl) return;
+    if (!playing || !useStills || !stillUrl) return;
     const id = requestAnimationFrame(() => {
       lastFrameRef.current = grabFrame(viewportRef.current, LAST_FRAME_EDGE) ?? lastFrameRef.current;
     });
     return () => cancelAnimationFrame(id);
-  }, [playing, phoneRecording, stillUrl]);
-  const liveShowing = playing && !phoneRecording && ctl.playing;
+  }, [playing, useStills, stillUrl]);
+  const liveShowing = playing && !useStills && ctl.playing;
   useEffect(() => {
     if (!liveShowing) return;
     const grab = () => {
@@ -276,7 +278,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
           setInvalidKey(null);
           setMsg(null);
           // A still is only refreshed every couple of seconds; show the change sooner.
-          if (phoneRecording) nudgeStill();
+          if (useStills) nudgeStill();
           // Adopt what the phone says the state now IS. It derives things the caller can't
           // predict - above all the absolute view a viewer-space zoom selection composed to, and
           // how much of the zoom the hardware took - so without this the zoom ruler would still
@@ -291,7 +293,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
       if (immediate) void send();
       else debounceRef.current = setTimeout(send, APPLY_DEBOUNCE_MS);
     },
-    [phoneId, phoneRecording, nudgeStill],
+    [phoneId, useStills, nudgeStill],
   );
 
   /** The request-only, viewer-space fields. These are one-shot *instructions* ("the user just
@@ -356,7 +358,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
         return;
       }
       setMsg(null);
-      if (phoneRecording) nudgeStill();
+      if (useStills) nudgeStill();
       if (ctl.live || ctl.state.kind === 'error') {
         await new Promise((res) => setTimeout(res, 1200));
         await ctl.reattach();
@@ -409,7 +411,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
       }
       setMsg(null);
       await load();
-      if (phoneRecording) nudgeStill();
+      if (useStills) nudgeStill();
       // A camera switch rebuilds the phone's live pipeline; the controller's
       // player is still bound to the old broadcast (or showing the previous
       // camera's failure), so re-attach it against the new camera.
@@ -938,7 +940,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
               attach to - but out of the layout, so only one box ever takes up room. */}
           {playing && (
             <div style={bridging ? { display: 'none' } : undefined}>
-              {phoneRecording ? <StillPreviewImage still={still} /> : <LivePreviewVideo ctl={ctl} />}
+              {useStills ? <StillPreviewImage still={still} /> : <LivePreviewVideo ctl={ctl} />}
             </div>
           )}
           <button
@@ -948,7 +950,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
               playing
                 ? 'Preview on - click to turn it off'
                 : phoneRecording
-                  ? 'Preview off - click for stills of the recording, every couple of seconds'
+                  ? 'Preview off - click to watch the recording live'
                   : 'Preview off - click for the live stream'
             }
           >
@@ -960,7 +962,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
             <>
               <div className="cam-badges">
                 <span className={`cam-badge ${manualOn ? 'manual' : ''}`}>{manualOn ? 'MANUAL' : 'AUTO'}</span>
-                {phoneRecording && <span className="cam-badge rec">REC · STILL</span>}
+                {phoneRecording && <span className="cam-badge rec">{useStills ? 'REC · STILL' : 'REC'}</span>}
                 <span className="cam-badge dim">{activeCamLabel}</span>
               </div>
               {cams.length > 1 && (
@@ -1075,9 +1077,9 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
             {rectTarget
               ? validOpen === 'zoom'
                 ? 'Drag the ruler to zoom, or drag a box on the preview to zoom into it — the dashed box is what you will see (applied on release, Esc cancels). ' +
-                  (phoneRecording
+                  (useStills
                     ? 'The picture is a still, refreshed every couple of seconds; a change shows on the next one.'
-                    : 'The preview runs a few seconds behind.')
+                    : 'The preview runs a second or so behind.')
                 : validOpen === 'auto'
                   ? 'Drag a box on the preview around what matters — exposure and focus follow it and stay automatic (applied on release, Esc cancels). Press Auto again to leave auto.'
                   : validOpen === 'focus'

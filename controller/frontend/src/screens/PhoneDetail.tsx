@@ -21,6 +21,20 @@ import { StatusPanel } from '../components/StatusPanel';
 import { useLivePreview } from '../components/LivePreview';
 import { useStillPreview } from '../components/StillPreview';
 
+/** After a recording phone declines to stream, ask again this often. */
+const LIVE_RETRY_AFTER_REFUSAL_MS = 60_000;
+
+/** Whether the window is visible. A hidden one has nobody looking at the preview. */
+function useWindowVisible(): boolean {
+  const [visible, setVisible] = useState(() => !document.hidden);
+  useEffect(() => {
+    const on = () => setVisible(!document.hidden);
+    document.addEventListener('visibilitychange', on);
+    return () => document.removeEventListener('visibilitychange', on);
+  }, []);
+  return visible;
+}
+
 interface PhoneDetailProps {
   onPhoneChanged?: () => void;
   phoneId: string;
@@ -65,29 +79,40 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
     loadDetail();
   }, [loadDetail]);
 
-  // The camera view's play/pause. Playing shows whatever the phone can afford: stills while it
-  // records (it can't run the live encoder alongside the recording one), the live stream
-  // otherwise. Paused, the phone does no preview work at all. Starts paused, so opening a phone
-  // never puts it into live mode by itself.
+  // The camera view's on/off. On, it is the live stream in either mode: a recording phone streams
+  // off its recording encoder, with no mode change. A recording phone that declines (an older
+  // build, or warm) is shown as stills instead. Off, the phone does no preview work at all.
+  // Starts off, so opening a phone never puts it into live mode by itself.
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const phoneRecording = detail?.status?.mode === 'record';
   const reachable = !!detail?.phone.reachable;
+  const windowVisible = useWindowVisible();
 
-  // Stills are polled only while playing on a reachable recording phone - the phone renders one
-  // only when asked. A 409 means the phone left record mode on its own (its own UI, another
-  // controller): re-read the detail so the view moves over to the live stream.
-  const still = useStillPreview(phoneId, previewPlaying && phoneRecording && reachable, loadDetail);
-
-  // The live stream, while playing on a phone that isn't recording. Keyed on the inputs, not on
-  // the stream's own state, so a stream that failed stays failed until the user presses play
-  // again rather than being retried in a loop.
+  // The live stream. Keyed on the inputs, not on the stream's own state, so a stream that failed
+  // stays failed until the user turns the preview off and on, rather than being retried in a
+  // loop. A change of mode restarts it: the phone serves it from a different pipeline. A hidden
+  // window only drops the player (the phone stops on its own 15s later) and keeps the phone's
+  // mode, so coming back is quick.
   const { watch: liveWatch, stop: liveStop, detach: liveDetach } = live;
-  const liveWanted = previewPlaying && !!detail && !phoneRecording && reachable && runId === null;
+  const liveWanted = previewPlaying && !!detail && reachable && runId === null;
   useEffect(() => {
-    if (liveWanted) liveWatch();
-    else if (phoneRecording) liveDetach(); // the phone left live mode itself; don't undo it
-    else void liveStop();
-  }, [liveWanted, phoneRecording, liveWatch, liveStop, liveDetach]);
+    if (!liveWanted) void liveStop();
+    else if (!windowVisible) liveDetach();
+    else liveWatch();
+  }, [liveWanted, windowVisible, phoneRecording, liveWatch, liveStop, liveDetach]);
+
+  // Declined while recording: look again now and then - a warm phone cools down.
+  const liveRefused = live.state.kind === 'refused';
+  useEffect(() => {
+    if (!liveRefused || !liveWanted || !windowVisible) return;
+    const t = setTimeout(liveWatch, LIVE_RETRY_AFTER_REFUSAL_MS);
+    return () => clearTimeout(t);
+  }, [liveRefused, liveWanted, windowVisible, liveWatch]);
+
+  // Stills only stand in for a recording phone that declined to stream. Polled only then - the
+  // phone renders one only when asked. A 409 means the phone left record mode on its own (its
+  // own UI, another controller): re-read the detail so the view moves over to the live stream.
+  const still = useStillPreview(phoneId, previewPlaying && phoneRecording && reachable && liveRefused, loadDetail);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
@@ -166,9 +191,8 @@ export function PhoneDetail({ phoneId, onDeselect, onViewGallery, onUnpaired, on
     const next = detail.status?.mode !== 'record';
     setRecordBusy(true);
     try {
-      // The live view holds the camera in live mode: take it out first. Playing carries on as
-      // stills once the phone is recording.
-      if (next && live.live) await live.stop();
+      // No need to stop the live view first: the phone goes straight from live to record, and the
+      // view restarts on the new mode (see the live effect above).
       const r = await SetRecording(phoneId, next);
       if (!r.ok) {
         setCalibMsg(r.message || 'Could not change recording state.');

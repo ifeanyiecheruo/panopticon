@@ -29,6 +29,10 @@ interface LiveSource {
     /** Called on every playlist/segment GET, so the inactivity watchdog knows someone is watching. */
     fun touch()
 
+    /** Why this source won't broadcast right now (`POST /api/live/start` answers `409` with it),
+     *  or null if it will. A caller recording can fall back to stills. */
+    fun refusal(): String? = null
+
     fun currentPlaylist(): String?
 
     fun readSegment(seq: Int): ByteArray?
@@ -59,6 +63,9 @@ interface LiveSource {
  */
 internal class LiveTap(
     private val liveDir: File,
+    /** Non-null while the phone shouldn't spend on a live view: checked at start and on every
+     *  watchdog tick, which ends a broadcast already running. */
+    private val refuse: () -> String? = { null },
     /** The encoder has produced its output format, so there is something to broadcast. */
     private val isProducing: () -> Boolean,
     private val requestKeyFrame: () -> Unit,
@@ -75,6 +82,8 @@ internal class LiveTap(
     @Volatile private var currentSize: String? = null
 
     val isBroadcasting: Boolean get() = relay != null
+
+    override fun refusal(): String? = refuse()
 
     override suspend fun startBroadcasting(): Int {
         touch()
@@ -126,6 +135,10 @@ internal class LiveTap(
             delay(WATCHDOG_POLL_MS)
             if (SystemClock.elapsedRealtime() - lastAccessMs > inactivityTimeoutMs) {
                 stop("no viewer for ${inactivityTimeoutMs}ms")
+                return
+            }
+            refuse()?.let {
+                stop(it)
                 return
             }
         }

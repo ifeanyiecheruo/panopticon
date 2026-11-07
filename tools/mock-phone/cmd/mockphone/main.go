@@ -95,12 +95,16 @@ type server struct {
 	// answers 503 + retryAfterMs until this elapses (mimics a cold front-facing
 	// camera). 0 disables it.
 	liveArmDelay time.Duration
+	// Answer POST /api/live/start with a 409 in record mode, as an older phone build or a warm
+	// phone does, so the controller's stills fallback can be exercised.
+	noLiveWhileRecording bool
 }
 
 func main() {
 	addr := flag.String("addr", ":8091", "listen address")
 	invite := flag.String("invite", "TEST-INVITE-CODE", "invite code this mock phone accepts (once)")
 	numSegments := flag.Int("segments", 6, "number of fake pre-existing segments to seed (as two runs split by a gap)")
+	noLiveWhileRecording := flag.Bool("no-live-while-recording", false, "refuse POST /api/live/start in record mode (409), like an older phone build or a warm phone")
 	liveArmMs := flag.Int("live-arm-ms", 1500, "ms the camera 'arms' after entering live mode; POST /api/live/start 503s with retryAfterMs until it elapses (0 disables)")
 	overheated := flag.Bool("overheated", false, "report the thermal guard as tripped (status \"overheated\", battery over the critical temperature)")
 	flag.Parse()
@@ -121,6 +125,7 @@ func main() {
 		activeCameraID:       "0",
 		controlKeys:          map[string]any{},
 		liveArmDelay:         time.Duration(*liveArmMs) * time.Millisecond,
+		noLiveWhileRecording: *noLiveWhileRecording,
 		overheated:           *overheated,
 		thermalCriticalLevel: "severe",
 		thermalSafeLevel:     "moderate",
@@ -343,7 +348,9 @@ func (s *server) handleMode(w http.ResponseWriter, r *http.Request) {
 	leftLive := false
 	switch body.Mode {
 	case "record", "standby":
-		leftLive = s.mode == "live"
+		// Leaving live stops its stream; so does record -> standby, which ends the recording
+		// encoder a record-mode stream comes off.
+		leftLive = s.mode == "live" || (s.mode == "record" && body.Mode == "standby")
 		s.mode = body.Mode
 	case "live":
 		if s.mode == "record" {

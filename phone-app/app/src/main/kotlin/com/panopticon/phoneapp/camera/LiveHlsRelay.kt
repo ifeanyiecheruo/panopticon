@@ -7,7 +7,6 @@ import com.panopticon.phoneapp.camera.ts.TsMuxer
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
-import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -28,10 +27,11 @@ private class SegmentBuffer : ByteArrayOutputStream() {
 }
 
 /**
- * Produces a rolling **LL-HLS** playlist (in-memory - see [currentPlaylist]) and finalized
- * `live-N.ts` segment files in a cache directory (not the ring buffer, not counted against the
- * storage cap, cleaned up as segments roll out of the sliding window) from encoded H.264 samples
- * fed to it via [feed].
+ * Produces a rolling **LL-HLS** playlist and finalized `live-N.ts` segments, both held in memory
+ * (see [currentPlaylist], [readSegment]), from encoded H.264 samples fed to it via [feed].
+ * Segments used to be written to a cache directory and read back per fetch: at the recording
+ * encoder's 4Mbps that is ~1.8GB of flash writes an hour for something nobody keeps. The window
+ * is [playlistWindowSize] ~1s segments, so a few MB of heap instead.
  *
  * Ported from the abandoned prototype's `LiveHlsRelay`, keeping this project's own hardened
  * segment tuning: ~1s full segments in a [playlistWindowSize]-deep sliding window (see that
@@ -111,12 +111,12 @@ class LiveHlsRelay(
     /** Current playlist content, or null if nothing's been produced yet. */
     fun currentPlaylist(): String? = playlistText
 
-    /** Bytes of a finalized segment file, or null if it's rolled out of the window / not written
-     * yet. Served straight from disk - segments are the only thing worth persisting here. */
-    fun readSegment(seq: Int): ByteArray? {
-        val f = File(liveDir, "live-$seq.ts")
-        return if (f.exists()) runCatching { f.readBytes() }.getOrNull() else null
-    }
+    /** Bytes of a finalized segment, or null if it's rolled out of the window / not finished
+     * yet. Never copied: a finished segment is never written again. */
+    fun readSegment(seq: Int): ByteArray? = synchronized(stateLock) { finishedSegments[seq] }
+
+    /** Finalized segments still in the playlist window, by sequence number. Under [stateLock]. */
+    private val finishedSegments = HashMap<Int, ByteArray>()
 
     /** Byte range [startOffset, endOffsetExclusive) of the segment currently being built, before
      * it's finalized to disk - what serves an LL-HLS part/preload-hint fetch for the in-progress
@@ -170,7 +170,6 @@ class LiveHlsRelay(
     // Segment-file writes still involve real disk I/O on hardware confirmed (in the prototype) to
     // stall over a second on an unlucky write - keep them off the worker thread. A single-thread
     // executor keeps them ordered for stop()'s drain to make sense.
-    private val ioExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "LiveHlsRelay-io") }
 
     init {
         liveDir.mkdirs()
@@ -189,9 +188,7 @@ class LiveHlsRelay(
         workerThread.interrupt()
         workerThread.join(2000)
         synchronized(stateLock) { finalizeCurrentSegmentLocked() }
-        ioExecutor.shutdown()
-        runCatching { ioExecutor.awaitTermination(2, TimeUnit.SECONDS) }
-        clearStaleFiles()
+        synchronized(stateLock) { finishedSegments.clear() }
         playlistText = null
     }
 
@@ -303,16 +300,11 @@ class LiveHlsRelay(
             evictedSeqs.add(playlistSegments.removeFirst().seq)
             mediaSequence++
         }
-        // The playlist advertises `seq` as done before its bytes are on disk (write is dispatched
-        // off-lock below). A fetch landing in that narrow gap gets a momentary 404; hls.js retries
-        // a failed fragment quickly, a far smaller cost than holding stateLock across a slow write.
-        ioExecutor.execute {
-            runCatching { File(liveDir, "live-$seq.ts").writeBytes(bytes) }
-                .onFailure { Log.w(TAG, "Failed to write live segment $seq", it) }
-            for (evictedSeq in evictedSeqs) File(liveDir, "live-$evictedSeq.ts").delete()
-        }
+        // In place before the playlist below advertises it, so a fetch never races the write.
+        finishedSegments[seq] = bytes
+        for (evictedSeq in evictedSeqs) finishedSegments.remove(evictedSeq)
         // Not force-flushing a trailing part here on purpose: whatever's accumulated since the
-        // last part flush is still fully present in the finalized file written above (a plain,
+        // last part flush is still fully present in the finalized segment stored above (a plain,
         // non-LL fetch of the whole segment gets every byte regardless), it just never got
         // advertised as its own #EXT-X-PART - a harmless, sub-part-duration sliver of extra
         // latency for LL-HLS viewers on the rare access unit that lands exactly on a segment

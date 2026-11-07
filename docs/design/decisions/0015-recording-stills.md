@@ -1,7 +1,9 @@
 # 0015 — Stills while recording, and one camera view
 
 **Status:** Accepted · implemented (phone-app, controller), 2026-10-20. Build- and unit-tested,
-and in manual use on device.
+and in manual use on device. **Partly superseded by [`0016`](0016-live-off-the-recording-encoder.md)**
+(2026-11-06): a recording phone now streams live video off its recording encoder, and stills are
+the fallback for older builds and warm phones.
 Component specs: [`phone-recording-pipeline.md`](../components/phone-recording-pipeline.md),
 [`controller-live-and-camera.md`](../components/controller-live-and-camera.md).
 

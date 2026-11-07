@@ -92,6 +92,7 @@ fun Route.liveRoutes(live: () -> LiveSource?, overheated: () -> Boolean) {
                 HttpStatusCode.Conflict,
                 ErrorBody("no camera running: live view needs record or live mode"),
             )
+            pipeline.refusal()?.let { return@post call.respond(HttpStatusCode.Conflict, ErrorBody(it)) }
             when (val count = pipeline.startBroadcasting()) {
                 LiveSource.STILL_ARMING -> {
                     // Camera is coming up (cold front-camera start): tell the caller to retry.

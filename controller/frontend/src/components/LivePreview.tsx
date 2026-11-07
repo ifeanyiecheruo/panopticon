@@ -7,6 +7,9 @@ export type LiveState =
   | { kind: 'idle' }
   | { kind: 'starting' }
   | { kind: 'playing' }
+  /** A recording phone declined to stream (an older build, or too warm to spare it): the
+   *  caller shows stills instead. */
+  | { kind: 'refused'; message: string }
   | { kind: 'error'; message: string };
 
 // The phone's encoder takes a beat to produce segment 0, so the very first
@@ -32,6 +35,11 @@ const STALL_AFTER_MS = 6000;
 // long-ago stall doesn't leave the player permanently trailing further than
 // it needs to.
 const LATENCY_RESET_AFTER_STABLE_MS = 20000;
+
+// A stream the phone has stopped serving (it went warm, its pipeline restarted, its mode changed)
+// shows up here as fatal network errors that no amount of reloading fixes. After this many in a
+// row, ask the phone again from the top - which may also be how a refusal arrives.
+const FATAL_RESTART_AFTER = 3;
 
 /** Config aimed at an LL-HLS live feed off a phone on the LAN: low-latency
  * mode targets the playlist's PART-HOLD-BACK instead of a fixed segment
@@ -65,8 +73,9 @@ export interface LiveController {
   /** Drop the player and take the phone out of live mode. Resolves once the phone has been
    *  told, so a caller about to change the phone's mode (start recording) can wait for it. */
   stop: () => Promise<void>;
-  /** Drop the player without touching the phone: for when the phone has already left live
-   *  mode on its own (started recording), where telling it to stop would undo that. */
+  /** Drop the player without telling the phone (it stops on its own once nobody fetches):
+   *  for a window that has been hidden, which comes back with [watch]. A later [stop] still
+   *  takes the phone out of live mode. */
   detach: () => void;
   /** Re-arm the phone broadcast and rebuild the hls.js pipeline against the
    * (now-different) camera, without taking the phone out of live mode. Call
@@ -88,8 +97,11 @@ export function useLivePreview(phoneId: string): LiveController {
   const stallTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastProgressRef = useRef({ t: 0, at: 0 });
   const lastStallKickAtRef = useRef(0);
-  // Bumped by every stop/detach, so a watch() still waiting on the phone knows it was cancelled.
+  // Bumped by every watch/stop/detach, so a watch() still waiting on the phone knows it was
+  // superseded or cancelled.
   const genRef = useRef(0);
+  const fatalRunRef = useRef(0);
+  const restartRef = useRef<(() => void) | null>(null);
 
   const teardown = useCallback(
     (opts: { stopPhone: boolean }): Promise<void> => {
@@ -183,6 +195,11 @@ export function useLivePreview(phoneId: string): LiveController {
           }, MANIFEST_RETRY_MS);
           return;
         }
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && ++fatalRunRef.current >= FATAL_RESTART_AFTER) {
+          fatalRunRef.current = 0;
+          restartRef.current?.();
+          return;
+        }
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
           lastStallKickAtRef.current = Date.now();
           hls.startLoad();
@@ -203,6 +220,7 @@ export function useLivePreview(phoneId: string): LiveController {
           playingRef.current = true;
           retriesRef.current = 0;
         }
+        fatalRunRef.current = 0;
         setState({ kind: 'playing' });
       };
       hls.on(Hls.Events.FRAG_BUFFERED, markPlaying);
@@ -236,6 +254,10 @@ export function useLivePreview(phoneId: string): LiveController {
 
   const watch = useCallback(async () => {
     const gen = ++genRef.current;
+    // A player from an earlier start (another mode, a stream the phone dropped) goes first; the
+    // phone keeps whatever mode it is in.
+    void teardown({ stopPhone: false });
+    fatalRunRef.current = 0;
     setState({ kind: 'starting' });
     let res;
     try {
@@ -250,6 +272,10 @@ export function useLivePreview(phoneId: string): LiveController {
       return;
     }
     if (!res.ok || !res.playlistPath) {
+      if (res.outcome === 'recording') {
+        setState({ kind: 'refused', message: res.message || 'The phone is recording and is not serving live video.' });
+        return;
+      }
       setState({
         kind: 'error',
         message:
@@ -264,7 +290,8 @@ export function useLivePreview(phoneId: string): LiveController {
     }
     startedRef.current = true;
     attachHls(res.playlistPath);
-  }, [phoneId, attachHls]);
+  }, [phoneId, attachHls, teardown]);
+  restartRef.current = () => void watch();
 
   const stop = useCallback(() => {
     genRef.current += 1;
@@ -274,7 +301,6 @@ export function useLivePreview(phoneId: string): LiveController {
 
   const detach = useCallback(() => {
     genRef.current += 1;
-    startedRef.current = false;
     void teardown({ stopPhone: false });
     setState({ kind: 'idle' });
   }, [teardown]);

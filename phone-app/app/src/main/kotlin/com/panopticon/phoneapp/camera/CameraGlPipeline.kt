@@ -76,6 +76,11 @@ private const val READBACK_W = 160
 private const val READBACK_H = 120
 private const val ROLE = "record"
 
+/** `PowerManager` thermal status (2 = moderate) from which [CameraGlPipeline.liveTap] refuses a
+ *  live view while recording. The thermal guard shuts the camera down at `severe` (3) by default;
+ *  this gives up the optional extra one step before that. */
+private const val LIVE_WHILE_RECORDING_MAX_SEVERITY = 2
+
 /** Capture results a fresh pipeline must deliver before its start-up disturbance is over - about
  *  two thirds of a second at 30fps, which is enough for auto-exposure and white balance to settle
  *  on both test devices. */
@@ -236,6 +241,17 @@ class CameraGlPipeline(
      */
     internal val liveTap = LiveTap(
         liveDir = liveDir,
+        // Watching while recording costs mostly Wi-Fi (~+250mW at 4Mbps on the Pixel 7 Pro) on
+        // top of a pipeline that already runs all day. Once the phone is warm, keep that for the
+        // recording: the viewer falls back to stills, which cost a fraction of it.
+        refuse = {
+            val t = ThermalReader.read(context)
+            if (t.supported && t.severity >= LIVE_WHILE_RECORDING_MAX_SEVERITY) {
+                "phone is warm (thermal ${t.level}): no live view while recording, stills only"
+            } else {
+                null
+            }
+        },
         isProducing = { running && trackFormat != null },
         requestKeyFrame = {
             encoder?.setParameters(android.os.Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
