@@ -44,6 +44,8 @@ export function RequestQuit():Promise<void>;
 
 export function RestoreClip(arg1:string,arg2:string):Promise<void>;
 
+export function RetuneArea(arg1:string):Promise<main.CameraActionResult>;
+
 export function SetActiveCamera(arg1:string,arg2:string):Promise<main.CameraActionResult>;
 
 export function SetCameraControls(arg1:string,arg2:phoneapi.CameraStatePatch):Promise<main.CameraActionResult>;

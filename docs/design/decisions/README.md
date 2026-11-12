@@ -26,6 +26,7 @@ Where a decision has since been implemented, superseded, or partly deferred, the
 | [0014](0014-thermal-safety-shutdown.md) | Thermal safety shutdown |
 | [0015](0015-recording-stills.md) | Stills while recording, and one camera view (stills now the fallback, see 0016) |
 | [0016](0016-live-off-the-recording-encoder.md) | Live video while recording, off the recording encoder |
+| [0017](0017-area-of-interest-fine-tuning.md) | Fine-tuning exposure and focus for an area of interest |
 
 ## Adding a decision
 

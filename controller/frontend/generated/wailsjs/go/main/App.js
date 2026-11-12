@@ -82,6 +82,10 @@ export function RestoreClip(arg1, arg2) {
   return window['go']['main']['App']['RestoreClip'](arg1, arg2);
 }
 
+export function RetuneArea(arg1) {
+  return window['go']['main']['App']['RetuneArea'](arg1);
+}
+
 export function SetActiveCamera(arg1, arg2) {
   return window['go']['main']['App']['SetActiveCamera'](arg1, arg2);
 }

@@ -743,9 +743,9 @@ func (a *App) ListCameras(phoneID string) CamerasResult {
 
 type CameraActionResult struct {
 	OK      bool   `json:"ok"`
-	Outcome string `json:"outcome"` // "ok" | "unknown_camera" | "invalid_key" | "unreachable" | "other"
+	Outcome string `json:"outcome"` // "ok" | "unknown_camera" | "invalid_key" | "conflict" | "unreachable" | "other"
 	Message string `json:"message,omitempty"`
-	// InvalidKey is set only with outcome "invalid_key".
+	// InvalidKey is set only with outcome "invalid_key" or "conflict".
 	InvalidKey string `json:"invalidKey,omitempty"`
 	// State is the phone's resulting camera state, on a successful SetCameraControls. The phone
 	// derives state the caller cannot predict - most of all the absolute zoom view a viewer-space
@@ -814,7 +814,9 @@ func (a *App) GetCameraControls(phoneID string) CameraControlsView {
 
 // SetCameraControls applies a new manual-control state on the phone
 // (validate-then-apply; a bad key comes back as outcome "invalid_key" naming
-// the field). The phone persists the state so it also governs recording.
+// the field). The phone persists the state so it also governs recording. A
+// key the camera's mode doesn't take - a manual control in auto - comes back
+// as outcome "conflict", also naming the field.
 func (a *App) SetCameraControls(phoneID string, patch phoneapi.CameraStatePatch) CameraActionResult {
 	phone, err := a.store.GetPhone(phoneID)
 	if err != nil {
@@ -831,6 +833,10 @@ func (a *App) SetCameraControls(phoneID string, patch phoneapi.CameraStatePatch)
 		var ck *phoneapi.InvalidControlKeyError
 		if errors.As(err, &ck) {
 			return CameraActionResult{Outcome: "invalid_key", InvalidKey: ck.Key, Message: ck.Reason}
+		}
+		var cc *phoneapi.ControlConflictError
+		if errors.As(err, &cc) {
+			return CameraActionResult{Outcome: "conflict", InvalidKey: cc.Key, Message: cc.Reason}
 		}
 		return CameraActionResult{Outcome: "other", Message: err.Error()}
 	}

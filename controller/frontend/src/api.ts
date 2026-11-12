@@ -34,6 +34,7 @@ export {
   SetActiveCamera,
   GetCameraControls,
   SetCameraControls,
+  RetuneArea,
   ComputeEffectiveRect,
 } from '../generated/wailsjs/go/main/App';
 
@@ -61,6 +62,7 @@ export type UnpairResult = main.UnpairResult;
 export type CamerasResult = main.CamerasResult;
 export type CameraActionResult = main.CameraActionResult;
 export type CameraControlsView = main.CameraControlsView;
+export type AutoTuningStatus = phoneapi.AutoTuningStatus;
 export type CameraInfo = phoneapi.CameraInfo;
 export type CameraCapabilities = phoneapi.CameraCapabilities;
 export type CameraStateResponse = phoneapi.CameraStateResponse;

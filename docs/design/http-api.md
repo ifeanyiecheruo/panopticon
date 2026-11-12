@@ -131,6 +131,21 @@ except the zoom (`zoomViewNorm`) and an **area of interest**: `aeRegionNorm` and
 applied with AE metering and continuous AF left on, biased to the box. The controller sets both
 regions from one rect. With it `true` every key applies, as described below.
 
+**Auto belongs to the phone** ([0017](decisions/0017-area-of-interest-fine-tuning.md)). The only
+keys it takes are the zoom (`zoomRatio`, `zoomSelectNorm`, `zoomViewNorm`), the exposure
+compensation (`aeExposureCompensation`, a bias auto exposure applies) and the area
+(`aeSelectNorm` / `afSelectNorm`, `aeRegionNorm` / `afRegionNorm`). Any other key in a patch that
+leaves the camera in auto is **`409 {"error": "...", "key": "<the first one>"}`**; `false` for
+`manualExposure` / `manualFocus` / `manualWhiteBalance` / `aeLock` is accepted (it means "auto").
+Entering auto drops the other keys from the stored set. With no area drawn (an **implicit** area,
+the whole frame) exposure and focus are the HAL's alone. With one drawn (**explicit**) the phone
+lets the HAL's auto settle on it, then fine-tunes from there by itself in small, slow nudges -
+more exposure compensation on top of AE and the user's own (at most 1 EV more; a new
+`aeExposureCompensation` starts it over), and a focus distance held near AF's (only
+where that keeps AF's sharpness) - each kept only if it helps; `GET` reports where that stands as
+`autoTuning`. Phones on older builds accept manual
+keys in auto (ignoring them) and report no `autoTuning`.
+
 **The concrete `keys` set** (`CameraControlKeys`; a null/absent field = leave that control on
 auto). `POST` replaces the `keys` object wholesale — send the full desired set.
 
@@ -186,8 +201,9 @@ came from. An uncalibrated phone simply gets `hwZoomRatio: 1` and does it all in
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
 | GET | `/api/camera/capabilities` | `cameraId=1` *(optional, defaults to active)* | — | `{ "cameraId": "0", "zoomRatioRange": {"lo":0.67,"hi":7.0}, "zoomViaRatioApi": true, "aeCompensationRange": {"lo":-24,"hi":24}, "aeCompensationStepMilliEv": 166, "exposureTimeRangeNs": {"lo":26503,"hi":8310343667}, "sensitivityRange": {"lo":44,"hi":11377}, "minFocusDistanceDiopters": 9.52, "hasManualSensor": true, "hasManualFocus": true, "hasManualWhiteBalance": true, "wbGainRange": {"lo":1.0,"hi":8.0}, "awbModes": [0,1,2,3,4,5,6,7,8], "videoStabilizationModes": [0,1,2], "opticalStabilizationModes": [0,1], "maxAeRegions": 3, "maxAfRegions": 1, "outputResolutions": ["1920x1080","1280x720","854x480"], "physicalCameraIds": ["2","3"], "croppingType": "CENTER_ONLY", "activeArrayWidth": 4080, "activeArrayHeight": 3072 }` | Declared per-key ranges for a camera; pure `CameraCharacteristics` read, works in any mode. Optional `cameraId` previews another camera without switching. `404` unknown `cameraId`. |
-| GET | `/api/camera/state` | — | — | `{ "cameraId": "0", "rotationDegrees": 0, "videoResolution": "3840x2160", "recordingResolution": "1024x576", "manualControlEnabled": false, "keys": { "zoomRatio": null, "...": null } }` | Current manual-control state (from `DeviceConfig`), including `rotationDegrees` (0/90/180/270), `videoResolution` (the viewing/broadcast size, one of `capabilities.outputResolutions`) and `recordingResolution` (**derived, read-only** — see below). |
-| POST | `/api/camera/state` | — | `{ "manualControlEnabled": true, "rotationDegrees": 90, "videoResolution": "1920x1080", "keys": { "zoomRatio": 2.0, "aeExposureCompensation": -2 } }` | *(resulting state, same shape as GET)* | Validate-then-apply against the **active** camera's capabilities: `400 {"error": "...", "key": "zoomRatio"}` on the first offending key, applies nothing. Any subset of `manualControlEnabled` / `rotationDegrees` / `videoResolution` / `keys` may be sent; omitted fields are left unchanged. `rotationDegrees` must be one of 0/90/180/270; `videoResolution` must be one of the camera's `outputResolutions`. `recordingResolution` is derived and **cannot be set**. A `videoResolution` change rebuilds the running pipeline. **`409 {"error": "frozen while recording", "key": "videoResolution"}`** for a `videoResolution` change while the mode is `record` — see below. Accepted + persisted even in `standby` (applied when a pipeline next starts). |
+| GET | `/api/camera/state` | — | — | `{ "cameraId": "0", "rotationDegrees": 0, "videoResolution": "3840x2160", "recordingResolution": "1024x576", "manualControlEnabled": false, "keys": { "zoomRatio": null, "...": null } }` | Current manual-control state (from `DeviceConfig`), including `rotationDegrees` (0/90/180/270), `videoResolution` (the viewing/broadcast size, one of `capabilities.outputResolutions`) and `recordingResolution` (**derived, read-only** — see below). Also, read-only: `areaNorm`, auto's explicit area of interest in the **output frame's** own `0..1` coordinates (rotated, zoomed, clipped; the same rect `GET /api/segments/:filename/aoi` reports), `null` in manual, with no area, or when it is out of view; and `reported` — `{ "exposureTimeNs", "sensitivityIso", "focusDistanceDiopters" }` from the latest `CaptureResult`, i.e. what auto actually chose — `null` in `standby`; and `autoTuning`, where the phone's fine-tuning for an explicit area stands — `{ "state": "waiting" | "tuning" | "failed" | "unsupported", "exposureCompensation", "exposureBiasEv", "focusDistanceDiopters", "contrast", "phoneContrast", "sharpness", "phoneSharpness", "tunedAtMs", "message" }`, where `waiting` is the HAL's auto settling on the area before tuning starts, `exposureCompensation` is the compensation added to AE (in `aeExposureCompensation` steps; `exposureBiasEv` in stops; `null` when exposure isn't tuned), a `null` focus means AF is kept, `contrast` (tone entropy, bits) / `sharpness` are now and `phoneContrast` / `phoneSharpness` what the HAL's auto alone gave, and `tunedAtMs` is when the last nudge that helped was kept — `null` with no explicit area, in manual, or in `standby`. All three absent from older builds. |
+| POST | `/api/camera/state` | — | `{ "manualControlEnabled": true, "rotationDegrees": 90, "videoResolution": "1920x1080", "keys": { "zoomRatio": 2.0, "aeExposureCompensation": -2 } }` | *(resulting state, same shape as GET)* | Validate-then-apply against the **active** camera's capabilities: `400 {"error": "...", "key": "zoomRatio"}` on the first offending key, applies nothing. Any subset of `manualControlEnabled` / `rotationDegrees` / `videoResolution` / `keys` may be sent; omitted fields are left unchanged. `rotationDegrees` must be one of 0/90/180/270; `videoResolution` must be one of the camera's `outputResolutions`. `recordingResolution` is derived and **cannot be set**. A `videoResolution` change rebuilds the running pipeline. **`409 {"error": "frozen while recording", "key": "videoResolution"}`** for a `videoResolution` change while the mode is `record` — see below. **`409 {"error": "the camera is in auto, …", "key": "aeExposureCompensation"}`** for a manual control while the camera is (or this patch leaves it) in auto — see "Auto belongs to the phone" above. Accepted + persisted even in `standby` (applied when a pipeline next starts). |
+| POST | `/api/camera/area-tune` | — | `{}` | `{ "started": true }` (`202`) | Start fine-tuning the explicit area of interest again from the HAL's own auto; progress shows in `GET /api/camera/state`'s `autoTuning`. **`409`** with no explicit area (manual, or none drawn) or no camera open (`standby`). `404` from older builds. |
 
 
 ### Viewing vs recording resolution
@@ -297,11 +313,13 @@ controller frames the shot against JPEG stills instead
 zoom, trim and rotation) scaled to at most 960px on its longer edge, encoded at
 `snapshotJpegQuality` from `/api/config` (default 85). It is rendered **only when
 requested**: nothing is produced while nobody asks. A still under 1s old is shared between
-requests, so polling faster than once a second returns the same picture.
+requests, so polling faster than once a second returns the same picture - unless the caller asks
+for a fresher one with `maxAgeMs` - to see the effect of a setting just applied, say. Stills are
+served in `live` too: it is the same pipeline.
 
 | Method | URL | Query params | Example request body | Example response body | Description |
 |---|---|---|---|---|---|
-| GET | `/api/camera/snapshot` | — | — | *(binary `image/jpeg`)* | A still of the recording, from the next camera frame (or the last still, if under 1s old). `X-Captured-At-Ms` header: phone-clock epoch ms of the frame. **`409`** unless the mode is `record` (`live` has `/live/*`; `standby` has no camera open). **`503 { "error": "camera still starting", "retryAfterMs": 2000 }`** + `Retry-After` while the recording pipeline is (re)starting or not delivering frames: retry. `503 { "error": "phone is overheated; …" }` (no `retryAfterMs`) while the thermal guard has the camera shut down. |
+| GET | `/api/camera/snapshot` | `maxAgeMs` (0–1000, default 1000) | — | *(binary `image/jpeg`)* | A still of what the camera pipeline encodes, from the next camera frame (or the last still, if younger than `maxAgeMs`; `0` always takes the next frame). `X-Captured-At-Ms` header: phone-clock epoch ms of the frame. **`409`** in `standby` (no camera open). Older builds ignore `maxAgeMs` and `409` in `live` too. **`503 { "error": "camera still starting", "retryAfterMs": 2000 }`** + `Retry-After` while the recording pipeline is (re)starting or not delivering frames: retry. `503 { "error": "phone is overheated; …" }` (no `retryAfterMs`) while the thermal guard has the camera shut down. |
 
 ### Segments (sync)
 

@@ -26,29 +26,50 @@ import kotlin.math.roundToInt
  */
 object CameraControlApply {
 
-    fun applyTo(builder: CaptureRequest.Builder, spec: CameraControlSpec, caps: CameraCapabilities) {
+    fun applyTo(
+        builder: CaptureRequest.Builder,
+        spec: CameraControlSpec,
+        caps: CameraCapabilities,
+        /** What auto holds for an explicit area, from [AutoAreaTuner]; ignored in manual. */
+        auto: AutoOverride? = null,
+    ) {
         val k = spec.keys
         val active = Rect(0, 0, caps.activeArrayWidth, caps.activeArrayHeight)
         val haveActive = active.width() > 0 && active.height() > 0
 
         // Auto: every control stays on the HAL's own auto, steered only by the area of interest -
-        // the AE and AF regions, set together by one rect. AE keeps metering (biased to the box)
-        // and AF runs continuous on it; nothing is fixed. Zoom is honoured too, but it never comes
-        // through here (see the class comment).
+        // the AE and AF regions, set together by one rect - and biased by the user's exposure
+        // compensation. AE keeps metering (biased to the box) and AF runs continuous on it. Zoom
+        // is honoured too, but it never comes through here (see the class comment).
+        //
+        // On top of that, what the phone has fine-tuned for that area ([AutoAreaTuner]), with the
+        // levers the manual sliders use: a little more exposure compensation (auto exposure stays
+        // on and keeps following the light) and a focus distance held near where autofocus
+        // settled. Only ever with an area drawn - with none, auto is the HAL's alone.
         if (!spec.manualControlEnabled) {
-            if (!haveActive) return
-            k.aeRegionNorm?.takeIf { caps.maxAeRegions > 0 }?.let {
-                builder.set(
-                    CaptureRequest.CONTROL_AE_REGIONS,
-                    arrayOf(MeteringRectangle(denorm(it, active), MeteringRectangle.METERING_WEIGHT_MAX)),
-                )
+            if (haveActive) {
+                k.aeRegionNorm?.takeIf { caps.maxAeRegions > 0 }?.let {
+                    builder.set(
+                        CaptureRequest.CONTROL_AE_REGIONS,
+                        arrayOf(MeteringRectangle(denorm(it, active), MeteringRectangle.METERING_WEIGHT_MAX)),
+                    )
+                }
             }
-            k.afRegionNorm?.takeIf { caps.maxAfRegions > 0 }?.let {
-                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-                builder.set(
-                    CaptureRequest.CONTROL_AF_REGIONS,
-                    arrayOf(MeteringRectangle(denorm(it, active), MeteringRectangle.METERING_WEIGHT_MAX)),
-                )
+            AutoOverride.totalCompensation(spec, caps, auto)?.let {
+                builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, it)
+            }
+            val tunedFocus = auto?.focusFor(spec, caps)
+            if (tunedFocus != null) {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, tunedFocus)
+            } else if (haveActive) {
+                k.afRegionNorm?.takeIf { caps.maxAfRegions > 0 }?.let {
+                    builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                    builder.set(
+                        CaptureRequest.CONTROL_AF_REGIONS,
+                        arrayOf(MeteringRectangle(denorm(it, active), MeteringRectangle.METERING_WEIGHT_MAX)),
+                    )
+                }
             }
             return
         }

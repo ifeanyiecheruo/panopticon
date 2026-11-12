@@ -654,6 +654,36 @@ export namespace main {
 
 export namespace phoneapi {
 	
+	export class AutoTuningStatus {
+	    state: string;
+	    exposureCompensation?: number;
+	    exposureBiasEv?: number;
+	    focusDistanceDiopters?: number;
+	    contrast?: number;
+	    phoneContrast?: number;
+	    sharpness?: number;
+	    phoneSharpness?: number;
+	    tunedAtMs?: number;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AutoTuningStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.exposureCompensation = source["exposureCompensation"];
+	        this.exposureBiasEv = source["exposureBiasEv"];
+	        this.focusDistanceDiopters = source["focusDistanceDiopters"];
+	        this.contrast = source["contrast"];
+	        this.phoneContrast = source["phoneContrast"];
+	        this.sharpness = source["sharpness"];
+	        this.phoneSharpness = source["phoneSharpness"];
+	        this.tunedAtMs = source["tunedAtMs"];
+	        this.message = source["message"];
+	    }
+	}
 	export class CalibrationStepProgress {
 	    index: number;
 	    total: number;
@@ -975,6 +1005,22 @@ export namespace phoneapi {
 		    return a;
 		}
 	}
+	export class CaptureReport {
+	    exposureTimeNs?: number;
+	    sensitivityIso?: number;
+	    focusDistanceDiopters?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CaptureReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.exposureTimeNs = source["exposureTimeNs"];
+	        this.sensitivityIso = source["sensitivityIso"];
+	        this.focusDistanceDiopters = source["focusDistanceDiopters"];
+	    }
+	}
 	export class CameraStateResponse {
 	    cameraId: string;
 	    rotationDegrees: number;
@@ -984,6 +1030,9 @@ export namespace phoneapi {
 	    keys: CameraControlKeys;
 	    hwZoomRatio: number;
 	    glResidual: number;
+	    areaNorm?: RectNorm;
+	    reported?: CaptureReport;
+	    autoTuning?: AutoTuningStatus;
 	
 	    static createFrom(source: any = {}) {
 	        return new CameraStateResponse(source);
@@ -999,6 +1048,9 @@ export namespace phoneapi {
 	        this.keys = this.convertValues(source["keys"], CameraControlKeys);
 	        this.hwZoomRatio = source["hwZoomRatio"];
 	        this.glResidual = source["glResidual"];
+	        this.areaNorm = this.convertValues(source["areaNorm"], RectNorm);
+	        this.reported = this.convertValues(source["reported"], CaptureReport);
+	        this.autoTuning = this.convertValues(source["autoTuning"], AutoTuningStatus);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1019,6 +1071,7 @@ export namespace phoneapi {
 		    return a;
 		}
 	}
+	
 	export class Config {
 	    deviceName: string;
 	    motionSensitivity: string;

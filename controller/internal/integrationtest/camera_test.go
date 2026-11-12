@@ -221,3 +221,33 @@ func TestCameraState_InvalidKeyReturnsTypedError(t *testing.T) {
 		t.Errorf("want key zoomRatio, got %q", ck.Key)
 	}
 }
+
+func TestCameraState_ManualControlInAutoIsConflict(t *testing.T) {
+	client, _ := clientFor(t, "CAM-CODE")
+	ctx := context.Background()
+	auto := false
+	iso := 400
+	_, err := client.SetCameraState(ctx, phoneapi.CameraStatePatch{
+		ManualControlEnabled: &auto,
+		Keys:                 &phoneapi.CameraControlKeys{SensorSensitivityISO: &iso},
+	})
+	var conflict *phoneapi.ControlConflictError
+	if !errors.As(err, &conflict) || conflict.Key != "sensorSensitivityIso" {
+		t.Fatalf("want a ControlConflictError naming sensorSensitivityIso, got %v", err)
+	}
+
+	// The zoom, the exposure compensation and the area are auto's own.
+	area := phoneapi.RectNorm{L: 0.4, T: 0.4, R: 0.6, B: 0.6}
+	zoom := 2.0
+	ec := 2
+	st, err := client.SetCameraState(ctx, phoneapi.CameraStatePatch{
+		ManualControlEnabled: &auto,
+		Keys:                 &phoneapi.CameraControlKeys{ZoomRatio: &zoom, AEExposureCompensation: &ec, AESelectNorm: &area, AFSelectNorm: &area},
+	})
+	if err != nil {
+		t.Fatalf("zoom, compensation and area in auto: %v", err)
+	}
+	if st.Keys.AEExposureCompensation == nil || *st.Keys.AEExposureCompensation != ec {
+		t.Errorf("auto kept compensation %v, want %d", st.Keys.AEExposureCompensation, ec)
+	}
+}

@@ -420,6 +420,21 @@ func newFakePhoneServer(t *testing.T, invite string) (*httptest.Server, *fakePho
 				Keys                 map[string]any `json:"keys"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&b)
+			// Auto takes only the zoom and the area; anything else is a 409, like the phone.
+			manual := fp.manualControlEnabled
+			if b.ManualControlEnabled != nil {
+				manual = *b.ManualControlEnabled
+			}
+			if !manual {
+				for k, v := range b.Keys {
+					if autoKeys[k] || v == nil || v == false {
+						continue
+					}
+					w.WriteHeader(http.StatusConflict)
+					writeJSON(w, map[string]string{"error": "the camera is in auto", "key": k})
+					return
+				}
+			}
 			if b.Keys != nil {
 				if z, ok := b.Keys["zoomRatio"].(float64); ok && (z < 1.0 || z > 8.0) {
 					w.WriteHeader(http.StatusBadRequest)
@@ -762,4 +777,12 @@ func TestSyncLoop_TreatsEvictedSegmentAsSkipNotError(t *testing.T) {
 	if exists, _ := store.SegmentExists(result.PhoneID, "seg_ok.mp4"); !exists {
 		t.Errorf("expected the non-evicted segment to be indexed")
 	}
+}
+
+// autoKeys are the camera keys auto takes: the zoom, the exposure compensation
+// and the area of interest.
+var autoKeys = map[string]bool{
+	"zoomRatio": true, "zoomSelectNorm": true, "zoomViewNorm": true,
+	"aeExposureCompensation": true,
+	"aeSelectNorm": true, "aeRegionNorm": true, "afSelectNorm": true, "afRegionNorm": true,
 }

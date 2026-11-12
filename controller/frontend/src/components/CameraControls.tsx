@@ -5,6 +5,8 @@ import {
   SetActiveCamera,
   GetCameraControls,
   SetCameraControls,
+  RetuneArea,
+  type AutoTuningStatus,
   type CameraInfo,
   type CameraControlsView,
   type CameraCapabilities,
@@ -50,6 +52,52 @@ type ControlKeys = {
   videoStabilizationMode?: number;
   opticalStabilizationMode?: number;
 };
+
+
+/** A focus distance in diopters, as a distance: 0 is infinity. */
+function fmtFocus(d: number): string {
+  if (d < 0.02) return 'infinity';
+  const m = 1 / d;
+  return m >= 10 ? `${Math.round(m)} m` : `${m.toFixed(1)} m`;
+}
+
+/** One line on where the phone's fine-tuning for the area stands. */
+function tuningNote(s: AutoTuningStatus | null | undefined): string {
+  if (!s) return 'Exposure and focus are following the area of interest.';
+  switch (s.state) {
+    case 'waiting':
+      return "The phone's own auto is settling on the area of interest; fine-tuning starts from there.";
+    case 'failed':
+      return `Fine-tuning paused (${s.message ?? 'unknown reason'}); the phone's own auto is in charge and it will try again.`;
+    case 'unsupported':
+      return "This camera can't be fine-tuned; the phone's own auto follows the area of interest.";
+  }
+  const parts: string[] = [];
+  if (s.exposureBiasEv != null) {
+    const gain = s.contrast != null && s.phoneContrast != null ? `, ${signed(s.contrast - s.phoneContrast, 2)} bits of tonal detail` : '';
+    parts.push(
+      Math.abs(s.exposureBiasEv) < 0.01
+        ? `auto exposure as is${gain}`
+        : `auto exposure ${signed(s.exposureBiasEv, 2)} EV${gain}`,
+    );
+  }
+  if (s.focusDistanceDiopters != null) {
+    const gain =
+      s.sharpness != null && s.phoneSharpness ? `, ${signed(100 * (s.sharpness / s.phoneSharpness - 1), 0)}% sharpness` : '';
+    parts.push(`focus held at ${fmtFocus(s.focusDistanceDiopters)}${gain}`);
+  } else if (s.phoneSharpness != null) {
+    parts.push('autofocus');
+  }
+  const drift = s.message ? ` It ${s.message}.` : '';
+  return `Fine-tuning auto for the area, in small, slow steps: ${parts.join('; ')}.${drift}`;
+}
+
+function signed(v: number, digits: number): string {
+  return `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(digits)}`;
+}
+
+/** How often the auto panel re-reads the phone's tuning status. */
+const TUNING_POLL_MS = 2000;
 
 const AWB_LABELS: Record<number, string> = {
   0: 'off', 1: 'auto', 2: 'incand.', 3: 'fluor.', 4: 'warm fl.', 5: 'daylight', 6: 'cloudy', 7: 'twilight', 8: 'shade',
@@ -155,6 +203,8 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
   const [resolution, setResolution] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
   const [invalidKey, setInvalidKey] = useState<string | null>(null);
+  /** The phone's own fine-tuning of auto for a drawn area, as it last reported it. */
+  const [autoTuning, setAutoTuning] = useState<AutoTuningStatus | null>(null);
 
   /** 'auto' is the Auto button's own panel: the area-of-interest picker. */
   const [openMode, setOpenMode] = useState('auto');
@@ -187,6 +237,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
       setRotation(cv.state?.rotationDegrees ?? 0);
       setGlResidual(cv.state?.glResidual ?? 1);
       setResolution(cv.state?.videoResolution ?? '');
+      setAutoTuning(cv.state?.autoTuning ?? null);
     } else {
       setLoadErr(cv.error || cs.error || 'Could not read camera state from the phone.');
     }
@@ -261,17 +312,19 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
 
   // ---- push a control patch to the phone (debounced) ----
   const pushControls = useCallback(
-    (nextManual: boolean, nextKeys: ControlKeys, immediate = false) => {
+    (nextManual: boolean, nextKeys: ControlKeys, immediate = false): Promise<boolean> => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
-      const send = async () => {
+      const send = async (): Promise<boolean> => {
         const patch = { manualControlEnabled: nextManual, keys: nextKeys };
         const r = await SetCameraControls(phoneId, patch as Parameters<typeof SetCameraControls>[1]);
-        if (r.outcome === 'invalid_key') {
+        if (r.outcome === 'invalid_key' || r.outcome === 'conflict') {
           setInvalidKey(r.invalidKey || null);
           setMsg(r.message || 'The phone rejected that value.');
+          return false;
         } else if (!r.ok) {
           setInvalidKey(null);
           setMsg(r.message || 'Could not apply camera controls.');
+          return false;
         } else {
           setInvalidKey(null);
           setMsg(null);
@@ -285,11 +338,14 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
           if (immediate && r.state) {
             setKeys({ ...((r.state.keys ?? {}) as ControlKeys) });
             setGlResidual(r.state.glResidual ?? 1);
+            setAutoTuning(r.state.autoTuning ?? null);
           }
+          return true;
         }
       };
-      if (immediate) void send();
-      else debounceRef.current = setTimeout(send, APPLY_DEBOUNCE_MS);
+      if (immediate) return send();
+      debounceRef.current = setTimeout(send, APPLY_DEBOUNCE_MS);
+      return Promise.resolve(true);
     },
     [phoneId, useStills, nudgeStill],
   );
@@ -308,27 +364,49 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
     for (const k of SELECTION_KEYS) delete retained[k];
     setKeys(retained);
     if (manual !== manualOn) setManualOn(manual);
-    pushControls(manual, sent, commit);
+    return pushControls(manual, sent, commit);
   };
   const setKey = <K extends keyof ControlKeys>(k: K, v: ControlKeys[K], commit = false) =>
     applyKeys({ [k]: v } as Partial<ControlKeys>, commit);
 
-  // Auto keeps the zoom: it resets how the picture is exposed, focused and balanced, not what is
-  // framed. Any earlier area of interest goes with the rest.
+  // Auto keeps the zoom and the exposure compensation: it resets how the picture is exposed,
+  // focused and balanced, not what is framed or how bright it is asked to be. Any earlier area of
+  // interest goes with the rest.
   const goAuto = () => {
-    const kept: ControlKeys = { zoomRatio: keys.zoomRatio, zoomViewNorm: keys.zoomViewNorm };
+    const kept: ControlKeys = {
+      zoomRatio: keys.zoomRatio,
+      zoomViewNorm: keys.zoomViewNorm,
+      aeExposureCompensation: keys.aeExposureCompensation,
+    };
     setManualOn(false);
     setKeys(kept);
     setInvalidKey(null);
     setOpenMode('auto');
-    pushControls(false, kept, true);
+    void pushControls(false, kept, true);
   };
   // Leaving auto keeps every key; the regions only act in manual alongside manual exposure/focus,
   // and choosing either of those clears them.
+  //
+  // What the phone fine-tuned for the area carries over as manual's starting point, on the same
+  // sliders: the compensation it added on top of the user's, and its focus distance (since in
+  // manual a region wins over the focus dial, the AF region it was tuned for is dropped in its
+  // favour).
   const leaveAuto = () => {
+    const next: ControlKeys = { ...keys };
+    const t = autoTuning?.state === 'tuning' ? autoTuning : null;
+    if (t?.exposureCompensation && caps) {
+      const r = caps.aeCompensationRange;
+      next.aeExposureCompensation = Math.min(r.hi, Math.max(r.lo, (keys.aeExposureCompensation ?? 0) + t.exposureCompensation));
+    }
+    if (t?.focusDistanceDiopters != null) {
+      next.manualFocus = true;
+      next.lensFocusDistanceDiopters = t.focusDistanceDiopters;
+      next.afRegionNorm = undefined;
+    }
+    setKeys(next);
     setManualOn(true);
     setOpenMode('exposure');
-    pushControls(true, keys, true);
+    void pushControls(true, next, true);
   };
   /** The Auto button toggles auto. In auto with Zoom open, it first brings the area picker back;
    *  a press with the picker already open leaves auto. */
@@ -473,6 +551,23 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
     setPickRect(null);
   }, []);
 
+  // The phone fine-tunes an explicit area by itself; while one is drawn, keep its status current.
+  const watchTuning = !manualOn && hasArea && playing;
+  useEffect(() => {
+    if (!watchTuning) return;
+    const id = setInterval(async () => {
+      const cv = await GetCameraControls(phoneId);
+      if (cv.ok) setAutoTuning(cv.state?.autoTuning ?? null);
+    }, TUNING_POLL_MS);
+    return () => clearInterval(id);
+  }, [watchTuning, phoneId]);
+
+  const retune = async () => {
+    const r = await RetuneArea(phoneId);
+    if (!r.ok) setMsg(r.message || 'Could not re-tune.');
+    else setAutoTuning((s) => (s ? { ...s, state: 'waiting' } : s) as AutoTuningStatus | null);
+  };
+
   const commitRect = useCallback(
     async (drawn: RectNorm, target: RectTarget) => {
       // Sent as drawn, in viewer coordinates - relative to whatever's currently on screen, which
@@ -483,7 +578,9 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
       const patch: Partial<ControlKeys> = {};
       for (const c of target.clears) patch[c] = undefined;
       for (const k of target.sends) patch[k] = drawn;
-      applyKeys(patch, true, target.manual);
+      // An area drawn in auto is all the phone needs: it fine-tunes exposure and focus for it
+      // by itself.
+      await applyKeys(patch, true, target.manual);
       flashNote(target.applied);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -524,10 +621,12 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
     if (canVideoStab || canOptStab) modes.push({ id: 'stabilize', label: 'Stabilize', icon: 'stabilize' });
     modes.push({ id: 'rotate', label: 'Rotation', icon: 'rotate' });
   }
-  // Auto offers only its own area picker and Zoom; every other mode waits until auto is left.
+  // Auto offers its own area picker, Zoom, and Exposure's compensation ruler (a bias auto
+  // exposure applies, not a manual exposure); every other mode waits until auto is left.
+  const autoTakes = (id: string) => id === 'zoom' || (id === 'exposure' && canExpComp);
   const validOpen = !manualOn
-    ? openMode === 'zoom'
-      ? 'zoom'
+    ? autoTakes(openMode)
+      ? openMode
       : 'auto'
     : modes.some((m) => m.id === openMode)
       ? openMode
@@ -598,15 +697,32 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
             manual: false,
             applied: 'Area of interest set.',
           };
-          note = hasArea
-            ? 'Exposure and focus are following the area of interest. Draw again to move it.'
-            : 'No area of interest: exposure and focus look at the whole frame.';
+          note = !hasArea
+            ? 'No area of interest: the phone sets exposure and focus for the whole frame.'
+            : `${tuningNote(autoTuning)} Draw again to move the area.`;
         } else {
           note = 'This camera has no metering or focus regions, so auto looks at the whole frame.';
         }
         break;
       }
       case 'exposure': {
+        if (!manualOn) {
+          // In auto, only the compensation: auto exposure keeps running, biased by it. With an
+          // area drawn, the phone's fine-tuning starts over from the new setting.
+          rulers = [
+            {
+              key: 'ec',
+              spec: spec(C.aeCompensationRange.lo, C.aeCompensationRange.hi, ['moon', 'sun']),
+              value: keys.aeExposureCompensation ?? 0,
+              dflt: 0,
+              set: (v, c) => applyKeys({ aeExposureCompensation: Math.round(v) }, c, false),
+            },
+          ];
+          note = hasArea
+            ? 'Exposure compensation biases auto exposure; fine-tuning for the area starts again from it.'
+            : 'Exposure compensation biases auto exposure.';
+          break;
+        }
         // Folded: metering mode + (comp ruler | shutter+ISO rulers) + a
         // drag-a-box spot-metering rect. Only capabilities the camera has are
         // offered; AE lock is universal so it's always there.
@@ -1029,7 +1145,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
                   !playing
                     ? PREVIEW_OFF_HINT
                     : manualOn
-                      ? 'Auto: every control except zoom back to auto; then drag a box to set the area of interest'
+                      ? 'Auto: every control except zoom and exposure compensation back to auto; then drag a box to set the area of interest'
                       : validOpen === 'auto'
                         ? 'Leave auto for manual controls'
                         : 'Back to the area of interest'
@@ -1044,9 +1160,9 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
                     key={m.id}
                     data-key={m.id}
                     className={`adjust-btn ${validOpen === m.id ? 'open' : ''}`}
-                    disabled={!playing || (!manualOn && m.id !== 'zoom')}
+                    disabled={!playing || (!manualOn && !autoTakes(m.id))}
                     title={
-                      !playing ? PREVIEW_OFF_HINT : !manualOn && m.id !== 'zoom' ? 'Leave auto to use this' : undefined
+                      !playing ? PREVIEW_OFF_HINT : !manualOn && !autoTakes(m.id) ? 'Leave auto to use this' : undefined
                     }
                     onClick={() => setOpenMode(m.id)}
                   >
@@ -1075,6 +1191,13 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
             )}
 
             {note && <div className="calib-sub">{note}</div>}
+            {validOpen === 'auto' && hasArea && playing && (autoTuning?.state === 'tuning' || autoTuning?.state === 'failed') && (
+              <div style={{ marginTop: '4px' }}>
+                <button className="btn small" onClick={() => void retune()} title="Start fine-tuning again from the phone's own auto">
+                  Re-tune
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -1089,7 +1212,7 @@ export function CameraControls({ phoneId, phoneRecording, ctl, still, playing, o
                     ? 'The picture is a still, refreshed every couple of seconds; a change shows on the next one.'
                     : 'The preview runs a second or so behind.')
                 : validOpen === 'auto'
-                  ? 'Drag a box on the preview around what matters — exposure and focus follow it and stay automatic (applied on release, Esc cancels). Press Auto again to leave auto.'
+                  ? 'Drag a box on the preview around what matters — exposure and focus are fine-tuned for it (applied on release, Esc cancels). Press Auto again to leave auto.'
                   : validOpen === 'focus'
                   ? 'Drag the ruler for manual focus, or drag a box on the preview to focus on that area (applied on release, Esc cancels).'
                   : 'Drag the ruler for exposure, or drag a box on the preview to spot-meter that area (applied on release, Esc cancels).'

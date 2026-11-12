@@ -24,6 +24,19 @@ type InvalidControlKeyError struct {
 	Reason string
 }
 
+// ControlConflictError is POST /api/camera/state's 409: a key the camera's
+// current mode doesn't take - a manual control while the camera is in auto
+// (auto belongs to the phone), or a resolution change while recording. Key
+// names the field.
+type ControlConflictError struct {
+	Key    string
+	Reason string
+}
+
+func (e *ControlConflictError) Error() string {
+	return "camera control " + e.Key + " conflicts with the camera's mode: " + e.Reason
+}
+
 func (e *InvalidControlKeyError) Error() string {
 	if e.Key == "" {
 		return "invalid camera control: " + e.Reason
@@ -137,6 +150,50 @@ type CameraStateResponse struct {
 	// GL adds on top by cropping and upscaling the texture, which buys no new detail.
 	HWZoomRatio float64 `json:"hwZoomRatio"`
 	GLResidual  float64 `json:"glResidual"`
+	// AreaNorm is auto's explicit area of interest as the output frame shows it (rotated,
+	// zoomed, 0..1 top down) - where to measure it in a still. Nil in manual, with no area
+	// drawn, when it is out of view, or from a phone too old to report it.
+	AreaNorm *RectNorm `json:"areaNorm"`
+	// Reported is what the camera is actually doing, from its latest capture result: under
+	// auto, the exposure and focus the phone chose. Nil in standby or from an older phone.
+	Reported *CaptureReport `json:"reported"`
+	// AutoTuning is where the phone's fine-tuning of exposure and focus for the
+	// explicit area of interest stands. Nil with no area drawn, in manual, in
+	// standby, or from an older phone.
+	AutoTuning *AutoTuningStatus `json:"autoTuning"`
+}
+
+// AutoTuningStatus is the phone's fine-tuning of auto for an explicit area of
+// interest (docs/design/decisions/0017-area-of-interest-fine-tuning.md).
+type AutoTuningStatus struct {
+	// State is "waiting" (auto settling on the area) | "tuning" | "failed" |
+	// "unsupported".
+	State string `json:"state"`
+	// ExposureCompensation is what tuning adds to auto exposure, in the camera's
+	// compensation steps (as the aeExposureCompensation key), and ExposureBiasEV
+	// the same in stops; nil while exposure isn't tuned.
+	ExposureCompensation *int     `json:"exposureCompensation"`
+	ExposureBiasEV       *float64 `json:"exposureBiasEv"`
+	// The focus distance held for the area; nil while autofocus is kept.
+	FocusDistanceDiopters *float64 `json:"focusDistanceDiopters"`
+	// Contrast is the area's tone entropy (bits) now; PhoneContrast when auto
+	// alone had settled on it. Sharpness / PhoneSharpness likewise, with
+	// autofocus.
+	Contrast       *float64 `json:"contrast"`
+	PhoneContrast  *float64 `json:"phoneContrast"`
+	Sharpness      *float64 `json:"sharpness"`
+	PhoneSharpness *float64 `json:"phoneSharpness"`
+	// TunedAtMs is when the last nudge that helped was kept (epoch ms).
+	TunedAtMs *int64 `json:"tunedAtMs"`
+	Message   string `json:"message,omitempty"`
+}
+
+// CaptureReport is a camera's exposure and focus as its latest capture result reports them.
+type CaptureReport struct {
+	ExposureTimeNs *int64 `json:"exposureTimeNs"`
+	SensitivityISO *int   `json:"sensitivityIso"`
+	// FocusDistanceDiopters is 0 at infinity; nil when the lens doesn't report one.
+	FocusDistanceDiopters *float64 `json:"focusDistanceDiopters"`
 }
 
 // CameraStatePatch is POST /api/camera/state's body. Keys, when non-nil,
@@ -243,6 +300,17 @@ func (c *Client) SetCameraState(ctx context.Context, patch CameraStatePatch) (Ca
 		_ = json.Unmarshal(b, &ce)
 		return CameraStateResponse{}, &InvalidControlKeyError{Key: ce.Key, Reason: ce.Error}
 	}
+	if resp.StatusCode == http.StatusConflict {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		var ce struct {
+			Error string `json:"error"`
+			Key   string `json:"key"`
+		}
+		if json.Unmarshal(b, &ce) == nil && ce.Key != "" {
+			return CameraStateResponse{}, &ControlConflictError{Key: ce.Key, Reason: ce.Error}
+		}
+		return CameraStateResponse{}, &HTTPError{StatusCode: resp.StatusCode, Body: string(b)}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return CameraStateResponse{}, &HTTPError{StatusCode: resp.StatusCode, Body: string(b)}
@@ -253,4 +321,13 @@ func (c *Client) SetCameraState(ctx context.Context, patch CameraStatePatch) (Ca
 		return CameraStateResponse{}, err
 	}
 	return out, nil
+}
+
+// RetuneArea asks the phone to fine-tune its explicit area of interest again
+// now (POST /api/camera/area-tune), rather than when the light next changes.
+// A 409 - no area drawn, or no camera running - comes back as an *HTTPError.
+func (c *Client) RetuneArea(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	defer cancel()
+	return c.doJSON(ctx, http.MethodPost, "/api/camera/area-tune", nil, struct{}{}, nil)
 }

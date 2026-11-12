@@ -16,6 +16,8 @@ import com.panopticon.phoneapp.camera.ActiveCameraResponse
 import com.panopticon.phoneapp.camera.CameraStatePatch
 import com.panopticon.phoneapp.camera.RecordingSizeSelection
 import com.panopticon.phoneapp.camera.CameraStateResponse
+import com.panopticon.phoneapp.camera.CaptureReport
+import com.panopticon.phoneapp.camera.AutoTuningStatus
 import com.panopticon.phoneapp.camera.ViewportRect
 import com.panopticon.phoneapp.camera.ZoomCalibrationLut
 import com.panopticon.phoneapp.camera.ZoomGeometry
@@ -45,7 +47,9 @@ data class ControlErrorBody(val error: String, val key: String)
  *  - `POST /api/cameras/active`        - switch active camera (disruptive reconfigure)
  *  - `GET  /api/camera/capabilities`   - declared per-key ranges (any mode, optional ?cameraId=)
  *  - `GET  /api/camera/state`          - current manual-control state
- *  - `POST /api/camera/state`          - validate-then-apply a new state; 400 {error,key} on a bad key
+ *  - `POST /api/camera/state`          - validate-then-apply a new state; 400 {error,key} on a bad key,
+ *                                        409 {error,key} for a manual control while in auto
+ *  - `POST /api/camera/area-tune`      - fine-tune the explicit area of interest again now
  *
  * `activeCameraId` + the control keys live in `DeviceConfig` (persisted), so a
  * state tuned while watching the live preview also governs recording and
@@ -61,6 +65,11 @@ fun Route.cameraRoutes(
     /** The crop the running pipeline renders with (LIVE's video, or RECORD's stills), for mapping
      *  drawn rects back to the sensor - see [resolveSelections]. Null in STANDBY. */
     liveTexCrop: () -> Pair<Float, Float>?,
+    /** What the running pipeline's camera is actually doing (its latest capture result); null in
+     *  STANDBY. */
+    captureReport: () -> CaptureReport? = { null },
+    /** Where auto's fine-tuning for the explicit area stands; null with none or in STANDBY. */
+    autoTuning: () -> AutoTuningStatus? = { null },
 ) {
     // Authenticated by the global installAuth() intercept.
     run {
@@ -105,6 +114,8 @@ fun Route.cameraRoutes(
                     videoResolution = effectiveResolution(cfg.videoResolution, caps),
                     spec = cfg.cameraControls,
                     liveTexCrop = liveTexCrop(),
+                    reported = captureReport(),
+                    autoTuning = autoTuning(),
                 ),
             )
         }
@@ -119,6 +130,23 @@ fun Route.cameraRoutes(
                         HttpStatusCode.Conflict,
                         ControlErrorBody(
                             "frozen while recording: POST /api/mode {\"mode\":\"standby\"} first",
+                            key,
+                        ),
+                    )
+                    return@post
+                }
+            }
+
+            // Auto belongs to the phone: in it, the only keys are the zoom and the area of interest.
+            // A manual control sent to a camera that is (or is being put) in auto is a conflict
+            // with that mode, not a bad value - switch to manual first.
+            val nextManual = patch.manualControlEnabled ?: cfg.cameraControls.manualControlEnabled
+            if (!nextManual && patch.keys != null) {
+                CameraControlSpec.autoKeyConflict(patch.keys)?.let { key ->
+                    call.respond(
+                        HttpStatusCode.Conflict,
+                        ControlErrorBody(
+                            "the camera is in auto, which sets this itself: send manualControlEnabled=true to set it",
                             key,
                         ),
                     )
@@ -168,6 +196,9 @@ fun Route.cameraRoutes(
                 )
             }
 
+            // Entering auto keeps only what auto takes; the manual keys stay behind in manual.
+            if (!next.manualControlEnabled) next = next.copy(keys = CameraControlSpec.autoKeys(next.keys))
+
             CameraControlValidation.validate(next.keys, caps)?.let { err ->
                 call.respond(HttpStatusCode.BadRequest, ControlErrorBody(err.reason, err.key))
                 return@post
@@ -191,11 +222,31 @@ fun Route.cameraRoutes(
                     videoResolution = effectiveResolution(nextResolution, caps),
                     spec = next,
                     liveTexCrop = liveTexCrop(),
+                    reported = captureReport(),
+                    autoTuning = autoTuning(),
                 ),
             )
         }
     }
 }
+
+/**
+ * `POST /api/camera/area-tune` - fine-tune the explicit area of interest again now, rather than
+ * waiting for the light to change. `409` with no explicit area (manual, or none drawn) or no
+ * camera running.
+ */
+fun Route.areaTuneRoute(retuneArea: () -> Boolean?) {
+    post("/api/camera/area-tune") {
+        when (retuneArea()) {
+            true -> call.respond(HttpStatusCode.Accepted, AreaTuneResponse(started = true))
+            false -> call.respond(HttpStatusCode.Conflict, ErrorBody("no area of interest: auto is tuning nothing"))
+            null -> call.respond(HttpStatusCode.Conflict, ErrorBody("no camera open: start recording or live first"))
+        }
+    }
+}
+
+@Serializable
+data class AreaTuneResponse(val started: Boolean)
 
 /**
  * Turn the request-only, viewer-space **selections** in an incoming patch into the absolute state
@@ -287,6 +338,8 @@ private fun cameraStateResponse(
     videoResolution: String,
     spec: CameraControlSpec,
     liveTexCrop: Pair<Float, Float>?,
+    reported: CaptureReport?,
+    autoTuning: AutoTuningStatus?,
 ): CameraStateResponse {
     val (texCropX, texCropY) = liveTexCrop ?: (1f to 1f)
     val zoomView = spec.keys.zoomViewNorm ?: ZoomGeometry.FULL
@@ -309,6 +362,17 @@ private fun cameraStateResponse(
         keys = spec.keys,
         hwZoomRatio = split.hwRatio,
         glResidual = split.glResidual,
+        // The same frame-space rect the pipeline stamps on each segment, so the controller can
+        // measure the area in a still exactly where the user drew it.
+        areaNorm = if (spec.hasExplicitArea) {
+            (spec.keys.aeRegionNorm ?: spec.keys.afRegionNorm)?.let {
+                ViewportRect.toFrameSpace(it, spec.keys, rotationDegrees, texCropX, texCropY)
+            }
+        } else {
+            null
+        },
+        reported = reported,
+        autoTuning = autoTuning.takeIf { spec.hasExplicitArea },
     )
 }
 

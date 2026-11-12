@@ -18,7 +18,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** A still younger than this is shared rather than grabbed again, so any number of controllers
- *  polling one phone cost at most one grab a second between them. */
+ *  polling one phone cost at most one grab a second between them. A caller can ask for a fresher
+ *  one (`maxAgeMs`), never a staler one. */
 private const val SNAPSHOT_MAX_AGE_MS = 1_000L
 
 /** One frame normally completes a grab in well under 100ms; this only bounds a camera that has
@@ -31,14 +32,16 @@ private const val SNAPSHOT_RETRY_AFTER_MS = 2_000
 const val CAPTURED_AT_HEADER = "X-Captured-At-Ms"
 
 /**
- * `GET /api/camera/snapshot` - a JPEG still of what RECORD is encoding, produced on demand
- * (docs/design/http-api.md "Stills while recording", docs/design/decisions/0015-recording-stills.md).
+ * `GET /api/camera/snapshot[?maxAgeMs=N]` - a JPEG still of what the camera pipeline is encoding,
+ * produced on demand (docs/design/http-api.md "Stills", docs/design/decisions/0015-recording-stills.md).
  *
- * The live view's stand-in while recording: the phone can't run the HLS encoder alongside the
- * recording one, but it can read back one frame every few seconds for whoever is looking. Only
- * RECORD serves it - LIVE has the real video, STANDBY has no camera open.
+ * Two readers. A controller watching a recording phone that won't stream polls it as the live
+ * view's stand-in. And the controller's area-of-interest fine-tuning reads one after each
+ * exposure or focus step, in RECORD or LIVE (the one pipeline serves both), passing
+ * `maxAgeMs=0` so the still is taken from a frame after the step rather than shared from before
+ * it. STANDBY has no camera open.
  *
- * [record] is looked up per request because the pipeline only exists while recording.
+ * [record] is looked up per request because the pipeline only exists while the camera is open.
  */
 fun Route.snapshotRoutes(record: () -> CameraGlPipeline?, appState: AppState) {
     // Authenticated by the global installAuth() intercept.
@@ -49,13 +52,17 @@ fun Route.snapshotRoutes(record: () -> CameraGlPipeline?, appState: AppState) {
                 ErrorBody("phone is overheated; stills are unavailable until it cools"),
             )
         }
-        if (appState.mode.value != AppMode.RECORD) {
+        val mode = appState.mode.value
+        if (mode != AppMode.RECORD && mode != AppMode.LIVE) {
             return@get call.respond(
                 HttpStatusCode.Conflict,
-                ErrorBody("not recording: stills are served in record mode only (use /live/* in live mode)"),
+                ErrorBody("no camera open: stills are served in record and live modes"),
             )
         }
-        val pending = record()?.requestSnapshot(SNAPSHOT_MAX_AGE_MS)
+        // A caller may ask for a fresher still than the shared one, never a staler one.
+        val maxAgeMs = call.request.queryParameters["maxAgeMs"]?.toLongOrNull()
+            ?.coerceIn(0L, SNAPSHOT_MAX_AGE_MS) ?: SNAPSHOT_MAX_AGE_MS
+        val pending = record()?.requestSnapshot(maxAgeMs)
             ?: return@get call.retryLater("camera still starting")
         // A grab fails outright when the pipeline is torn down under it (a mode switch or a
         // restart), and times out when frames have stopped; to the caller both are "try again".

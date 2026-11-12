@@ -573,6 +573,25 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// Auto belongs to the phone: in it the only keys are the zoom and the area of interest,
+		// and a manual control is a 409 naming it - same rule as the phone.
+		s.mu.Lock()
+		manual := s.manualControlEnabled
+		s.mu.Unlock()
+		if body.ManualControlEnabled != nil {
+			manual = *body.ManualControlEnabled
+		}
+		if !manual {
+			for k, v := range body.Keys {
+				if autoKeys[k] || v == nil || v == false {
+					continue
+				}
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"error": "the camera is in auto, which sets this itself: send manualControlEnabled=true to set it", "key": k,
+				})
+				return
+			}
+		}
 		// Reject obviously bad keys so the controller's 400-path is exercised.
 		if body.Keys != nil {
 			// The reachable total is the declared hardware range with GL's upscale on top, so the
@@ -618,6 +637,14 @@ func (s *server) handleCameraState(w http.ResponseWriter, r *http.Request) {
 			// PREVIOUS view - the user drew on the frame that was on screen before this patch.
 			resolveZoomKeys(body.Keys, s.controlKeys, s.rotationDegrees)
 			s.controlKeys = body.Keys
+		}
+		if !s.manualControlEnabled {
+			// Entering auto keeps only what auto takes.
+			for k := range s.controlKeys {
+				if !autoKeys[k] {
+					delete(s.controlKeys, k)
+				}
+			}
 		}
 		live := s.mode == "live"
 		s.mu.Unlock()
@@ -940,4 +967,12 @@ func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// autoKeys are the camera keys auto takes: the zoom, the exposure compensation
+// and the area of interest.
+var autoKeys = map[string]bool{
+	"zoomRatio": true, "zoomSelectNorm": true, "zoomViewNorm": true,
+	"aeExposureCompensation": true,
+	"aeSelectNorm": true, "aeRegionNorm": true, "afSelectNorm": true, "afRegionNorm": true,
 }

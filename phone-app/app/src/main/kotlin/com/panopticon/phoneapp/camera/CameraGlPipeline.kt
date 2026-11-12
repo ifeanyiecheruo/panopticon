@@ -41,12 +41,16 @@ import com.panopticon.phoneapp.state.ThermalReader
 import com.panopticon.phoneapp.state.ThermalStatus
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.CopyOnWriteArrayList
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -85,6 +89,30 @@ private const val LIVE_WHILE_RECORDING_MAX_SEVERITY = 2
  *  two thirds of a second at 30fps, which is enough for auto-exposure and white balance to settle
  *  on both test devices. */
 private const val PIPELINE_SETTLE_RESULTS = 20L
+
+/** Every how many capture results [CameraGlPipeline.captureReport] is refreshed: a few times a
+ *  second at 30fps, which is as fresh as anyone polling it over HTTP can tell. */
+private const val CAPTURE_REPORT_EVERY = 5L
+
+/** How long a tuning step waits for its request to show up in a result before going on anyway. */
+private const val APPLY_TIMEOUT_MS = 1_500L
+/** How long auto is given to react to being handed control back, then to converge. */
+private const val AUTO_REACT_MS = 600L
+private const val CONVERGE_TIMEOUT_MS = 4_000L
+/** A frame for the tuner normally comes within one frame interval; this bounds a stalled camera. */
+private const val FRAME_TIMEOUT_MS = 3_000L
+private val AE_SETTLED = setOf(
+    CaptureResult.CONTROL_AE_STATE_CONVERGED,
+    CaptureResult.CONTROL_AE_STATE_LOCKED,
+    CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED,
+)
+private val AF_SETTLED = setOf(
+    CaptureResult.CONTROL_AF_STATE_INACTIVE,
+    CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED,
+    CaptureResult.CONTROL_AF_STATE_PASSIVE_UNFOCUSED,
+    CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED,
+    CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED,
+)
 
 /** How often to sample thermal state across a run. Slow on purpose: the effect being chased
  *  builds over minutes, and PowerManager rate-limits the headroom read to once a second. */
@@ -258,6 +286,25 @@ class CameraGlPipeline(
     /** Stills for a controller watching while this records - pull-only, see [requestSnapshot]. */
     private val snapshots = SnapshotReadback(jpegQuality = { appConfig.get().snapshotJpegQuality })
 
+    // ---- auto's fine-tuning for an explicit area of interest (AutoAreaTuner) ----
+
+    /** What auto holds instead of metering / autofocus for the explicit area; null = neither. */
+    @Volatile private var autoOverride: AutoOverride? = null
+    /** Tags every repeating request, so a capture result says which request it came from. */
+    private val requestGeneration = AtomicLong(0)
+    /** The sensor timestamp of the latest capture result. */
+    private val lastResultTimestampNs = AtomicLong(0)
+
+    private class ResultWaiter(
+        val minGeneration: Long,
+        val accepts: (TotalCaptureResult) -> Boolean,
+        val done: CompletableDeferred<Long>,
+    )
+    private val resultWaiters = CopyOnWriteArrayList<ResultWaiter>()
+    private val areaReadback = AreaReadback()
+    private val tunerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val tuner = AutoAreaTuner(TunerHooks(), tunerScope)
+
     /**
      * Live video while recording, off the recording encoder's own output - see [LiveTap]. Idle
      * (one volatile read per encoded frame) until a viewer calls `POST /api/live/start`.
@@ -345,6 +392,8 @@ class CameraGlPipeline(
     private val lastCaptureResultMs = AtomicLong(0)
     private val framesThisRun = AtomicLong(0)
     private val captureResultsThisRun = AtomicLong(0)
+    /** What the camera last said it was doing - see [captureReport]. */
+    @Volatile private var lastCaptureReport: CaptureReport? = null
     private val encodedThisRun = AtomicLong(0)
     private val runFirstFrameMs = AtomicLong(0)
     /** Buffers the camera could not deliver during this run - the counter that tracks the
@@ -380,6 +429,7 @@ class CameraGlPipeline(
 
     fun stop() {
         running = false
+        tuner.stop()
         runLoopJob?.cancel()
         scope.launch { teardown() }
     }
@@ -391,6 +441,8 @@ class CameraGlPipeline(
         workExecutor.shutdown()
         motionReadback.shutdown()
         snapshots.shutdown()
+        areaReadback.shutdown()
+        tunerScope.cancel()
     }
 
     /**
@@ -400,6 +452,16 @@ class CameraGlPipeline(
      */
     internal fun requestSnapshot(maxAgeMs: Long): CompletableDeferred<SnapshotReadback.Snapshot>? =
         if (running) snapshots.request(maxAgeMs) else null
+
+    /** The exposure and focus the camera is actually using, from a recent capture result: under
+     *  auto, what the HAL chose. Null until the first result of a run. */
+    fun captureReport(): CaptureReport? = lastCaptureReport
+
+    /** Where auto's fine-tuning for the explicit area stands; null without one. */
+    fun autoTuningStatus(): AutoTuningStatus? = tuner.status
+
+    /** Fine-tune the explicit area again now. False when there is none. */
+    fun retuneArea(): Boolean = tuner.retune()
 
     /** The output-aspect trim this run renders with, once the first frame has fixed it; for
      *  mapping a rect drawn over the live view or a still back to the sensor. */
@@ -764,6 +826,7 @@ class CameraGlPipeline(
             snapshots.captureIfRequested(
                 oesTexId, stMatrix, u, it, outputSize.width, outputSize.height, System.currentTimeMillis(),
             )
+            areaReadback.captureIfRequested(oesTexId, stMatrix, u, it, outputSize.width, outputSize.height, tsNanos)
         }
 
         GLES20.glUseProgram(program)
@@ -933,6 +996,70 @@ class CameraGlPipeline(
         }
     }
 
+    /** [AutoAreaTuner]'s way to the camera. */
+    private inner class TunerHooks : AutoAreaTuner.Hooks {
+        override fun spec(): CameraControlSpec = controls
+        override fun caps(): CameraCapabilities? = caps
+        override fun areaInFrame(): RectNorm? = if (texCropFinalized) currentAoi() else null
+        override fun report(): CaptureReport? = lastCaptureReport
+
+        override fun setOverride(o: AutoOverride?, reissue: Boolean): Long {
+            if (reissue && o != autoOverride) {
+                // Exposure and focus steps change the whole picture: not motion.
+                motionGate.beginDisturbance(CameraDisturbance.CONTROLS)
+            }
+            autoOverride = o
+            if (reissue) reissueControls()
+            return requestGeneration.get()
+        }
+
+        override suspend fun awaitApplied(generation: Long, lensStill: Boolean): Long =
+            awaitResult(generation, APPLY_TIMEOUT_MS) { r ->
+                !lensStill || r.get(CaptureResult.LENS_STATE).let { it == null || it == CaptureResult.LENS_STATE_STATIONARY }
+            }
+
+        override suspend fun awaitConverged(generation: Long, exposure: Boolean, focus: Boolean): Long {
+            // Give auto a moment to react before believing it has converged.
+            delay(AUTO_REACT_MS)
+            return awaitResult(generation, CONVERGE_TIMEOUT_MS) { r ->
+                (!exposure || r.get(CaptureResult.CONTROL_AE_STATE).let { it == null || it in AE_SETTLED }) &&
+                    (!focus || r.get(CaptureResult.CONTROL_AF_STATE).let { it == null || it in AF_SETTLED })
+            }
+        }
+
+        // withTimeoutOrNull, not withTimeout: the latter's exception is a CancellationException,
+        // which would end the tuner quietly instead of counting as a failed tune.
+        override suspend fun frame(region: RectNorm, maxEdge: Int, minTimestampNs: Long): AreaTuning.LumaPlane =
+            withTimeoutOrNull(FRAME_TIMEOUT_MS) { areaReadback.request(region, maxEdge, minTimestampNs).await() }
+                ?: throw IllegalStateException("camera not delivering frames")
+    }
+
+    /** The sensor timestamp of the first result from request [generation] or later that
+     *  [accepts]; after [timeoutMs], whatever the latest result's is. */
+    private suspend fun awaitResult(generation: Long, timeoutMs: Long, accepts: (TotalCaptureResult) -> Boolean): Long {
+        val w = ResultWaiter(generation, accepts, CompletableDeferred())
+        resultWaiters += w
+        return try {
+            withTimeoutOrNull(timeoutMs) { w.done.await() } ?: lastResultTimestampNs.get()
+        } finally {
+            resultWaiters.remove(w)
+        }
+    }
+
+    /** Re-issue the repeating request with the current controls and override. */
+    private fun reissueControls() {
+        val device = cameraDevice ?: return
+        val session = captureSession ?: return
+        val surface = cameraSurface ?: return
+        runCatching {
+            session.setRepeatingRequest(buildRecordRequest(device, surface), captureMonitor, callbackHandler)
+        }.onFailure {
+            Log.w(TAG, "reissueControls: setRepeatingRequest failed", it)
+            health.event("setRepeatingRequestFailed", it.message)
+            motionGate.endDisturbance(CameraDisturbance.CONTROLS)
+        }
+    }
+
     /**
      * The area of interest as the recorded frame shows it: the AE region (else the AF region),
      * which auto steers by, moved from sensor coordinates into the rotated, zoomed output frame.
@@ -1084,6 +1211,9 @@ class CameraGlPipeline(
         val session = createCaptureSession(device, listOf(surface), failed)
         delay(500)
         if (failed.get() || !running) { session.close(); throw IllegalStateException("session failed asynchronously") }
+        // A fresh session starts from the phone's own auto on the area, and tunes it afresh: the
+        // light may be nothing like it was when the camera last ran.
+        tuner.onControls(controls, restart = true)
         session.setRepeatingRequest(buildRecordRequest(device, surface), captureMonitor, callbackHandler)
         captureSession = session
         Log.i(TAG, "capture session up")
@@ -1106,6 +1236,8 @@ class CameraGlPipeline(
         // left a frame in which the view had jumped and the gate was still open.
         motionGate.beginDisturbance(CameraDisturbance.CONTROLS)
         controls = spec
+        // A new (or no) area drops what auto held for the old one, in the request built below.
+        tuner.onControls(spec)
         health.event("applyControls")
         // A zoom change moves work between the camera and GL, so the split is redone before the
         // request is rebuilt below. The shader does *not* pick the new crop up on its next frame:
@@ -1170,8 +1302,9 @@ class CameraGlPipeline(
     private fun buildRecordRequest(device: CameraDevice, surface: Surface): CaptureRequest =
         device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
             addTarget(surface)
+            setTag(requestGeneration.incrementAndGet())
             caps?.let {
-                CameraControlApply.applyTo(this, controls, it)
+                CameraControlApply.applyTo(this, controls, it, autoOverride)
                 CameraControlApply.applyZoom(this, requestedSplit?.hwRatio ?: 1f, it)
             }
         }.build()
@@ -1194,6 +1327,14 @@ class CameraGlPipeline(
         ) {
             lastCaptureResultMs.set(SystemClock.elapsedRealtime())
             val n = captureResultsThisRun.incrementAndGet()
+            // A few frames' worth is plenty for anyone reading it; skip the allocation otherwise.
+            if (n % CAPTURE_REPORT_EVERY == 0L || lastCaptureReport == null) {
+                lastCaptureReport = CaptureReport(
+                    exposureTimeNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
+                    sensitivityIso = result.get(CaptureResult.SENSOR_SENSITIVITY),
+                    focusDistanceDiopters = result.get(CaptureResult.LENS_FOCUS_DISTANCE),
+                )
+            }
             // Controls are applied by the request this result came from, so by definition they
             // have taken effect by now.
             motionGate.endDisturbance(CameraDisturbance.CONTROLS)
@@ -1216,6 +1357,16 @@ class CameraGlPipeline(
             }
 
             val ts = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+            lastResultTimestampNs.set(ts)
+            if (resultWaiters.isNotEmpty()) {
+                val generation = request.tag as? Long ?: 0L
+                for (w in resultWaiters) {
+                    if (generation >= w.minGeneration && w.accepts(result)) {
+                        resultWaiters.remove(w)
+                        w.done.complete(ts)
+                    }
+                }
+            }
             val applied = AppliedZoomReader.read(result, caps)
             zoomFeedback.record(ts, applied)
             val want = requestedSplit?.hwRatio ?: 1f
@@ -1343,6 +1494,7 @@ class CameraGlPipeline(
             encoderInputSurface = null
             motionReadback.releaseGl()
             snapshots.releaseGl()
+            areaReadback.releaseGl()
             runCatching { EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT) }
             runCatching { EGL14.eglDestroySurface(eglDisplay, encoderWindowSurface) }
             runCatching { EGL14.eglDestroyContext(eglDisplay, eglContext) }
@@ -1381,6 +1533,7 @@ class CameraGlPipeline(
         lastFrameMs.set(0); lastCaptureResultMs.set(0); runFirstFrameMs.set(0)
         framesThisRun.set(0); captureResultsThisRun.set(0); encodedThisRun.set(0)
         bufferLostThisRun.set(0)
+        lastCaptureReport = null
         swapsThisRun.set(0); swapFailuresThisRun.set(0); lastSwapError = 0
 
         glHandler = null

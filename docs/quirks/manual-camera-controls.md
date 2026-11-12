@@ -53,6 +53,27 @@ hardware over `adb forward`:
   `camera/CameraControlApply.kt` now always sets an identity `ColorSpaceTransform` alongside the
   gains, so the per-channel gains do the white-balance work and the transform leaves hue alone.
 
+- **Pixel 7 Pro telephoto (`0:5`): no manual focus distance is as sharp as autofocus.** At 8x on
+  a subject ~25m away, at a fixed exposure, continuous AF on an area gave a Tenengrad of ~1790;
+  `LENS_FOCUS_DISTANCE` 0 (the farthest) gave ~990, 0.01 D ~790, and sharpness only fell from
+  there to 9.5 D. Repeatable A/B, 2026-11-09. Presumably the physical sub-camera's diopter scale
+  (the lens may report itself uncalibrated) doesn't reach where AF drives the lens. Holding the
+  distance AF itself reports loses about a third of the sharpness too. So area-of-interest
+  tuning checks that first and leaves focus to AF here, remembering the result per camera
+  ([0017](../design/decisions/0017-area-of-interest-fine-tuning.md)).
+- **Pixel 7 Pro telephoto: positive AE compensation runs away with an AE region on a clipped
+  area.** With `CONTROL_AE_REGIONS` on an area whose top 1% was already at 255, compensation +1
+  (1/6 EV) did not settle. AE ramped the exposure from 1.2ms to 4.8ms (+2 stops) in 4s and kept
+  climbing; the area went from 6.2 to 3.1 bits of tonal entropy. +2 went to solid white, and
+  stepping back to 0 took 5-10s to recover. Negative steps were smooth (about 1/6 stop per step,
+  settled in under 0.5s). With no AE region, every step from -1 EV to +1 EV followed within
+  0.5s. Measured 2026-11-11 at 8x zoom on a bright subject. Area tuning therefore never brightens
+  an area that clips white, and undoes any step AE answers with more than three times its size.
+- **A setting shows in a still 300ms after `POST /api/camera/state` returns** (Pixel 7 Pro, over
+  Wi-Fi): 100-200ms gets a partial change, 0ms the old picture. Stills are shared for up to 1s,
+  measured from the frame's capture, so a still requested less than ~1.5s after the last one can
+  be the same picture; ask with `maxAgeMs=0` instead.
+
 ## Carried forward, not yet re-verified in this project
 
 Adopted from `panopticon-prototype/QUIRKS.md`, not independently re-tested against the Pixel 6 /

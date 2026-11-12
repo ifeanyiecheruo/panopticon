@@ -22,8 +22,10 @@ const (
 	stillH = 360
 )
 
-// handleCameraSnapshot serves GET /api/camera/snapshot: 409 outside record
-// mode, 503 while overheated, otherwise a JPEG.
+// handleCameraSnapshot serves GET /api/camera/snapshot: 409 in standby (no
+// camera open), 503 while overheated, otherwise a JPEG - in record and live,
+// which on a real phone are one pipeline. Every still is rendered fresh, so
+// maxAgeMs needs no handling here.
 func (s *server) handleCameraSnapshot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -43,9 +45,9 @@ func (s *server) handleCameraSnapshot(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if mode != "record" {
+	if mode != "record" && mode != "live" {
 		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": "not recording: stills are served in record mode only (use /live/* in live mode)",
+			"error": "no camera open: stills are served in record and live modes",
 		})
 		return
 	}

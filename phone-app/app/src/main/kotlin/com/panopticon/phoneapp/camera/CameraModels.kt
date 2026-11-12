@@ -165,9 +165,16 @@ data class CameraControlKeys(
 /**
  * Persisted (in `DeviceConfig`) manual-control intent. `manualControlEnabled`
  * is the master switch: false = every pipeline runs auto, honouring only the zoom
- * ([CameraControlKeys.zoomViewNorm]) and an area of interest (the AE and AF regions) from
- * [keys]. Kept whole across mode switches and app restarts so a state tuned
+ * ([CameraControlKeys.zoomViewNorm]), an exposure compensation and an area of interest (the AE
+ * and AF regions) from [keys]. Kept whole across mode switches and app restarts so a state tuned
  * while watching the live preview also governs recording.
+ *
+ * Auto belongs to the phone. With an **implicit** area of interest - none drawn, so the whole
+ * frame - exposure, focus and white balance are the HAL's alone. With an **explicit** one the
+ * phone also fine-tunes exposure and focus for it, and keeps them tuned as the light changes
+ * ([AutoAreaTuner]). Either way the only keys auto takes are the zoom, the exposure compensation
+ * (a bias auto exposure applies, not a manual exposure) and the area ([autoKeyConflict]);
+ * everything else is a manual control, refused in auto.
  */
 @Serializable
 data class CameraControlSpec(
@@ -179,7 +186,93 @@ data class CameraControlSpec(
         manualControlEnabled = patch.manualControlEnabled ?: manualControlEnabled,
         keys = patch.keys ?: keys,
     )
+
+    /** Auto is steered by an area the user drew, rather than looking at the whole frame. */
+    val hasExplicitArea: Boolean
+        get() = !manualControlEnabled && (keys.aeRegionNorm != null || keys.afRegionNorm != null)
+
+    companion object {
+        /**
+         * The first key in [keys] that auto doesn't take - a manual control - or null when all
+         * of them are auto's: the zoom, the exposure compensation and the area of interest. `false` for a manual switch
+         * (`manualExposure`, `manualFocus`, `manualWhiteBalance`, `aeLock`) means "leave it to
+         * auto", so it is no conflict.
+         */
+        fun autoKeyConflict(keys: CameraControlKeys): String? = listOf(
+            "aeLock" to keys.aeLock?.takeIf { it },
+            "manualExposure" to keys.manualExposure?.takeIf { it },
+            "sensorExposureTimeNs" to keys.sensorExposureTimeNs,
+            "sensorSensitivityIso" to keys.sensorSensitivityIso,
+            "manualFocus" to keys.manualFocus?.takeIf { it },
+            "lensFocusDistanceDiopters" to keys.lensFocusDistanceDiopters,
+            "awbMode" to keys.awbMode,
+            "manualWhiteBalance" to keys.manualWhiteBalance?.takeIf { it },
+            "wbRedGain" to keys.wbRedGain,
+            "wbGreenGain" to keys.wbGreenGain,
+            "wbBlueGain" to keys.wbBlueGain,
+            "videoStabilizationMode" to keys.videoStabilizationMode,
+            "opticalStabilizationMode" to keys.opticalStabilizationMode,
+        ).firstOrNull { it.second != null }?.first
+
+        /** [keys] with only what auto takes: the zoom, the exposure compensation and the area.
+         *  What a camera entering auto keeps. */
+        fun autoKeys(keys: CameraControlKeys): CameraControlKeys = CameraControlKeys(
+            zoomRatio = keys.zoomRatio,
+            zoomSelectNorm = keys.zoomSelectNorm,
+            zoomViewNorm = keys.zoomViewNorm,
+            aeExposureCompensation = keys.aeExposureCompensation,
+            aeSelectNorm = keys.aeSelectNorm,
+            aeRegionNorm = keys.aeRegionNorm,
+            afSelectNorm = keys.afSelectNorm,
+            afRegionNorm = keys.afRegionNorm,
+        )
+    }
 }
+
+/**
+ * Where auto's fine-tuning for the explicit area stands ([AutoAreaTuner]), for
+ * `GET /api/camera/state`. Null with no explicit area, in manual, or with no camera running.
+ */
+@Serializable
+data class AutoTuningStatus(
+    /** [WAITING] (auto settling on the area, before tuning) | [TUNING] | [FAILED] | [UNSUPPORTED]. */
+    val state: String,
+    /** Exposure compensation tuning adds to auto exposure, on top of the
+     *  `aeExposureCompensation` key, in the camera's steps and in stops; null while exposure
+     *  isn't tuned. */
+    val exposureCompensation: Int? = null,
+    val exposureBiasEv: Double? = null,
+    /** The focus distance held for the area; null while autofocus is kept. */
+    val focusDistanceDiopters: Float? = null,
+    /** The area's tone entropy (bits) now, and when auto alone had settled on it. */
+    val contrast: Double? = null,
+    val phoneContrast: Double? = null,
+    /** The area's edge energy now, and with autofocus alone. */
+    val sharpness: Double? = null,
+    val phoneSharpness: Double? = null,
+    /** Epoch ms of the last nudge that was kept. */
+    val tunedAtMs: Long? = null,
+    val message: String? = null,
+) {
+    companion object {
+        const val WAITING = "waiting"
+        const val TUNING = "tuning"
+        const val FAILED = "failed"
+        const val UNSUPPORTED = "unsupported"
+    }
+}
+
+/**
+ * What the camera is actually doing, from the latest `CaptureResult` - under auto, the exposure
+ * and focus the HAL chose. Fine-tuning starts from here.
+ */
+@Serializable
+data class CaptureReport(
+    val exposureTimeNs: Long? = null,
+    val sensitivityIso: Int? = null,
+    /** 0 = infinity. Null when the lens doesn't report it (fixed focus). */
+    val focusDistanceDiopters: Float? = null,
+)
 
 @Serializable
 data class CameraStateResponse(
@@ -200,6 +293,14 @@ data class CameraStateResponse(
     /** The magnification GL makes up on top of [hwZoomRatio]. Above `1.0` this is a plain upscale
      *  of already-captured pixels - no new detail - so the UI can warn when zoom is getting soft. */
     val glResidual: Float = 1f,
+    /** The explicit area of interest as the output frame shows it (rotated, zoomed, `0..1` top
+     *  down) - the same rect segments carry. Null in manual, with no area drawn, or when the area
+     *  is out of view. */
+    val areaNorm: RectNorm? = null,
+    /** What the camera is actually doing; null when no pipeline is running (STANDBY). */
+    val reported: CaptureReport? = null,
+    /** Auto's fine-tuning for the explicit area; null without one (see [AutoTuningStatus]). */
+    val autoTuning: AutoTuningStatus? = null,
 )
 
 @Serializable
